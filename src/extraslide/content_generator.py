@@ -1,11 +1,14 @@
-"""Generate minimal SML content from render trees.
+"""Generate editable SML content from render trees.
 
 Produces clean, minimal XML with:
 - <Slide> root tag for valid XML
 - Clean IDs on all elements
 - Absolute position (x, y, w, h) on ALL elements
-- Text content preserved
-- NO styling (that goes in styles.json)
+- Text content preserved, including explicitly-set per-run styling
+- Explicitly-set, class-expressible styling as Tailwind-style classes
+
+Inherited or otherwise absent API properties are never resolved or emitted.
+Non-class styling remains in styles.json.
 """
 
 from __future__ import annotations
@@ -13,6 +16,11 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING, Any
 from xml.sax.saxutils import escape
+
+from extraslide.style_extractor import (
+    extract_sml_element_classes,
+    extract_sml_text_classes,
+)
 
 # Pattern to match XML-invalid control characters (except tab, newline, carriage return)
 _CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
@@ -261,6 +269,11 @@ def _build_attributes(node: RenderNode) -> str:
     attrs.append(f'w="{round(bounds.w, 1)}"')
     attrs.append(f'h="{round(bounds.h, 1)}"')
 
+    classes = extract_sml_element_classes(node)
+    if classes:
+        class_value = escape(" ".join(classes), {'"': "&quot;"})
+        attrs.append(f'class="{class_value}"')
+
     if attrs:
         return " " + " ".join(attrs)
     return ""
@@ -296,21 +309,45 @@ def _generate_text_content(
     if current_para:
         paragraphs.append(current_para)
 
-    # Generate paragraph elements
+    # Generate paragraph elements. Character styles stay on their source runs;
+    # they are not promoted to the element because that would change scope.
     for para_runs in paragraphs:
-        # Combine runs into single text content
-        text_content = ""
+        segments: list[tuple[str, tuple[str, ...]]] = []
         for run in para_runs:
-            content = run.get("content", "")
-            # Strip trailing newline from paragraph
-            content = content.rstrip("\n")
-            if content:
-                text_content += content
+            content = _sanitize_text(run.get("content", "").rstrip("\n"))
+            if not content:
+                continue
+            run_classes = tuple(extract_sml_text_classes(run.get("style")))
+            if segments and segments[-1][1] == run_classes:
+                previous, previous_classes = segments[-1]
+                segments[-1] = (previous + content, previous_classes)
+            else:
+                segments.append((content, run_classes))
 
-        if text_content.strip():
-            sanitized = _sanitize_text(text_content.strip())
-            escaped = escape(sanitized)
-            lines.append(f"{prefix}<P>{escaped}</P>")
+        if not segments:
+            continue
+
+        # Preserve the donor generator's outer-whitespace normalization while
+        # retaining style boundaries inside the paragraph.
+        first_text, first_classes = segments[0]
+        segments[0] = (first_text.lstrip(), first_classes)
+        last_text, last_classes = segments[-1]
+        segments[-1] = (last_text.rstrip(), last_classes)
+        segments = [(text, classes) for text, classes in segments if text]
+        if not segments:
+            continue
+
+        content_parts: list[str] = []
+        for text, run_classes in segments:
+            escaped_text = escape(text)
+            if run_classes:
+                class_value = escape(" ".join(run_classes), {'"': "&quot;"})
+                content_parts.append(
+                    f'<T class="{class_value}">{escaped_text}</T>'
+                )
+            else:
+                content_parts.append(escaped_text)
+        lines.append(f"{prefix}<P>{''.join(content_parts)}</P>")
 
 
 def generate_presentation_content(

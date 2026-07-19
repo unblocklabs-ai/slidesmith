@@ -106,6 +106,18 @@ class LineCategory(Enum):
     CURVED = "CURVED"
 
 
+def _api_dimension_to_pt(dimension: dict[str, Any]) -> float:
+    """Convert an explicitly-present Slides dimension to points.
+
+    Protobuf JSON omits a zero magnitude, so ``{"unit": "PT"}`` is an
+    explicitly-set zero rather than a missing property.
+    """
+    magnitude = dimension.get("magnitude", 0)
+    if dimension.get("unit") == "EMU":
+        return emu_to_pt(magnitude)
+    return float(magnitude)
+
+
 @dataclass
 class Color:
     """Represents a color with optional alpha/opacity."""
@@ -242,9 +254,8 @@ class Stroke:
 
         # Get weight
         weight = outline_obj.get("weight")
-        if weight and weight.get("magnitude"):
-            emu = weight["magnitude"]
-            stroke.weight_pt = emu_to_pt(emu)
+        if weight is not None:
+            stroke.weight_pt = _api_dimension_to_pt(weight)
 
         # Get dash style
         dash = outline_obj.get("dashStyle")
@@ -281,8 +292,9 @@ class Stroke:
         if self.weight_pt is not None:
             classes.append(f"stroke-w-{format_pt(self.weight_pt)}")
 
-        if self.dash_style and self.dash_style != DashStyle.SOLID:
+        if self.dash_style:
             dash_map = {
+                DashStyle.SOLID: "stroke-solid",
                 DashStyle.DOT: "stroke-dot",
                 DashStyle.DASH: "stroke-dash",
                 DashStyle.DASH_DOT: "stroke-dash-dot",
@@ -489,12 +501,14 @@ class TextStyle:
 
         # Font size
         font_size = style_obj.get("fontSize")
-        if font_size and font_size.get("magnitude"):
-            ts.font_size_pt = font_size["magnitude"]
+        if font_size is not None:
+            ts.font_size_pt = _api_dimension_to_pt(font_size)
 
         # Font weight
         weighted = style_obj.get("weightedFontFamily")
         if weighted:
+            if not ts.font_family:
+                ts.font_family = weighted.get("fontFamily")
             ts.font_weight = weighted.get("weight")
 
         # Foreground color
@@ -551,12 +565,9 @@ class TextStyle:
         if self.font_size_pt:
             classes.append(f"text-size-{format_pt(self.font_size_pt)}")
 
-        # Font weight (if not implied by bold)
-        if self.font_weight and self.font_weight != 400:
-            if self.font_weight == 700 and self.bold:
-                pass  # Already have "bold"
-            else:
-                classes.append(f"font-weight-{self.font_weight}")
+        # Font weight is independent from the bold flag in the Slides API.
+        if self.font_weight is not None:
+            classes.append(f"font-weight-{self.font_weight}")
 
         # Text color
         if self.foreground_color:
@@ -609,25 +620,25 @@ class ParagraphStyle:
 
         # Space above/below
         space_above = style_obj.get("spaceAbove")
-        if space_above and space_above.get("magnitude"):
-            ps.space_above_pt = space_above["magnitude"]
+        if space_above is not None:
+            ps.space_above_pt = _api_dimension_to_pt(space_above)
 
         space_below = style_obj.get("spaceBelow")
-        if space_below and space_below.get("magnitude"):
-            ps.space_below_pt = space_below["magnitude"]
+        if space_below is not None:
+            ps.space_below_pt = _api_dimension_to_pt(space_below)
 
         # Indentation
         indent_start = style_obj.get("indentStart")
-        if indent_start and indent_start.get("magnitude"):
-            ps.indent_start_pt = indent_start["magnitude"]
+        if indent_start is not None:
+            ps.indent_start_pt = _api_dimension_to_pt(indent_start)
 
         indent_end = style_obj.get("indentEnd")
-        if indent_end and indent_end.get("magnitude"):
-            ps.indent_end_pt = indent_end["magnitude"]
+        if indent_end is not None:
+            ps.indent_end_pt = _api_dimension_to_pt(indent_end)
 
         indent_first = style_obj.get("indentFirstLine")
-        if indent_first and indent_first.get("magnitude"):
-            ps.indent_first_line_pt = indent_first["magnitude"]
+        if indent_first is not None:
+            ps.indent_first_line_pt = _api_dimension_to_pt(indent_first)
 
         # Direction
         ps.direction = style_obj.get("direction")
@@ -653,19 +664,19 @@ class ParagraphStyle:
                 classes.append(align_map[self.alignment])
 
         # Line spacing
-        if self.line_spacing:
+        if self.line_spacing is not None:
             classes.append(f"leading-{self.line_spacing}")
 
         # Space above/below
-        if self.space_above_pt:
+        if self.space_above_pt is not None:
             classes.append(f"space-above-{format_pt(self.space_above_pt)}")
-        if self.space_below_pt:
+        if self.space_below_pt is not None:
             classes.append(f"space-below-{format_pt(self.space_below_pt)}")
 
         # Indentation
-        if self.indent_start_pt:
+        if self.indent_start_pt is not None:
             classes.append(f"indent-start-{format_pt(self.indent_start_pt)}")
-        if self.indent_first_line_pt:
+        if self.indent_first_line_pt is not None:
             classes.append(f"indent-first-{format_pt(self.indent_first_line_pt)}")
 
         # Direction

@@ -111,28 +111,30 @@ async def ws(tmp_path: Path) -> Workspace:
 
 def edit_e121_locally(folder: Path) -> None:
     """Make a local edit whose diff touches exactly element e121."""
-    sml = folder / "slides" / "01" / "content.sml"
-    content = sml.read_text(encoding="utf-8")
-    assert '<TextBox id="e121"' in content
-    sml.write_text(
-        content.replace(
-            '<TextBox id="e121"', '<TextBox id="e121" class="fill-#00ff00"'
-        ),
-        encoding="utf-8",
-    )
+    recolor_e121_locally(folder, "#00ff00")
 
 
 def recolor_e121_locally(folder: Path, color: str) -> None:
     """Set e121's local fill class on a freshly regenerated SML file."""
     sml = folder / "slides" / "01" / "content.sml"
     content = sml.read_text(encoding="utf-8")
-    assert '<TextBox id="e121"' in content
-    assert 'class="fill-' not in content
+    start = content.index('<TextBox id="e121"')
+    end = content.index(">", start)
+    opening = content[start:end]
+    class_marker = 'class="'
+    if class_marker in opening:
+        class_start = opening.index(class_marker) + len(class_marker)
+        class_end = opening.index('"', class_start)
+        classes = opening[class_start:class_end].split()
+        classes = [cls for cls in classes if not cls.startswith("fill-")]
+        classes.append(f"fill-{color}")
+        opening = (
+            opening[:class_start] + " ".join(classes) + opening[class_end:]
+        )
+    else:
+        opening += f' class="fill-{color}"'
     sml.write_text(
-        content.replace(
-            '<TextBox id="e121"',
-            f'<TextBox id="e121" class="fill-{color}"',
-        ),
+        content[:start] + opening + content[end:],
         encoding="utf-8",
     )
 
@@ -372,10 +374,10 @@ async def test_immediate_second_push_is_a_noop_against_refreshed_pristine(
     assert metadata["revisionId"] == "rev-after-push-1"
     assert base["revisionId"] == "rev-after-push-1"
 
-    # Re-fetch regeneration is authoritative: the API representation stores
-    # this as styles data, so the local class syntax is normalized away.
+    # Re-fetch regeneration is authoritative and now restores the explicit
+    # API fill as the canonical class-bearing SML representation.
     sml = ws.folder / "slides" / "01" / "content.sml"
-    assert 'class="fill-#00ff00"' not in sml.read_text(encoding="utf-8")
+    assert "fill-#00ff00" in sml.read_text(encoding="utf-8")
 
     response = await ws.client.push(ws.folder)
 

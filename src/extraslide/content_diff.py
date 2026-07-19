@@ -387,12 +387,30 @@ def _compare_elements(
 
     # Check class-derived style change
     if edited.styles is not None and edited.styles != pristine.styles:
+        pristine_styles = pristine.styles or ElementStyles()
+        # Carry only changed style groups. Once pulled SML contains multiple
+        # explicit groups, replaying every edited group would let a fill-only
+        # edit overwrite a concurrent human paragraph/stroke change.
+        style_delta = ElementStyles(
+            fill=edited.styles.fill
+            if edited.styles.fill != pristine_styles.fill
+            else None,
+            stroke=edited.styles.stroke
+            if edited.styles.stroke != pristine_styles.stroke
+            else None,
+            text_style=edited.styles.text_style
+            if edited.styles.text_style != pristine_styles.text_style
+            else None,
+            paragraph_style=edited.styles.paragraph_style
+            if edited.styles.paragraph_style != pristine_styles.paragraph_style
+            else None,
+        )
         changes.append(
             Change(
                 change_type=ChangeType.STYLE_UPDATE,
                 target_id=pristine.clean_id,
                 slide_index=slide_idx,
-                new_styles=edited.styles,
+                new_styles=style_delta,
                 new_text=edited.paragraphs if edited.paragraphs else None,
             )
         )

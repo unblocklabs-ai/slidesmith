@@ -3,7 +3,7 @@
 Orchestrates the conversion from Google Slides API response to the new format:
 - id_mapping.json: clean_id -> google_object_id
 - styles.json: clean_id -> style properties
-- slides/NN/content.sml: minimal XML with IDs, absolute positions, text
+- slides/NN/content.sml: XML with IDs, absolute positions, text, explicit classes
 """
 
 from __future__ import annotations
@@ -62,7 +62,9 @@ def process_presentation(
         slide_styles = extract_styles(roots)
         all_styles.update(slide_styles)
 
-    # Step 4: Generate content for each slide
+    # Step 4: Generate class-bearing content for each slide. The generator
+    # reads raw API field presence from each render node so inherited styles
+    # remain absent instead of being baked into SML.
     slides_output: list[dict[str, Any]] = []
     for slide_id, slide_index, roots in slides_data:
         content = generate_slide_content(roots, slide_id)

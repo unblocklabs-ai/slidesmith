@@ -8,10 +8,67 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from extraslide.classes import Fill, ParagraphStyle, Stroke, TextStyle
 from extraslide.units import emu_to_pt
 
 if TYPE_CHECKING:
     from extraslide.render_tree import RenderNode
+
+
+def extract_sml_element_classes(node: RenderNode) -> list[str]:
+    """Return classes for explicitly-set, element-scoped properties.
+
+    The raw API dictionaries are intentionally inspected by key presence.
+    Missing properties are inherited and never become classes. A paragraph
+    property is promoted to the parser-supported element class scope only
+    when that exact class is explicitly present on every paragraph.
+    """
+    shape = node.element.get("shape")
+    if not shape:
+        return []
+
+    classes: list[str] = []
+    shape_props = shape.get("shapeProperties", {})
+
+    if "shapeBackgroundFill" in shape_props:
+        fill = Fill.from_api(shape_props["shapeBackgroundFill"])
+        if fill:
+            fill_class = fill.to_class()
+            if fill_class:
+                classes.append(fill_class)
+
+    if "outline" in shape_props:
+        stroke = Stroke.from_api(shape_props["outline"])
+        if stroke:
+            classes.extend(stroke.to_classes())
+
+    paragraph_class_sets: list[list[str]] = []
+    for text_element in shape.get("text", {}).get("textElements", []):
+        marker = text_element.get("paragraphMarker")
+        if marker is None:
+            continue
+        paragraph_style = ParagraphStyle.from_api(marker.get("style"))
+        paragraph_class_sets.append(
+            paragraph_style.to_classes() if paragraph_style else []
+        )
+
+    if paragraph_class_sets:
+        classes.extend(
+            cls
+            for cls in paragraph_class_sets[0]
+            if all(
+                cls in paragraph_classes
+                for paragraph_classes in paragraph_class_sets
+            )
+        )
+
+    return classes
+
+
+def extract_sml_text_classes(run_style: dict[str, Any] | None) -> list[str]:
+    """Return classes for explicitly-set properties on one text run."""
+    text_style = TextStyle.from_api(run_style)
+    return text_style.to_classes() if text_style else []
 
 
 def extract_styles(

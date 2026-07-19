@@ -15,10 +15,20 @@ from __future__ import annotations
 
 import json
 import os
+import xml.etree.ElementTree as ET
+import zipfile
 from pathlib import Path
 
 import pytest
 
+from extraslide.classes import (
+    ParagraphStyle,
+    Stroke,
+    TextStyle,
+    parse_paragraph_style_classes,
+    parse_stroke_classes,
+    parse_text_style_classes,
+)
 from extraslide.client import diff_folder
 from extraslide.content_diff import DiffResult, diff_slide_content
 from extraslide.content_requests import generate_batch_requests
@@ -47,6 +57,103 @@ def golden_folder(tmp_path: Path) -> Path:
 
 def test_c1_pull_without_edits_diffs_to_zero_requests(golden_folder: Path) -> None:
     assert diff_folder(golden_folder) == []
+
+
+def test_styled_pull_emits_explicit_element_and_run_classes(
+    golden_folder: Path,
+) -> None:
+    """Pulled SML exposes explicit design without resolving inheritance."""
+    sml = golden_folder / "slides" / "01" / "content.sml"
+    content = sml.read_text(encoding="utf-8")
+    root = ET.fromstring(content)
+
+    # e75 has an explicitly-set solid shape fill and hidden outline.
+    filled = root.find(".//*[@id='e75']")
+    assert filled is not None
+    assert filled.get("class", "").split() == ["fill-#f4f4f4", "stroke-none"]
+
+    # e121 is a placeholder whose fill/outline are explicitly INHERIT. Those
+    # must remain absent, while its explicit text-run styles are visible in
+    # the per-run representation the parser already understands.
+    title = root.find(".//*[@id='e121']")
+    assert title is not None
+    assert title.get("class", "").split() == ["text-align-left", "leading-90"]
+    assert not any(
+        cls.startswith(("fill-", "stroke-"))
+        for cls in title.get("class", "").split()
+    )
+
+    run = title.find("./P/T")
+    assert run is not None
+    assert run.text == "Driving GenAI Transformations"
+    assert run.get("class", "").split() == [
+        "font-family-montserrat",
+        "text-size-43",
+        "font-weight-400",
+    ]
+
+    # e122 has two differently-styled runs in one paragraph; they must remain
+    # independently visible and editable rather than being flattened.
+    footer = root.find(".//*[@id='e122']")
+    assert footer is not None
+    footer_runs = footer.findall("./P/T")
+    assert [run.text for run in footer_runs] == ["Website:", "www.think41.com"]
+    assert "bold" in footer_runs[0].get("class", "").split()
+    assert "text-size-12" in footer_runs[0].get("class", "").split()
+    assert "bold" not in footer_runs[1].get("class", "").split()
+    assert "text-size-10" in footer_runs[1].get("class", "").split()
+
+    # Contract C1 now explicitly proves class-bearing current and pristine
+    # projections are byte-identical before the no-op diff.
+    with zipfile.ZipFile(
+        golden_folder / ".pristine" / "presentation.zip"
+    ) as pristine:
+        assert pristine.read("slides/01/content.sml").decode("utf-8") == content
+    assert diff_folder(golden_folder) == []
+
+
+def test_styled_pull_forward_classes_use_existing_reverse_mappings() -> None:
+    """New forward emission is exactly reversible by classes.py parsers."""
+    stroke = Stroke.from_api(
+        {
+            "outlineFill": {
+                "solidFill": {"color": {"rgbColor": {"red": 1}}}
+            },
+            "weight": {"magnitude": 12700, "unit": "EMU"},
+            "dashStyle": "SOLID",
+        }
+    )
+    assert stroke is not None
+    stroke_classes = stroke.to_classes()
+    assert stroke_classes == ["stroke-#ff0000", "stroke-w-1", "stroke-solid"]
+    assert parse_stroke_classes(stroke_classes) == stroke
+
+    text_style = TextStyle.from_api(
+        {
+            "fontSize": {"magnitude": 152400, "unit": "EMU"},
+            "weightedFontFamily": {"fontFamily": "Roboto", "weight": 400},
+        }
+    )
+    assert text_style is not None
+    text_classes = text_style.to_classes()
+    assert text_classes == [
+        "font-family-roboto",
+        "text-size-12",
+        "font-weight-400",
+    ]
+    assert parse_text_style_classes(text_classes) == text_style
+
+    paragraph_style = ParagraphStyle.from_api(
+        {
+            "lineSpacing": 100,
+            "spaceAbove": {"unit": "PT"},
+            "indentStart": {"unit": "PT"},
+        }
+    )
+    assert paragraph_style is not None
+    paragraph_classes = paragraph_style.to_classes()
+    assert paragraph_classes == ["leading-100", "space-above-0", "indent-start-0"]
+    assert parse_paragraph_style_classes(paragraph_classes) == paragraph_style
 
 
 def test_c2_create_styled_textbox_via_documented_syntax(golden_folder: Path) -> None:
@@ -112,11 +219,13 @@ def test_c2b_style_update_on_existing_element(golden_folder: Path) -> None:
     )
     sml = golden_folder / "slides" / "01" / "content.sml"
     content = sml.read_text(encoding="utf-8")
-    assert '<TextBox id="e121"' in content
+    original_classes = 'class="text-align-left leading-90"'
+    assert original_classes in content
     sml.write_text(
         content.replace(
-            '<TextBox id="e121"',
-            '<TextBox id="e121" class="fill-#00ff00 text-size-30"',
+            original_classes,
+            'class="text-align-left leading-90 fill-#00ff00 text-size-30"',
+            1,
         ),
         encoding="utf-8",
     )
@@ -162,18 +271,19 @@ def _text_edit_requests(
     )
 
 
-def test_c3_single_word_edit_touches_only_changed_range(golden_folder: Path) -> None:
-    """C3 (offline half): editing one word in a multi-paragraph element must
-    emit range edits scoped to the changed span. A delete-all + reinsert
-    would wipe per-run character styling a human applied in the Slides UI."""
+def test_c3_single_word_edit_preserves_explicit_run_style(
+    golden_folder: Path,
+) -> None:
+    """C3 (offline half): a styled paragraph is replaced and restyled without
+    touching its sibling paragraph or issuing a delete-all request."""
     id_mapping = json.loads(
         (golden_folder / "id_mapping.json").read_text(encoding="utf-8")
     )
     sml = golden_folder / "slides" / "02" / "content.sml"
     content = sml.read_text(encoding="utf-8")
-    assert "<P>With Innovation teams</P>" in content
+    assert "With Innovation teams" in content
     sml.write_text(
-        content.replace("<P>With Innovation teams</P>", "<P>With Platform teams</P>"),
+        content.replace("With Innovation teams", "With Platform teams", 1),
         encoding="utf-8",
     )
 
@@ -183,28 +293,37 @@ def test_c3_single_word_edit_touches_only_changed_range(golden_folder: Path) -> 
     blob = json.dumps(requests)
     assert '"ALL"' not in blob, "range edits must never touch the whole text"
 
-    # Pristine text is "GCCs in India\nWith Innovation teams": paragraph 2
-    # starts at index 14, "With " is 5 units, so "Innovation" spans 19..29.
-    # The untouched paragraph must not appear in any request.
-    assert requests == [
-        {
-            "deleteText": {
-                "objectId": google_id,
-                "textRange": {
-                    "type": "FIXED_RANGE",
-                    "startIndex": 19,
-                    "endIndex": 29,
-                },
-            }
-        },
-        {
-            "insertText": {
-                "objectId": google_id,
-                "insertionIndex": 19,
-                "text": "Platform",
-            }
-        },
-    ]
+    # The existing diff semantics replace a changed styled paragraph as one
+    # range, then reapply its visible <T> classes. Paragraph 1 stays untouched.
+    assert "GCCs in India" not in blob
+    assert requests[0] == {
+        "deleteText": {
+            "objectId": google_id,
+            "textRange": {
+                "type": "FIXED_RANGE",
+                "startIndex": 14,
+                "endIndex": 35,
+            },
+        }
+    }
+    assert requests[1] == {
+        "insertText": {
+            "objectId": google_id,
+            "insertionIndex": 14,
+            "text": "With Platform teams",
+        }
+    }
+    restyle = requests[2]["updateTextStyle"]
+    assert restyle["objectId"] == google_id
+    assert restyle["textRange"] == {
+        "type": "FIXED_RANGE",
+        "startIndex": 14,
+        "endIndex": 33,
+    }
+    assert restyle["fields"] == (
+        "fontFamily,fontSize,weightedFontFamily,foregroundColor"
+    )
+    assert len(requests) == 3
 
 
 def test_c3_non_bmp_text_indices_count_utf16_units() -> None:

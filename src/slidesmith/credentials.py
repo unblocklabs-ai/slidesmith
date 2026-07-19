@@ -948,9 +948,44 @@ class CredentialsManager:
     def _load_session_token(
         self, profile_name: str | None = None
     ) -> SessionToken | None:
-        """Load session token for the given profile."""
+        """Load a session token and best-effort mirror it across stores."""
         name = profile_name if profile_name is not None else self._resolve_profile()
-        return self._session_store.load(name)
+        token = self._session_store.load(name)
+        if token is not None:
+            self._mirror_loaded_session_token(name, token)
+        return token
+
+    def _mirror_loaded_session_token(
+        self, profile_name: str, token: SessionToken
+    ) -> None:
+        """Copy a loaded token to a missing or older persistent peer store."""
+        if self._session_store_injected or self._auth_mode not in (
+            "extrasuite",
+            "oauth_client",
+        ):
+            return
+
+        stores = (
+            ("keyring", self._keyring_session_store),
+            ("file", self._file_session_store),
+        )
+        for store_name, store in stores:
+            if store is None:
+                continue
+            try:
+                existing = store.load(profile_name)
+            except Exception:
+                existing = None
+            if existing is not None and existing.expires_at >= token.expires_at:
+                continue
+            try:
+                store.save(profile_name, token)
+            except Exception as exc:
+                print(
+                    f"warning: could not mirror session token to {store_name} "
+                    f"store ({exc!r})",
+                    file=sys.stderr,
+                )
 
     def _save_session_token(self, token: SessionToken, profile_name: str) -> None:
         """Save a session token to both persistent stores when possible."""

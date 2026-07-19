@@ -123,9 +123,10 @@ def test_keyring_failure_falls_back_once_to_file_store(
     assert "Unknown Error" in stderr
 
 
-def test_oauth_login_mirrors_refresh_session_without_client_secret(
+def test_oauth_sessions_mirror_on_login_and_keyring_load_without_client_secret(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     keyring = MemoryKeyring()
     monkeypatch.setenv("HOME", str(tmp_path))
@@ -154,6 +155,38 @@ def test_oauth_login_mirrors_refresh_session_without_client_secret(
     assert keyring_payload is not None
     assert json.loads(keyring_payload)["raw_token"] == "refresh-token"
     assert "client-secret" not in FileSessionStore().path.read_text(encoding="utf-8")
+
+    # Reproduce the reviewed delta: a GUI-minted token exists only in Keychain.
+    # Loading it for a normal credential exchange must repair the file store
+    # without opening a browser or minting a new session.
+    FileSessionStore().path.unlink()
+    monkeypatch.setattr(
+        manager,
+        "_run_oauth_browser_flow",
+        lambda *args: (_ for _ in ()).throw(AssertionError("unexpected login")),
+    )
+    monkeypatch.setattr(
+        credentials,
+        "_exchange_refresh_token",
+        lambda *args: ("loaded-access-token", time.time() + 3600),
+    )
+
+    credential = manager._get_oauth_client_credential()
+
+    assert credential.token == "loaded-access-token"
+    assert FileSessionStore().load("gws-default") == session
+
+    # A peer-store write failure is diagnostic, not an authentication failure.
+    FileSessionStore().path.unlink()
+    assert manager._file_session_store is not None
+    monkeypatch.setattr(
+        manager._file_session_store,
+        "save",
+        lambda *args: (_ for _ in ()).throw(OSError("read-only file store")),
+    )
+
+    assert manager._load_session_token("gws-default") == session
+    assert "could not mirror session token to file store" in capsys.readouterr().err
 
 
 def test_auth_doctor_reports_credential_absent(

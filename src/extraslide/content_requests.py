@@ -111,7 +111,11 @@ def generate_batch_requests(
         text_google_id = id_mapping.get(change.target_id)
         if text_google_id and change.new_text is not None:
             text_requests = _create_text_update_requests(
-                text_google_id, change.new_text, change.new_runs
+                text_google_id,
+                change.new_text,
+                change.new_runs,
+                change.old_text,
+                change.old_runs,
             )
             requests.extend(text_requests)
 
@@ -235,19 +239,194 @@ def _create_move_request(google_id: str, position: dict[str, float]) -> dict[str
     }
 
 
+def _utf16_len(text: str) -> int:
+    """Length of text in UTF-16 code units (the Slides API index space)."""
+    return sum(2 if ord(ch) > 0xFFFF else 1 for ch in text)
+
+
+def _common_prefix_chars(a: str, b: str) -> int:
+    """Number of leading characters (code points) shared by a and b.
+
+    Trimming whole code points never splits a UTF-16 surrogate pair.
+    """
+    limit = min(len(a), len(b))
+    count = 0
+    while count < limit and a[count] == b[count]:
+        count += 1
+    return count
+
+
+def _common_suffix_chars(a: str, b: str, limit: int) -> int:
+    """Number of trailing characters shared by a and b, capped at limit.
+
+    The cap keeps the suffix from overlapping an already-matched prefix.
+    """
+    count = 0
+    while count < limit and a[len(a) - 1 - count] == b[len(b) - 1 - count]:
+        count += 1
+    return count
+
+
+def _normalize_runs(
+    paragraphs: list[str],
+    runs: list[list[ParsedRun]] | None,
+) -> list[list[ParsedRun]]:
+    """Return runs parallel to paragraphs; plain paragraphs get one unstyled run."""
+    if runs and len(runs) == len(paragraphs):
+        return runs
+    return [[ParsedRun(text=text)] for text in paragraphs]
+
+
+def _delete_text_request(object_id: str, start: int, end: int) -> dict[str, Any]:
+    """Create a deleteText request over a FIXED_RANGE of UTF-16 indices."""
+    return {
+        "deleteText": {
+            "objectId": object_id,
+            "textRange": {
+                "type": "FIXED_RANGE",
+                "startIndex": start,
+                "endIndex": end,
+            },
+        }
+    }
+
+
+def _insert_text_request(object_id: str, index: int, text: str) -> dict[str, Any]:
+    """Create an insertText request at a UTF-16 insertion index."""
+    return {
+        "insertText": {
+            "objectId": object_id,
+            "insertionIndex": index,
+            "text": text,
+        }
+    }
+
+
 def _create_text_update_requests(
     google_id: str,
     new_text: list[str],
     new_runs: list[list[ParsedRun]] | None = None,
+    old_text: list[str] | None = None,
+    old_runs: list[list[ParsedRun]] | None = None,
 ) -> list[dict[str, Any]]:
-    """Create requests to update element text.
+    """Create requests to update element text with minimal range edits.
 
-    Strategy: Delete all existing text, then insert new text.
-    If styled runs are provided, per-run text styles are applied after insert.
+    Strategy (contract C3): trim unchanged paragraphs from both ends,
+    then trim the common prefix/suffix of the changed span, and emit
+    deleteText/insertText scoped to just the changed range. Untouched
+    text is never rewritten, so human-applied character styling survives.
+
+    Paragraphs whose <T> runs changed count as changed: if their text
+    also changed they are replaced wholesale and their run styles
+    reapplied; other paragraphs stay untouched either way.
+
+    All indices count UTF-16 code units (the Slides API index space).
+    Falls back to delete-all + reinsert when pristine text is unknown.
+    """
+    if old_text is None:
+        return _create_full_text_replace_requests(google_id, new_text, new_runs)
+
+    old_paras = old_text
+    new_paras = new_text
+    old_para_runs = _normalize_runs(old_paras, old_runs)
+    new_para_runs = _normalize_runs(new_paras, new_runs)
+    m, n = len(old_paras), len(new_paras)
+
+    def _paragraph_unchanged(i: int, j: int) -> bool:
+        return old_paras[i] == new_paras[j] and old_para_runs[i] == new_para_runs[j]
+
+    limit = min(m, n)
+    prefix = 0
+    while prefix < limit and _paragraph_unchanged(prefix, prefix):
+        prefix += 1
+    suffix = 0
+    while suffix < limit - prefix and _paragraph_unchanged(
+        m - 1 - suffix, n - 1 - suffix
+    ):
+        suffix += 1
+
+    old_mid = "\n".join(old_paras[prefix : m - suffix])
+    new_mid = "\n".join(new_paras[prefix : n - suffix])
+
+    # UTF-16 offset of the changed span within the old combined text.
+    # When every old paragraph matched the prefix, edits append at the end.
+    if prefix == m and m > 0:
+        start = _utf16_len("\n".join(old_paras))
+    else:
+        start = sum(_utf16_len(text) + 1 for text in old_paras[:prefix])
+    end = start + _utf16_len(old_mid)
+
+    styled = any(
+        run.text_style is not None
+        for para_runs in new_para_runs[prefix : n - suffix]
+        for run in para_runs
+    )
+
+    requests: list[dict[str, Any]] = []
+
+    if old_mid == new_mid:
+        # Only run styling changed; the styled ranges are updated below.
+        # TODO: runs whose styling was *removed* (styled in pristine, plain
+        # now) are not reset here -- pristine SML never emits <T> runs yet.
+        pass
+    elif not old_mid:
+        # Pure paragraph insertion: add a separator toward the changed side.
+        if prefix < m:
+            requests.append(_insert_text_request(google_id, start, new_mid + "\n"))
+        elif m > 0:
+            requests.append(_insert_text_request(google_id, start, "\n" + new_mid))
+        else:
+            requests.append(_insert_text_request(google_id, 0, new_mid))
+    elif not new_mid:
+        # Pure paragraph deletion: remove a separator with the paragraphs.
+        if prefix > 0:
+            requests.append(_delete_text_request(google_id, start - 1, end))
+        elif suffix > 0:
+            requests.append(_delete_text_request(google_id, start, end + 1))
+        else:
+            requests.append(_delete_text_request(google_id, start, end))
+    elif styled:
+        # Explicit <T> runs: replace the changed paragraphs wholesale and
+        # reapply their run styles below. Other paragraphs stay untouched.
+        requests.append(_delete_text_request(google_id, start, end))
+        requests.append(_insert_text_request(google_id, start, new_mid))
+    else:
+        # Within the changed paragraphs, trim the common prefix/suffix and
+        # touch only the span that actually differs.
+        a = _common_prefix_chars(old_mid, new_mid)
+        b = _common_suffix_chars(
+            old_mid, new_mid, min(len(old_mid), len(new_mid)) - a
+        )
+        del_start = start + _utf16_len(old_mid[:a])
+        del_end = end - _utf16_len(old_mid[len(old_mid) - b :])
+        inserted = new_mid[a : len(new_mid) - b]
+        if del_end > del_start:
+            requests.append(_delete_text_request(google_id, del_start, del_end))
+        if inserted:
+            requests.append(_insert_text_request(google_id, del_start, inserted))
+
+    if new_runs:
+        requests.extend(
+            _create_run_style_requests(
+                google_id, new_runs, paragraph_range=(prefix, n - suffix)
+            )
+        )
+
+    return requests
+
+
+def _create_full_text_replace_requests(
+    google_id: str,
+    new_text: list[str],
+    new_runs: list[list[ParsedRun]] | None = None,
+) -> list[dict[str, Any]]:
+    """Replace an element's entire text (used when pristine text is unknown).
+
+    Deletes all existing text, then inserts the new text. If styled runs
+    are provided, per-run text styles are applied after insert.
     """
     requests: list[dict[str, Any]] = []
 
-    # Delete all existing text
     requests.append(
         {
             "deleteText": {
@@ -259,7 +438,6 @@ def _create_text_update_requests(
         }
     )
 
-    # Insert new text (join paragraphs with newlines)
     if new_text:
         combined_text = "\n".join(new_text)
         requests.append(
@@ -1608,12 +1786,16 @@ def _create_class_paragraph_style_request(
 def _create_run_style_requests(
     object_id: str,
     runs: list[list[ParsedRun]],
+    paragraph_range: tuple[int, int] | None = None,
 ) -> list[dict[str, Any]]:
     """Create updateTextStyle requests for styled <T> runs.
 
     Assumes the element's text is the paragraphs joined with newlines
     (matching _create_text_insert_requests), and computes FIXED_RANGE
-    indices over that combined text.
+    indices over that combined text in UTF-16 code units.
+
+    When paragraph_range is given, only runs in paragraphs within
+    [start, end) produce requests; other paragraphs stay untouched.
     """
     requests: list[dict[str, Any]] = []
     index = 0
@@ -1622,9 +1804,12 @@ def _create_run_style_requests(
         if para_num > 0:
             index += 1  # Newline separator between paragraphs
 
+        in_range = paragraph_range is None or (
+            paragraph_range[0] <= para_num < paragraph_range[1]
+        )
         for run in para_runs:
-            end_index = index + len(run.text)
-            if run.text_style is not None:
+            end_index = index + _utf16_len(run.text)
+            if run.text_style is not None and in_range:
                 request = _create_class_text_style_request(
                     object_id,
                     run.text_style,

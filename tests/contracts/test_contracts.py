@@ -20,6 +20,8 @@ from pathlib import Path
 import pytest
 
 from extraslide.client import diff_folder
+from extraslide.content_diff import DiffResult, diff_slide_content
+from extraslide.content_requests import generate_batch_requests
 from slidesmith.workspace import materialize
 
 GOLDEN = (
@@ -144,6 +146,222 @@ def test_c2b_style_update_on_existing_element(golden_folder: Path) -> None:
     assert text_update["fields"] == "fontSize"
     assert text_update["style"]["fontSize"] == {"magnitude": 30.0, "unit": "PT"}
     assert len(requests) == 2, "only the two styled properties may be touched"
+
+
+def _text_edit_requests(
+    pristine_sml: str, edited_sml: str
+) -> list[dict[str, object]]:
+    """Diff two single-slide SML strings and generate batchUpdate requests.
+
+    Runs the real parser + differ + request generator offline, mapping
+    element e1 -> g_e1 on slide g_s1.
+    """
+    changes = diff_slide_content(pristine_sml, edited_sml, {}, "01")
+    return generate_batch_requests(
+        DiffResult(changes=changes), {"e1": "g_e1"}, {"01": "g_s1"}
+    )
+
+
+def test_c3_single_word_edit_touches_only_changed_range(golden_folder: Path) -> None:
+    """C3 (offline half): editing one word in a multi-paragraph element must
+    emit range edits scoped to the changed span. A delete-all + reinsert
+    would wipe per-run character styling a human applied in the Slides UI."""
+    id_mapping = json.loads(
+        (golden_folder / "id_mapping.json").read_text(encoding="utf-8")
+    )
+    sml = golden_folder / "slides" / "02" / "content.sml"
+    content = sml.read_text(encoding="utf-8")
+    assert "<P>With Innovation teams</P>" in content
+    sml.write_text(
+        content.replace("<P>With Innovation teams</P>", "<P>With Platform teams</P>"),
+        encoding="utf-8",
+    )
+
+    requests = diff_folder(golden_folder)
+    google_id = id_mapping["e191"]
+
+    blob = json.dumps(requests)
+    assert '"ALL"' not in blob, "range edits must never touch the whole text"
+
+    # Pristine text is "GCCs in India\nWith Innovation teams": paragraph 2
+    # starts at index 14, "With " is 5 units, so "Innovation" spans 19..29.
+    # The untouched paragraph must not appear in any request.
+    assert requests == [
+        {
+            "deleteText": {
+                "objectId": google_id,
+                "textRange": {
+                    "type": "FIXED_RANGE",
+                    "startIndex": 19,
+                    "endIndex": 29,
+                },
+            }
+        },
+        {
+            "insertText": {
+                "objectId": google_id,
+                "insertionIndex": 19,
+                "text": "Platform",
+            }
+        },
+    ]
+
+
+def test_c3_non_bmp_text_indices_count_utf16_units() -> None:
+    """C3 index math: Slides API text ranges count UTF-16 code units, so an
+    emoji (a surrogate pair) before the edit point shifts indices by 2."""
+    pristine = (
+        '<Slide id="s1">'
+        '<TextBox id="e1" x="10" y="10" w="300" h="80">'
+        "<P>Launch \U0001f680 stats</P>"
+        "<P>Revenue grew rapidly</P>"
+        "</TextBox>"
+        "</Slide>"
+    )
+    edited = pristine.replace("grew", "fell")
+
+    requests = _text_edit_requests(pristine, edited)
+
+    # "Launch \U0001f680 stats" is 15 UTF-16 units (14 characters), plus the
+    # newline: paragraph 2 starts at 16 and "Revenue " puts "grew" at 24..28.
+    # Python-character counting would produce 23..27 -- one unit short.
+    assert requests == [
+        {
+            "deleteText": {
+                "objectId": "g_e1",
+                "textRange": {
+                    "type": "FIXED_RANGE",
+                    "startIndex": 24,
+                    "endIndex": 28,
+                },
+            }
+        },
+        {
+            "insertText": {
+                "objectId": "g_e1",
+                "insertionIndex": 24,
+                "text": "fell",
+            }
+        },
+    ]
+
+
+def test_c3_paragraph_insertion_and_deletion_stay_scoped() -> None:
+    """C3: inserting/deleting whole paragraphs (including at the ends) emits
+    one request covering the paragraph plus exactly one newline separator."""
+    pristine = (
+        '<Slide id="s1">'
+        '<TextBox id="e1" x="0" y="0" w="100" h="50">'
+        "<P>Alpha</P><P>Beta</P><P>Gamma</P>"
+        "</TextBox>"
+        "</Slide>"
+    )
+    # Combined pristine text: "Alpha\nBeta\nGamma" (16 units).
+
+    # Append a paragraph at the end: separator goes before the new text.
+    appended = pristine.replace("<P>Gamma</P>", "<P>Gamma</P><P>Delta</P>")
+    assert _text_edit_requests(pristine, appended) == [
+        {"insertText": {"objectId": "g_e1", "insertionIndex": 16, "text": "\nDelta"}}
+    ]
+
+    # Insert a paragraph in the middle: separator goes after the new text.
+    inserted = pristine.replace("<P>Beta</P>", "<P>Beta</P><P>Mid</P>")
+    assert _text_edit_requests(pristine, inserted) == [
+        {"insertText": {"objectId": "g_e1", "insertionIndex": 11, "text": "Mid\n"}}
+    ]
+
+    # Delete the first paragraph: the following separator goes with it.
+    first_deleted = pristine.replace("<P>Alpha</P>", "")
+    assert _text_edit_requests(pristine, first_deleted) == [
+        {
+            "deleteText": {
+                "objectId": "g_e1",
+                "textRange": {"type": "FIXED_RANGE", "startIndex": 0, "endIndex": 6},
+            }
+        }
+    ]
+
+    # Delete a middle paragraph: the preceding separator goes with it.
+    middle_deleted = pristine.replace("<P>Beta</P>", "")
+    assert _text_edit_requests(pristine, middle_deleted) == [
+        {
+            "deleteText": {
+                "objectId": "g_e1",
+                "textRange": {"type": "FIXED_RANGE", "startIndex": 5, "endIndex": 10},
+            }
+        }
+    ]
+
+
+def test_c3_styled_runs_replace_only_their_paragraph() -> None:
+    """C3 x run styling: explicit <T class> runs may rewrite their own
+    paragraph (text + styles), but other paragraphs stay untouched."""
+    pristine = (
+        '<Slide id="s1">'
+        '<TextBox id="e1" x="0" y="0" w="100" h="50">'
+        "<P>Keep me</P><P>Make this bold</P>"
+        "</TextBox>"
+        "</Slide>"
+    )
+
+    # Styling added without a text change: only updateTextStyle, no rewrite.
+    # "Keep me\n" is 8 units; "Make " puts "this" at 13..17.
+    styled_only = pristine.replace(
+        "<P>Make this bold</P>", '<P>Make <T class="bold">this</T> bold</P>'
+    )
+    assert _text_edit_requests(pristine, styled_only) == [
+        {
+            "updateTextStyle": {
+                "objectId": "g_e1",
+                "textRange": {
+                    "type": "FIXED_RANGE",
+                    "startIndex": 13,
+                    "endIndex": 17,
+                },
+                "style": {"bold": True},
+                "fields": "bold",
+            }
+        }
+    ]
+
+    # Text and styling changed together: that paragraph is replaced wholesale
+    # and its run styles reapplied; "Keep me" must not appear in any request.
+    restyled = pristine.replace(
+        "<P>Make this bold</P>", '<P>New <T class="bold">bold</T> text</P>'
+    )
+    requests = _text_edit_requests(pristine, restyled)
+    assert json.dumps(requests).count("Keep me") == 0
+    assert requests == [
+        {
+            "deleteText": {
+                "objectId": "g_e1",
+                "textRange": {
+                    "type": "FIXED_RANGE",
+                    "startIndex": 8,
+                    "endIndex": 22,
+                },
+            }
+        },
+        {
+            "insertText": {
+                "objectId": "g_e1",
+                "insertionIndex": 8,
+                "text": "New bold text",
+            }
+        },
+        {
+            "updateTextStyle": {
+                "objectId": "g_e1",
+                "textRange": {
+                    "type": "FIXED_RANGE",
+                    "startIndex": 12,
+                    "endIndex": 16,
+                },
+                "style": {"bold": True},
+                "fields": "bold",
+            }
+        },
+    ]
 
 
 def test_c6_materialize_is_deterministic(tmp_path: Path) -> None:

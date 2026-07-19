@@ -68,6 +68,10 @@ class Change:
     # For TEXT_UPDATE: new text
     new_text: list[str] | None = None
 
+    # For TEXT_UPDATE: pristine text/runs (basis for minimal range edits)
+    old_text: list[str] | None = None
+    old_runs: list[list[ParsedRun]] | None = None
+
     # For CREATE/STYLE_UPDATE: class-derived styles from the edited element
     new_styles: ElementStyles | None = None
 
@@ -376,6 +380,8 @@ def _compare_elements(
                 slide_index=slide_idx,
                 new_text=edited.paragraphs,
                 new_runs=edited.runs if edited.runs else None,
+                old_text=pristine.paragraphs,
+                old_runs=pristine.runs if pristine.runs else None,
             )
         )
 

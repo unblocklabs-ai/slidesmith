@@ -417,7 +417,9 @@ class SlidesClient:
         same files as pull() in a staging directory, then promote them into the
         workspace. An SML file that already byte-matches the generated version
         is deliberately left untouched; a mismatch is replaced by the remote-
-        derived version so the working tree and pristine snapshot agree.
+        derived version so the working tree and pristine snapshot agree. The
+        pull-time QA baseline is deliberately preserved: it is a ledger of
+        findings introduced since the last explicit pull.
         """
         refreshed = await self._transport.get_presentation(presentation_id)
         result = process_presentation(refreshed.data)
@@ -455,10 +457,6 @@ class SlidesClient:
             json.dumps(refreshed.data, indent=2, ensure_ascii=False),
             encoding="utf-8",
         )
-
-        from extraslide.qa import record_qa_baseline
-
-        record_qa_baseline(folder_path)
 
     def _read_base_raw(self, folder_path: Path) -> dict[str, Any] | None:
         """Read the pristine base raw API tree, if this folder has one.

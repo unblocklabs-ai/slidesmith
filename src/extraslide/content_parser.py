@@ -177,7 +177,7 @@ def _parse_element(elem: ET.Element, parent_id: str | None) -> ParsedElement:
     h = _parse_float(elem.get("h"))
 
     # Parse the class attribute into typed styles (fails loudly on unknown classes)
-    styles = parse_element_classes(elem.get("class"), clean_id)
+    styles = parse_element_classes(elem.get("class"), clean_id, elem.tag)
 
     # Parse text paragraphs (plain text or nested <T> runs)
     paragraphs: list[str] = []
@@ -243,7 +243,9 @@ def _parse_paragraph_runs(p_elem: ET.Element, element_id: str) -> list[ParsedRun
 
 
 def parse_element_classes(
-    class_str: str | None, element_id: str
+    class_str: str | None,
+    element_id: str,
+    element_tag: str | None = None,
 ) -> ElementStyles | None:
     """Parse an element's class attribute into typed styles.
 
@@ -274,6 +276,11 @@ def parse_element_classes(
         if parsed_alignment := parse_content_alignment_class(cls):
             content_alignment = parsed_alignment
         elif parse_fill_class(cls) is not None:
+            if element_tag == "Line":
+                raise ValueError(
+                    f"Invalid class '{cls}' on Line element '{element_id}': "
+                    "fill classes are not supported on Line elements"
+                )
             fill_classes.append(cls)
         elif parse_stroke_classes([cls]) is not None:
             stroke_classes.append(cls)

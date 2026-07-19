@@ -57,7 +57,7 @@ def _finding_from_dict(data: dict[str, Any]) -> Finding:
 
 
 def record_qa_baseline(folder: str | Path) -> Path:
-    """Persist the current offline lint findings under ``.pristine``."""
+    """Persist the pull-time offline lint findings under ``.pristine``."""
     folder_path = Path(folder)
     baseline_path = folder_path / ".pristine" / QA_BASELINE_FILE
     baseline_path.parent.mkdir(parents=True, exist_ok=True)
@@ -215,7 +215,8 @@ def print_report(
 
     output(
         f"{len(findings)} findings ({len(new)} new, "
-        f"{len(pre_existing)} pre-existing, {len(resolved)} resolved)"
+        f"{len(pre_existing)} pre-existing, {len(resolved)} resolved; "
+        "NEW = since last pull)"
     )
     for finding in findings:
         label = "PRE-EXISTING" if _finding_key(finding) in baseline_by_key else "NEW"

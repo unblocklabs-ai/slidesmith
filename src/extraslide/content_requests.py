@@ -153,10 +153,18 @@ def generate_batch_requests(
     for change in style_updates:
         style_google_id = id_mapping.get(change.target_id)
         if style_google_id and change.new_styles:
+            edited_element = diff_result.edited_elements.get(change.target_id)
+            element_tag = change.metadata.get("tag")
+            if element_tag is None and edited_element is not None:
+                element_tag = edited_element.tag
+            if element_tag is None and _pristine_element_types is not None:
+                element_type = _pristine_element_types.get(style_google_id)
+                element_tag = "Line" if element_type == "LINE" else None
             style_requests = _create_class_style_requests(
                 style_google_id,
                 change.new_styles,
                 has_text=bool(change.new_text),
+                element_tag=element_tag,
             )
             requests.extend(style_requests)
             if (
@@ -1392,27 +1400,40 @@ def _apply_line_style_requests(
 
     stroke = style.get("stroke")
     if stroke:
-        color = stroke.get("color", "#000000")
-        weight = stroke.get("weight", 1)
-        dash_style = stroke.get("dashStyle", "SOLID")
-
-        requests.append(
-            {
-                "updateLineProperties": {
-                    "objectId": object_id,
-                    "lineProperties": {
-                        "lineFill": {
-                            "solidFill": {
-                                "color": _parse_color(color),
-                            },
-                        },
-                        "weight": {"magnitude": pt_to_emu(weight), "unit": "EMU"},
-                        "dashStyle": dash_style,
-                    },
-                    "fields": "lineFill,weight,dashStyle",
+        line_properties: dict[str, Any] = {}
+        fields: list[str] = []
+        if stroke.get("type") == "none":
+            line_properties["lineFill"] = {
+                "solidFill": {"color": {"rgbColor": {}}, "alpha": 0.0}
+            }
+            fields.append("lineFill.solidFill")
+        elif "color" in stroke:
+            line_properties["lineFill"] = {
+                "solidFill": {
+                    "color": _parse_color(stroke["color"]),
+                    "alpha": stroke.get("alpha", 1.0),
                 }
             }
-        )
+            fields.append("lineFill.solidFill")
+        if "weight" in stroke:
+            line_properties["weight"] = {
+                "magnitude": pt_to_emu(stroke["weight"]),
+                "unit": "EMU",
+            }
+            fields.append("weight")
+        if "dashStyle" in stroke:
+            line_properties["dashStyle"] = stroke["dashStyle"]
+            fields.append("dashStyle")
+        if fields:
+            requests.append(
+                {
+                    "updateLineProperties": {
+                        "objectId": object_id,
+                        "lineProperties": line_properties,
+                        "fields": ",".join(fields),
+                    }
+                }
+            )
 
     return requests
 
@@ -1583,6 +1604,7 @@ def _create_class_style_requests(
     styles: ElementStyles,
     *,
     has_text: bool,
+    element_tag: str | None = None,
 ) -> list[dict[str, Any]]:
     """Generate requests applying class-derived styles to an existing element.
 
@@ -1591,6 +1613,12 @@ def _create_class_style_requests(
     element has no text (updateTextStyle on empty text is an API error).
     """
     requests: list[dict[str, Any]] = []
+
+    if element_tag == "Line":
+        line_request = _create_class_line_style_request(object_id, styles.stroke)
+        if line_request:
+            requests.append(line_request)
+        return requests
 
     requests.extend(_create_class_shape_style_requests(object_id, styles))
 
@@ -1722,6 +1750,54 @@ def _create_class_outline_request(
             "shapeProperties": {
                 "outline": outline,
             },
+            "fields": ",".join(fields),
+        }
+    }
+
+
+def _create_class_line_style_request(
+    object_id: str,
+    stroke: Stroke | None,
+) -> dict[str, Any] | None:
+    """Create one field-masked line update from authored stroke classes."""
+    if stroke is None or stroke.state == PropertyState.INHERIT:
+        return None
+
+    line_properties: dict[str, Any] = {}
+    fields: list[str] = []
+
+    if stroke.state == PropertyState.NOT_RENDERED:
+        line_properties["lineFill"] = {
+            "solidFill": {"color": {"rgbColor": {}}, "alpha": 0.0}
+        }
+        fields.append("lineFill.solidFill")
+    elif stroke.color:
+        line_properties["lineFill"] = {
+            "solidFill": {
+                "color": stroke.color.to_api(),
+                "alpha": stroke.color.alpha,
+            }
+        }
+        fields.append("lineFill.solidFill")
+
+    if stroke.weight_pt is not None:
+        line_properties["weight"] = {
+            "magnitude": pt_to_emu(stroke.weight_pt),
+            "unit": "EMU",
+        }
+        fields.append("weight")
+
+    if stroke.dash_style is not None:
+        line_properties["dashStyle"] = stroke.dash_style.value
+        fields.append("dashStyle")
+
+    if not fields:
+        return None
+
+    return {
+        "updateLineProperties": {
+            "objectId": object_id,
+            "lineProperties": line_properties,
             "fields": ",".join(fields),
         }
     }
@@ -2127,11 +2203,18 @@ def _create_element_requests(
             )
         )
 
-    # Apply class-derived shape styling (fill, stroke)
+    # Apply class-derived element styling (shape fill/outline or line stroke)
     if change.new_styles:
-        requests.extend(
-            _create_class_shape_style_requests(new_object_id, change.new_styles)
-        )
+        if shape_type == "LINE":
+            line_request = _create_class_line_style_request(
+                new_object_id, change.new_styles.stroke
+            )
+            if line_request:
+                requests.append(line_request)
+        else:
+            requests.extend(
+                _create_class_shape_style_requests(new_object_id, change.new_styles)
+            )
 
     # Add text if provided
     if change.new_text:

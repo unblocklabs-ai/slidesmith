@@ -363,7 +363,7 @@ async def test_immediate_second_push_is_a_noop_against_refreshed_pristine(
 ) -> None:
     qa_baseline = ws.folder / ".pristine" / "qa-baseline.json"
     assert qa_baseline.exists(), "pull must record the offline QA snapshot"
-    qa_baseline.unlink()
+    baseline_before_push = qa_baseline.read_bytes()
     recolor_e121_locally(ws.folder, "#00ff00")
 
     await ws.client.push(ws.folder)
@@ -377,7 +377,7 @@ async def test_immediate_second_push_is_a_noop_against_refreshed_pristine(
     )
     assert metadata["revisionId"] == "rev-after-push-1"
     assert base["revisionId"] == "rev-after-push-1"
-    assert qa_baseline.exists(), "post-push refresh must replace the QA snapshot"
+    assert qa_baseline.read_bytes() == baseline_before_push
 
     # Re-fetch regeneration is authoritative and now restores the explicit
     # API fill as the canonical class-bearing SML representation.

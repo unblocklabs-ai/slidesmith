@@ -17,11 +17,12 @@ import re
 from typing import TYPE_CHECKING, Any
 from xml.sax.saxutils import escape
 
+from extraslide.classes import ParagraphStyle
 from extraslide.style_extractor import (
     extract_sml_element_classes,
     extract_sml_text_classes,
 )
-from extraslide.classes import ParagraphStyle
+from extraslide.units import format_pt
 
 # Pattern to match XML-invalid control characters (except tab, newline, carriage return)
 _CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
@@ -265,10 +266,10 @@ def _build_attributes(node: RenderNode) -> str:
 
     # Absolute position for ALL elements
     bounds = node.bounds
-    attrs.append(f'x="{round(bounds.x, 1)}"')
-    attrs.append(f'y="{round(bounds.y, 1)}"')
-    attrs.append(f'w="{round(bounds.w, 1)}"')
-    attrs.append(f'h="{round(bounds.h, 1)}"')
+    attrs.append(f'x="{format_pt(bounds.x)}"')
+    attrs.append(f'y="{format_pt(bounds.y)}"')
+    attrs.append(f'w="{format_pt(bounds.w)}"')
+    attrs.append(f'h="{format_pt(bounds.h)}"')
 
     classes = extract_sml_element_classes(node)
     if classes:

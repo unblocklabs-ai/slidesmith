@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import copy
 import json
+import re
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
@@ -10,8 +12,13 @@ from typing import Any
 import httpx
 import pytest
 
+from extraslide.client import SlidesClient
 from extraslide.qa import check_folder, lint_folder, record_qa_baseline
-from extraslide.transport import GoogleSlidesTransport
+from extraslide.transport import (
+    GoogleSlidesTransport,
+    PresentationData,
+    Transport,
+)
 from slidesmith import cli
 from slidesmith.workspace import materialize
 
@@ -184,7 +191,9 @@ def test_check_labels_new_pre_existing_and_resolved_findings(
 
     output: list[str] = []
     check_folder(qa_folder, output=output.append)
-    assert output[0] == "1 findings (0 new, 1 pre-existing, 0 resolved)"
+    assert output[0] == (
+        "1 findings (0 new, 1 pre-existing, 0 resolved; NEW = since last pull)"
+    )
     assert output[1].startswith("[PRE-EXISTING] [WARNING] OUT_OF_BOUNDS")
 
     _replace_slides(
@@ -194,9 +203,130 @@ def test_check_labels_new_pre_existing_and_resolved_findings(
     )
     output = []
     check_folder(qa_folder, output=output.append)
-    assert output[0] == "1 findings (1 new, 0 pre-existing, 1 resolved)"
+    assert output[0] == (
+        "1 findings (1 new, 0 pre-existing, 1 resolved; NEW = since last pull)"
+    )
     assert any(line.startswith("[NEW] [WARNING] OVERLAP") for line in output)
     assert any(line.startswith("[RESOLVED] [WARNING] OUT_OF_BOUNDS") for line in output)
+
+
+def _qa_cycle5_presentation() -> dict[str, Any]:
+    def rect(object_id: str, x: float, y: float, w: float, h: float) -> dict[str, Any]:
+        return {
+            "objectId": object_id,
+            "size": {
+                "width": {"magnitude": w * 12700, "unit": "EMU"},
+                "height": {"magnitude": h * 12700, "unit": "EMU"},
+            },
+            "transform": {
+                "scaleX": 1,
+                "scaleY": 1,
+                "translateX": x * 12700,
+                "translateY": y * 12700,
+                "unit": "EMU",
+            },
+            "shape": {"shapeType": "RECTANGLE"},
+        }
+
+    return {
+        "presentationId": "qa-cycle5",
+        "revisionId": "rev-pull",
+        "title": "QA cycle 5",
+        "pageSize": {
+            "width": {"magnitude": 720 * 12700, "unit": "EMU"},
+            "height": {"magnitude": 405 * 12700, "unit": "EMU"},
+        },
+        "slides": [
+            {
+                "objectId": "google_slide",
+                "pageElements": [
+                    rect("shape_a", 10, 20, 100, 100),
+                    rect("shape_b", 200, 20, 100, 100),
+                    rect("old_oob", 700, 300, 40, 40),
+                ],
+            }
+        ],
+    }
+
+
+class _QaCycle5Transport(Transport):
+    def __init__(self, data: dict[str, Any]) -> None:
+        self.data = data
+        self.batch_calls = 0
+
+    async def get_presentation(self, presentation_id: str) -> PresentationData:
+        return PresentationData(presentation_id, copy.deepcopy(self.data))
+
+    async def batch_update(
+        self,
+        presentation_id: str,
+        requests: list[dict[str, Any]],
+        required_revision_id: str | None = None,
+    ) -> dict[str, Any]:
+        self.batch_calls += 1
+        for request in requests:
+            update = request.get("updatePageElementTransform")
+            if update is None:
+                continue
+            for element in self.data["slides"][0]["pageElements"]:
+                if element["objectId"] == update["objectId"]:
+                    element["transform"] = copy.deepcopy(update["transform"])
+                    break
+        self.data["revisionId"] = f"rev-after-push-{self.batch_calls}"
+        return {"replies": [{}] * len(requests)}
+
+    async def close(self) -> None:
+        pass
+
+
+async def test_push_refresh_keeps_new_qa_findings_new_until_next_pull(
+    tmp_path: Path,
+) -> None:
+    data = _qa_cycle5_presentation()
+    transport = _QaCycle5Transport(data)
+    client = SlidesClient(transport)
+    await client.pull(data["presentationId"], tmp_path, save_raw=False)
+    folder = tmp_path / data["presentationId"]
+
+    baseline_path = folder / ".pristine" / "qa-baseline.json"
+    baseline_before_push = baseline_path.read_bytes()
+    baseline = json.loads(baseline_before_push)["findings"]
+    assert len(baseline) == 1
+    assert baseline[0]["rule"] == "OUT_OF_BOUNDS"
+
+    sml = folder / "slides" / "01" / "content.sml"
+    content = sml.read_text(encoding="utf-8")
+    content = re.sub(
+        r'(id="shape_a" x=")10(?:\.0)?(")',
+        r'\g<1>170\2',
+        content,
+        count=1,
+    )
+    sml.write_text(content, encoding="utf-8")
+
+    before_push: list[str] = []
+    check_folder(folder, output=before_push.append)
+    assert any(
+        line.startswith("[NEW] [WARNING] OVERLAP") for line in before_push
+    )
+
+    await client.push(folder)
+
+    assert baseline_path.read_bytes() == baseline_before_push
+    after_push: list[str] = []
+    check_folder(folder, output=after_push.append)
+    assert any(
+        line.startswith("[NEW] [WARNING] OVERLAP") for line in after_push
+    )
+
+    await client.pull(data["presentationId"], tmp_path, save_raw=False)
+    after_pull: list[str] = []
+    check_folder(folder, output=after_pull.append)
+    assert not any(line.startswith("[NEW]") for line in after_pull)
+    assert any(
+        line.startswith("[PRE-EXISTING] [WARNING] OVERLAP")
+        for line in after_pull
+    )
 
 
 def test_cli_no_thumbnails_uses_no_auth_or_transport(

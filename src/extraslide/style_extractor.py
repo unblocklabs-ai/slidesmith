@@ -23,6 +23,11 @@ def extract_sml_element_classes(node: RenderNode) -> list[str]:
     property is promoted to the parser-supported element class scope only
     when that exact class is explicitly present on every paragraph.
     """
+    line = node.element.get("line")
+    if line is not None:
+        stroke = _stroke_from_line_properties(line.get("lineProperties", {}))
+        return stroke.to_classes() if stroke else []
+
     shape = node.element.get("shape")
     if not shape:
         return []
@@ -277,22 +282,32 @@ def _extract_stroke(shape_props: dict[str, Any]) -> dict[str, Any] | None:
 
 def _extract_line_stroke(line_props: dict[str, Any]) -> dict[str, Any] | None:
     """Extract stroke properties for lines."""
-    line_fill = line_props.get("lineFill", {})
-    solid_fill = line_fill.get("solidFill", {})
-
+    stroke: dict[str, Any] = {}
+    solid_fill = line_props.get("lineFill", {}).get("solidFill", {})
     if solid_fill:
         color = _extract_color(solid_fill.get("color", {}))
-        weight = line_props.get("weight", {})
-        weight_pt = emu_to_pt(weight.get("magnitude", 0)) if weight else 0
-        dash_style = line_props.get("dashStyle", "SOLID")
+        stroke["color"] = color
+        stroke["alpha"] = solid_fill.get("alpha", 1)
+    if "weight" in line_props:
+        weight = line_props["weight"]
+        stroke["weight"] = round(emu_to_pt(weight.get("magnitude", 0)), 2)
+    if "dashStyle" in line_props:
+        stroke["dashStyle"] = line_props["dashStyle"]
+    return stroke or None
 
-        return {
-            "color": color,
-            "weight": round(weight_pt, 2),
-            "dashStyle": dash_style,
-        }
 
-    return None
+def _stroke_from_line_properties(line_props: dict[str, Any]) -> Stroke | None:
+    """Convert explicit LineProperties keys through the shared stroke model."""
+    if not line_props:
+        return None
+    outline_equivalent: dict[str, Any] = {}
+    if "lineFill" in line_props:
+        outline_equivalent["outlineFill"] = line_props["lineFill"]
+    if "weight" in line_props:
+        outline_equivalent["weight"] = line_props["weight"]
+    if "dashStyle" in line_props:
+        outline_equivalent["dashStyle"] = line_props["dashStyle"]
+    return Stroke.from_api(outline_equivalent)
 
 
 def _extract_shadow(shape_props: dict[str, Any]) -> dict[str, Any] | None:

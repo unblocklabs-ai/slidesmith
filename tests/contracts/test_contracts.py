@@ -36,6 +36,7 @@ from extraslide.content_diff import DiffResult, diff_slide_content
 from extraslide.content_requests import generate_batch_requests
 from extraslide.bounds import BoundingBox
 from extraslide.content_generator import generate_slide_content
+from extraslide.content_parser import parse_slide_content
 from extraslide.render_tree import RenderNode
 from slidesmith.workspace import materialize
 
@@ -166,6 +167,121 @@ def test_styled_pull_forward_classes_use_existing_reverse_mappings() -> None:
 
     assert ContentAlignment.MIDDLE.to_class() == "content-align-middle"
     assert parse_content_alignment_class("content-align-middle") is ContentAlignment.MIDDLE
+
+
+def test_styled_line_create_uses_line_api_and_round_trips() -> None:
+    authored = (
+        '<Slide id="s1"><Line id="x" x="10" y="20" w="100" h="0.75" '
+        'class="stroke-#5df2b2/40 stroke-w-0.75 stroke-solid" /></Slide>'
+    )
+
+    changes = diff_slide_content('<Slide id="s1" />', authored, {}, "01")
+    requests = generate_batch_requests(
+        DiffResult(changes=changes), {}, {"01": "google_slide"}
+    )
+
+    assert len(requests) == 2
+    assert requests[0]["createLine"]["lineCategory"] == "STRAIGHT"
+    assert "createShape" not in requests[0]
+    line_update = requests[1]["updateLineProperties"]
+    assert line_update["objectId"] == requests[0]["createLine"]["objectId"]
+    assert line_update["fields"] == "lineFill.solidFill,weight,dashStyle"
+    assert line_update["lineProperties"] == {
+        "lineFill": {
+            "solidFill": {
+                "color": {
+                    "rgbColor": {
+                        "red": 93 / 255,
+                        "green": 242 / 255,
+                        "blue": 178 / 255,
+                    }
+                },
+                "alpha": 0.4,
+            }
+        },
+        "weight": {"magnitude": 9525, "unit": "EMU"},
+        "dashStyle": "SOLID",
+    }
+
+
+def test_styled_line_pull_and_style_update_use_stroke_classes() -> None:
+    node = RenderNode(
+        clean_id="line1",
+        bounds=BoundingBox(10, 20, 100, 0.75),
+        element={
+            "objectId": "google_line",
+            "line": {
+                "lineProperties": {
+                    "lineFill": {
+                        "solidFill": {
+                            "color": {
+                                "rgbColor": {
+                                    "red": 93 / 255,
+                                    "green": 242 / 255,
+                                    "blue": 178 / 255,
+                                }
+                            },
+                            "alpha": 0.4,
+                        }
+                    },
+                    "weight": {"magnitude": 9525, "unit": "EMU"},
+                    "dashStyle": "SOLID",
+                }
+            },
+        },
+    )
+
+    pulled = generate_slide_content([node])
+    assert (
+        'class="stroke-#5df2b2/40 stroke-w-0.75 stroke-solid"' in pulled
+    )
+    assert diff_slide_content(pulled, pulled, {}, "01") == []
+
+    edited = pulled.replace("stroke-solid", "stroke-dash")
+    changes = diff_slide_content(pulled, edited, {}, "01")
+    requests = generate_batch_requests(
+        DiffResult(changes=changes),
+        {"line1": "google_line"},
+        {"01": "google_slide"},
+    )
+    assert len(requests) == 1
+    assert "updateShapeProperties" not in requests[0]
+    assert requests[0]["updateLineProperties"]["fields"] == (
+        "lineFill.solidFill,weight,dashStyle"
+    )
+
+
+def test_fill_class_on_line_fails_loudly() -> None:
+    with pytest.raises(
+        ValueError,
+        match=r"Invalid class 'fill-#ffffff' on Line element 'x'",
+    ):
+        parse_slide_content(
+            '<Slide id="s1"><Line id="x" x="0" y="0" w="10" h="1" '
+            'class="fill-#ffffff" /></Slide>'
+        )
+
+
+def test_sml_geometry_preserves_two_decimal_point_precision() -> None:
+    node = RenderNode(
+        clean_id="precise",
+        bounds=BoundingBox(64.0, 0.75, 201.93, 0.75),
+        element={
+            "objectId": "google_precise",
+            "shape": {"shapeType": "RECTANGLE"},
+        },
+    )
+
+    first = generate_slide_content([node])
+    second = generate_slide_content([node])
+    assert 'x="64"' in first
+    assert 'y="0.75"' in first
+    assert 'w="201.93"' in first
+    assert 'h="0.75"' in first
+    assert first == second
+    parsed = parse_slide_content(first)[0]
+    assert (parsed.x, parsed.y, parsed.w, parsed.h) == (64.0, 0.75, 201.93, 0.75)
+    assert diff_slide_content(first, first, {}, "01") == []
 
 
 def test_content_alignment_existing_element_is_one_field_masked_request(

@@ -325,11 +325,13 @@ fixes:
 - `TEXT_OVERFLOW`: approximate wrapped text height exceeds box height by more
   than the 10% tolerance.
 
-Pull and every successful post-push refresh save the offline findings snapshot
-to `.pristine/qa-baseline.json`. Later checks label current findings `NEW` or
+Only an explicit pull saves the offline findings snapshot to
+`.pristine/qa-baseline.json`; a post-push pristine refresh does not change that
+ledger. Later checks label current findings `NEW` (since the last pull) or
 `PRE-EXISTING`, list findings that disappeared as `RESOLVED`, and summarize the
-counts. Findings are warnings by default; `--strict` exits 1 when any current
-finding exists.
+counts. Findings introduced by an edit therefore stay `NEW` after push until the
+next explicit pull establishes a new reference point. Findings are warnings by
+default; `--strict` exits 1 when any current finding exists.
 They are prompts for judgment, not automatic proof of a defect. Decorative
 bleed is intentional when the element is clearly non-content (for example, a
 large accent circle crossing one edge), the visible crop matches the design,

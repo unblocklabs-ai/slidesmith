@@ -590,6 +590,7 @@ def _compare_elements(
                 new_paragraph_styles=edited.paragraph_styles
                 if edited.paragraph_styles
                 else None,
+                metadata={"tag": edited.tag},
             )
         )
 

@@ -1,6 +1,11 @@
 """extraslide - Edit Google Slides through SML (Slide Markup Language)."""
 
-from extraslide.client import SlidesClient, diff_folder, pull_presentation
+from extraslide.client import (
+    ConflictError,
+    SlidesClient,
+    diff_folder,
+    pull_presentation,
+)
 from extraslide.transport import (
     APIError,
     AuthenticationError,
@@ -15,6 +20,7 @@ from extraslide.transport import (
 __all__ = [
     "APIError",
     "AuthenticationError",
+    "ConflictError",
     "GoogleSlidesTransport",
     "LocalFileTransport",
     "NotFoundError",

@@ -56,6 +56,16 @@ class PresentationData:
     presentation_id: str
     data: dict[str, Any]
 
+    @property
+    def revision_id(self) -> str | None:
+        """The presentation's revisionId from the raw API response.
+
+        Opaque write-guard token for writeControl.requiredRevisionId.
+        None when the source data carries no revision (e.g. old fixtures).
+        """
+        revision = self.data.get("revisionId")
+        return revision if isinstance(revision, str) and revision else None
+
 
 class Transport(ABC):
     """Abstract base class for presentation data transport.
@@ -78,13 +88,19 @@ class Transport(ABC):
 
     @abstractmethod
     async def batch_update(
-        self, presentation_id: str, requests: list[dict[str, Any]]
+        self,
+        presentation_id: str,
+        requests: list[dict[str, Any]],
+        required_revision_id: str | None = None,
     ) -> dict[str, Any]:
         """Send batch update requests to the presentation.
 
         Args:
             presentation_id: The presentation identifier
             requests: List of Google Slides API request objects
+            required_revision_id: If set, the write is guarded with
+                writeControl.requiredRevisionId and fails (400) when the
+                presentation has been revised since this revision was read.
 
         Returns:
             API response from batchUpdate
@@ -137,11 +153,16 @@ class GoogleSlidesTransport(Transport):
         )
 
     async def batch_update(
-        self, presentation_id: str, requests: list[dict[str, Any]]
+        self,
+        presentation_id: str,
+        requests: list[dict[str, Any]],
+        required_revision_id: str | None = None,
     ) -> dict[str, Any]:
         """Send batch update requests to Google Slides API."""
         url = f"{API_BASE}/{presentation_id}:batchUpdate"
-        body = {"requests": requests}
+        body: dict[str, Any] = {"requests": requests}
+        if required_revision_id is not None:
+            body["writeControl"] = {"requiredRevisionId": required_revision_id}
 
         try:
             response = await self._client.post(url, json=body)
@@ -218,11 +239,18 @@ class LocalFileTransport(Transport):
         )
 
     async def batch_update(
-        self, presentation_id: str, requests: list[dict[str, Any]]
+        self,
+        presentation_id: str,
+        requests: list[dict[str, Any]],
+        required_revision_id: str | None = None,
     ) -> dict[str, Any]:
         """Record batch update requests (for testing)."""
         self._batch_updates.append(
-            {"presentation_id": presentation_id, "requests": requests}
+            {
+                "presentation_id": presentation_id,
+                "requests": requests,
+                "required_revision_id": required_revision_id,
+            }
         )
         # Return a mock response
         return {"replies": [{}] * len(requests)}

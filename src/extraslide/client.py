@@ -9,6 +9,7 @@ Provides the `pull`, `diff`, and `push` methods for the presentation workflow:
 from __future__ import annotations
 
 import json
+import sys
 import zipfile
 from pathlib import Path
 from typing import Any
@@ -17,7 +18,7 @@ from extraslide.content_diff import diff_presentation
 from extraslide.content_parser import parse_slide_content
 from extraslide.content_requests import generate_batch_requests
 from extraslide.slide_processor import process_presentation, write_new_format
-from extraslide.transport import Transport
+from extraslide.transport import APIError, Transport
 
 # File and directory names
 PRESENTATION_FILE = "presentation.json"
@@ -27,6 +28,125 @@ SLIDES_DIR = "slides"
 RAW_DIR = ".raw"
 PRISTINE_DIR = ".pristine"
 PRISTINE_ZIP = "presentation.zip"
+PRISTINE_BASE_FILE = "base.json"
+
+
+class ConflictError(Exception):
+    """A push would collide with edits made in Google Slides since the pull.
+
+    Attributes:
+        conflicts: List of (clean_id, description) pairs, one per element this
+            push would touch that also changed (or was deleted) remotely.
+            Empty when the conflict was detected by the API's revision guard
+            rather than the pre-push comparison.
+    """
+
+    def __init__(
+        self, message: str, conflicts: list[tuple[str, str]] | None = None
+    ) -> None:
+        super().__init__(message)
+        self.conflicts: list[tuple[str, str]] = conflicts or []
+
+
+def _index_presentation(
+    data: dict[str, Any],
+) -> tuple[dict[str, dict[str, Any]], set[str]]:
+    """Index a raw presentation JSON tree by objectId.
+
+    Returns:
+        (elements, page_ids) where elements maps every page element's
+        objectId to its raw JSON subtree (recursing into groups) across
+        slides, layouts, and masters, and page_ids is the set of page
+        objectIds (slides/layouts/masters).
+    """
+    elements: dict[str, dict[str, Any]] = {}
+    page_ids: set[str] = set()
+
+    def walk(element: dict[str, Any]) -> None:
+        object_id = element.get("objectId")
+        if object_id:
+            elements[object_id] = element
+        for child in element.get("elementGroup", {}).get("children", []):
+            walk(child)
+
+    for page_kind in ("slides", "layouts", "masters"):
+        for page in data.get(page_kind, []) or []:
+            page_id = page.get("objectId")
+            if page_id:
+                page_ids.add(page_id)
+            for element in page.get("pageElements", []) or []:
+                walk(element)
+
+    return elements, page_ids
+
+
+def _collect_request_object_ids(
+    requests: list[dict[str, Any]],
+) -> tuple[set[str], set[str]]:
+    """Collect the Google objectIds a batch of requests will touch.
+
+    Returns:
+        (object_ids, page_ids): element-level ids referenced by the requests,
+        and page ids referenced as creation targets (elementProperties.
+        pageObjectId). Ids of objects created by the same batch are included
+        too; callers filter to ids that exist in the pristine base.
+    """
+    object_ids: set[str] = set()
+    page_ids: set[str] = set()
+
+    for request in requests:
+        for body in request.values():
+            if not isinstance(body, dict):
+                continue
+            for key in ("objectId", "groupObjectId"):
+                if body.get(key):
+                    object_ids.add(body[key])
+            for child_id in body.get("childrenObjectIds", []) or []:
+                object_ids.add(child_id)
+            element_properties = body.get("elementProperties")
+            if isinstance(element_properties, dict) and element_properties.get(
+                "pageObjectId"
+            ):
+                page_ids.add(element_properties["pageObjectId"])
+
+    return object_ids, page_ids
+
+
+def _classify_element_change(
+    base_element: dict[str, Any], remote_element: dict[str, Any]
+) -> str | None:
+    """Describe how an element changed remotely, or None if it did not.
+
+    Compares the raw JSON subtrees and buckets differences into geometry
+    (transform/size), text (shape.text), and properties (everything else).
+    """
+    if base_element == remote_element:
+        return None
+
+    kinds: list[str] = []
+    if base_element.get("transform") != remote_element.get(
+        "transform"
+    ) or base_element.get("size") != remote_element.get("size"):
+        kinds.append("geometry")
+
+    if base_element.get("shape", {}).get("text") != remote_element.get(
+        "shape", {}
+    ).get("text"):
+        kinds.append("text")
+
+    def strip(element: dict[str, Any]) -> dict[str, Any]:
+        stripped = {
+            k: v for k, v in element.items() if k not in ("transform", "size")
+        }
+        shape = stripped.get("shape")
+        if isinstance(shape, dict):
+            stripped["shape"] = {k: v for k, v in shape.items() if k != "text"}
+        return stripped
+
+    if strip(base_element) != strip(remote_element):
+        kinds.append("properties")
+
+    return "/".join(kinds) if kinds else "properties"
 
 
 class SlidesClient:
@@ -93,6 +213,13 @@ class SlidesClient:
         # Process the presentation into the new format
         result = process_presentation(presentation_data.data)
 
+        # Record the pull-time revisionId in the folder metadata so tooling
+        # can tell how stale a workspace is (see DESIGN.md: revisionId is a
+        # write guard, not a change detector).
+        revision_id = presentation_data.revision_id
+        if revision_id:
+            result["presentation_info"]["revisionId"] = revision_id
+
         # Write the new format files
         written_files.extend(write_new_format(result, presentation_dir))
 
@@ -110,6 +237,16 @@ class SlidesClient:
         # Create pristine copy
         pristine_path = self._create_pristine_copy(presentation_dir, written_files)
         written_files.append(pristine_path)
+
+        # Always persist the raw API tree as the pristine base snapshot:
+        # push compares remote vs this base to detect concurrent human edits
+        # on the objects a push would touch (independent of save_raw).
+        base_path = presentation_dir / PRISTINE_DIR / PRISTINE_BASE_FILE
+        base_path.write_text(
+            json.dumps(presentation_data.data, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        written_files.append(base_path)
 
         return written_files
 
@@ -147,14 +284,34 @@ class SlidesClient:
         # Generate API requests
         return generate_batch_requests(diff_result, id_mapping, slide_id_mapping)
 
-    async def push(self, folder_path: Path) -> dict[str, Any]:
-        """Apply content changes to the presentation.
+    async def push(self, folder_path: Path, *, force: bool = False) -> dict[str, Any]:
+        """Apply content changes to the presentation, guarded against
+        concurrent human edits (contract C5).
+
+        Flow:
+        1. Re-fetch the remote presentation (capturing its revisionId).
+        2. Determine the Google objectIds the pending diff will touch.
+        3. Compare remote vs the pristine base for those objects only; if any
+           touched object changed or was deleted remotely, raise ConflictError
+           without writing anything.
+        4. Otherwise batchUpdate with writeControl.requiredRevisionId set to
+           the just-fetched revision; a revision-mismatch 400 (human edited
+           between fetch and write) also surfaces as ConflictError.
+
+        Remote changes to objects this push does NOT touch never block the
+        push: field-masked requests leave them alone.
 
         Args:
             folder_path: Path to the presentation folder
+            force: Skip the conflict guard and the revision lock (logs a
+                warning; last writer wins on the touched properties).
 
         Returns:
             API response from batchUpdate
+
+        Raises:
+            ConflictError: A touched object changed remotely, or the deck was
+                revised between our fetch and our write.
         """
         folder_path = Path(folder_path)
 
@@ -170,8 +327,122 @@ class SlidesClient:
         if not requests:
             return {"replies": [], "message": "No changes detected"}
 
-        # Send batch update
-        return await self._transport.batch_update(presentation_id, requests)
+        if force:
+            print(
+                "warning: push --force: conflict guard and revision lock "
+                "bypassed; concurrent human edits to the touched properties "
+                "will be overwritten",
+                file=sys.stderr,
+            )
+            return await self._transport.batch_update(presentation_id, requests)
+
+        # (a) Re-fetch the remote presentation and capture its revision.
+        remote = await self._transport.get_presentation(presentation_id)
+        required_revision = remote.revision_id
+
+        # (b)+(c) Compare remote vs pristine base for the touched objects.
+        base_raw = self._read_base_raw(folder_path)
+        if base_raw is None:
+            print(
+                "warning: no pristine base snapshot found "
+                f"({PRISTINE_DIR}/{PRISTINE_BASE_FILE}); this folder was "
+                "pulled by an older slidesmith. Remote-change detection "
+                "skipped for this push -- re-pull to re-enable the guard.",
+                file=sys.stderr,
+            )
+        else:
+            conflicts = self._detect_conflicts(
+                base_raw,
+                remote.data,
+                requests,
+                self._read_json(folder_path / ID_MAPPING_FILE),
+            )
+            if conflicts:
+                lines = [
+                    f"push aborted: {len(conflicts)} element(s) this push "
+                    "would modify changed in Google Slides since the pull:"
+                ]
+                lines += [f"  - {clean_id}: {kind}" for clean_id, kind in conflicts]
+                lines.append(
+                    "Re-pull the deck, re-apply your edits, then push again "
+                    "(or push --force to overwrite the remote edits)."
+                )
+                raise ConflictError("\n".join(lines), conflicts=conflicts)
+
+        # (d) Guarded write: fail if the deck is revised between (a) and now.
+        try:
+            return await self._transport.batch_update(
+                presentation_id, requests, required_revision_id=required_revision
+            )
+        except APIError as e:
+            if e.status_code == 400 and "revision" in str(e).lower():
+                raise ConflictError(
+                    "push aborted: the deck changed mid-push (someone edited "
+                    "it between our conflict check and our write). "
+                    "Re-pull and retry."
+                ) from e
+            raise
+
+    def _read_base_raw(self, folder_path: Path) -> dict[str, Any] | None:
+        """Read the pristine base raw API tree, if this folder has one.
+
+        Prefers .pristine/base.json (always written by current pulls); falls
+        back to .raw/presentation.json (older pulls with save_raw=True).
+        Returns None when neither exists (folder pulled by old code).
+        """
+        candidates = (
+            folder_path / PRISTINE_DIR / PRISTINE_BASE_FILE,
+            folder_path / RAW_DIR / "presentation.json",
+        )
+        for candidate in candidates:
+            if candidate.exists():
+                data: dict[str, Any] = json.loads(
+                    candidate.read_text(encoding="utf-8")
+                )
+                return data
+        return None
+
+    def _detect_conflicts(
+        self,
+        base_raw: dict[str, Any],
+        remote_raw: dict[str, Any],
+        requests: list[dict[str, Any]],
+        id_mapping: dict[str, str],
+    ) -> list[tuple[str, str]]:
+        """Find touched objects that changed remotely since the pristine base.
+
+        Only objects the requests reference AND that exist in the base are
+        checked (ids created by this very batch don't exist remotely yet).
+        Returns (clean_id, description) pairs; empty list means safe to push.
+        """
+        base_elements, base_page_ids = _index_presentation(base_raw)
+        remote_elements, remote_page_ids = _index_presentation(remote_raw)
+        reverse_mapping = {google: clean for clean, google in id_mapping.items()}
+
+        object_ids, page_ids = _collect_request_object_ids(requests)
+        conflicts: list[tuple[str, str]] = []
+
+        for object_id in sorted(object_ids):
+            base_element = base_elements.get(object_id)
+            if base_element is None:
+                continue  # created by this push; nothing to conflict with
+            clean_id = reverse_mapping.get(object_id, object_id)
+            remote_element = remote_elements.get(object_id)
+            if remote_element is None:
+                conflicts.append((clean_id, "deleted remotely"))
+                continue
+            kind = _classify_element_change(base_element, remote_element)
+            if kind:
+                conflicts.append((clean_id, f"{kind} changed remotely"))
+
+        # Pages referenced as creation targets only need to still exist;
+        # other edits on those pages must not block the push.
+        for page_id in sorted(page_ids):
+            if page_id in base_page_ids and page_id not in remote_page_ids:
+                clean_id = reverse_mapping.get(page_id, page_id)
+                conflicts.append((clean_id, "target slide deleted remotely"))
+
+        return conflicts
 
     def _read_current_slides(self, folder_path: Path) -> dict[str, list[Any]]:
         """Read current slide content files."""
@@ -310,7 +581,9 @@ def diff_folder(folder_path: str | Path) -> list[dict[str, Any]]:
         async def get_presentation(self, _: str) -> Any:
             raise NotImplementedError("Diff doesn't need transport")
 
-        async def batch_update(self, _id: str, _reqs: list[Any]) -> Any:
+        async def batch_update(
+            self, _id: str, _reqs: list[Any], _required_revision_id: str | None = None
+        ) -> Any:
             raise NotImplementedError("Diff doesn't need transport")
 
         async def close(self) -> None:

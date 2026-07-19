@@ -19,13 +19,18 @@ inspect and validate them before writing remotely, then check the rendered deck:
 
 ```bash
 slidesmith diff <ID>
+slidesmith diff <ID> --summary
 slidesmith check <ID> --no-thumbnails
 slidesmith push <ID>
 slidesmith check <ID>
 ```
 
 `diff` is local-only and prints the exact request list plus a stderr legend from
-Google object IDs to clean SML IDs. `check --no-thumbnails` is also local-only.
+Google object IDs to clean SML IDs. `diff --summary` replaces that raw JSON with
+a compact per-slide view of deletes, creates, moves, copies, style changes, and
+text edits, followed by the total generated request count. It is intended for a
+quick human review; use plain `diff` whenever the exact API payload matters.
+`check --no-thumbnails` is also local-only.
 Plain `check`, run after push, downloads current slide thumbnails into
 `<ID>/.qa/` before running geometry QA, so it needs authentication. `push`
 re-fetches the remote deck, aborts if a locally touched object changed remotely,
@@ -60,6 +65,17 @@ and `h` attributes. Preserve IDs when modifying pulled elements: identity drives
 the diff and conflict guard. Paragraphs are `P` nodes. A paragraph may contain
 plain text and styled `T` runs. A `P` may carry paragraph- and text-family
 defaults for that paragraph; a nested `T` may carry text-family overrides.
+
+When creating an element, choose a descriptive ID such as `mission_swarm` or
+`q3-scorecard`. Authored IDs must be 5–50 characters, start with an ASCII letter
+or underscore, and contain only ASCII letters, digits, underscores, and hyphens.
+Slidesmith sends a valid, unoccupied authored ID directly as the Google object
+ID, so a later pull preserves it in SML and in `id_mapping.json`. If that Google
+ID is already occupied, the create request uses a collision-safe numeric suffix.
+Names that Google generated (`g…_N_N`, `pN…`, and `SLIDES_API…`) remain clean
+`eN`/`gN` IDs on pull. Do not author names beginning with `new_`: that prefix is
+reserved for compatibility with older Slidesmith creations and is stripped on
+pull.
 
 ```xml
 <Slide id="s1">

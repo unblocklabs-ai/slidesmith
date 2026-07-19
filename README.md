@@ -37,6 +37,8 @@ Working today: styled pull to editable SML, field-masked diff, conflict-aware
 in-place push with post-push refresh, and baseline-aware offline/thumbnail QA via
 `check`. The parser and generator preserve element, paragraph, and text-run
 styling; authoring supports one-shot `Stack`, `Grid`, and automatic text height.
+Authored element IDs survive push/pull round trips, and `diff --summary` provides
+a compact slide-grouped review while plain `diff` retains exact request JSON.
 `slidesmith auth doctor` diagnoses credentials before a pull. See the
 [agent guide](docs/AGENT-GUIDE.md) for the supported class vocabulary and the
 complete edit/diff/push/check loop.

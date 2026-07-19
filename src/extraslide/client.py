@@ -16,7 +16,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
 
-from extraslide.content_diff import diff_presentation
+from extraslide.content_diff import DiffResult, diff_presentation
 from extraslide.content_parser import parse_slide_content
 from extraslide.content_requests import generate_batch_requests
 from extraslide.slide_processor import process_presentation, write_new_format
@@ -272,6 +272,13 @@ class SlidesClient:
         Returns:
             List of Google Slides API batchUpdate request objects
         """
+        _, requests = self.diff_with_result(folder_path)
+        return requests
+
+    def diff_with_result(
+        self, folder_path: Path
+    ) -> tuple[DiffResult, list[dict[str, Any]]]:
+        """Return both semantic changes and their generated API requests."""
         folder_path = Path(folder_path)
 
         # Read current state
@@ -293,7 +300,8 @@ class SlidesClient:
         slide_id_mapping = self._build_slide_id_mapping(id_mapping)
 
         # Generate API requests
-        return generate_batch_requests(diff_result, id_mapping, slide_id_mapping)
+        requests = generate_batch_requests(diff_result, id_mapping, slide_id_mapping)
+        return diff_result, requests
 
     async def push(self, folder_path: Path, *, force: bool = False) -> dict[str, Any]:
         """Apply content changes to the presentation, guarded against
@@ -645,6 +653,13 @@ def diff_folder(folder_path: str | Path) -> list[dict[str, Any]]:
         List of batchUpdate request objects
     """
 
+    return diff_folder_with_result(folder_path)[1]
+
+
+def diff_folder_with_result(
+    folder_path: str | Path,
+) -> tuple[DiffResult, list[dict[str, Any]]]:
+    """Return semantic changes and batchUpdate requests for a local folder."""
     # Create a minimal transport for diff (not used)
     class DummyTransport(Transport):
         async def get_presentation(self, _: str) -> Any:
@@ -659,4 +674,4 @@ def diff_folder(folder_path: str | Path) -> list[dict[str, Any]]:
             pass
 
     client = SlidesClient(DummyTransport())
-    return client.diff(Path(folder_path))
+    return client.diff_with_result(Path(folder_path))

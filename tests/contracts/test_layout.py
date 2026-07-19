@@ -217,7 +217,7 @@ def test_diff_compiles_authoring_layout_to_create_shape_transforms(
     }
 
     def assert_transform(object_id: str, x: float, y: float, w: float, h: float) -> None:
-        properties = creates[f"new_{object_id}"]["elementProperties"]
+        properties = creates[object_id]["elementProperties"]
         transform = properties["transform"]
         base_width = properties["size"]["width"]["magnitude"]
         base_height = properties["size"]["height"]["magnitude"]

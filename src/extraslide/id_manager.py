@@ -5,15 +5,40 @@ Assigns short, readable IDs to elements and maintains mapping to Google object I
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any
+
+
+_AUTHORED_ID_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_-]*$")
+_GOOGLE_GENERATED_ID_RES = (
+    re.compile(r"^g[0-9a-f]+_\d+_\d+$"),
+    re.compile(r"^p\d+"),
+    re.compile(r"^SLIDES_API"),
+)
+
+
+def authored_clean_id(google_id: str) -> str | None:
+    """Return the reusable clean ID for a human-authored Google object ID.
+
+    ``new_`` is the prefix used by older Slidesmith create requests. Removing
+    it lets those objects join the same stable authored-ID round trip as new
+    direct-ID creates.
+    """
+    candidate = google_id[4:] if google_id.startswith("new_") else google_id
+    if not candidate or not _AUTHORED_ID_RE.fullmatch(candidate):
+        return None
+    if any(pattern.match(candidate) for pattern in _GOOGLE_GENERATED_ID_RES):
+        return None
+    return candidate
 
 
 @dataclass
 class IDManager:
     """Manages assignment of clean IDs to elements.
 
-    Clean IDs use prefixes:
+    Human-authored page element IDs are preserved when safe. Generated
+    fallbacks use prefixes:
     - s1, s2, ... for slides
     - e1, e2, ... for page elements (shapes, images, lines)
     - g1, g2, ... for groups
@@ -34,44 +59,51 @@ class IDManager:
 
     def _next_id(self, prefix: str) -> str:
         """Generate next ID for a given prefix."""
-        count = self._counters.get(prefix, 0) + 1
-        self._counters[prefix] = count
-        return f"{prefix}{count}"
+        while True:
+            count = self._counters.get(prefix, 0) + 1
+            self._counters[prefix] = count
+            clean_id = f"{prefix}{count}"
+            if clean_id not in self.id_mapping:
+                return clean_id
+
+    def _assign_id(
+        self, google_id: str, prefix: str, *, preserve_authored: bool = False
+    ) -> str:
+        """Assign one mapping, optionally preserving a safe authored ID."""
+        clean_id = authored_clean_id(google_id) if preserve_authored else None
+        if clean_id is None or clean_id in self.id_mapping:
+            clean_id = self._next_id(prefix)
+        self.id_mapping[clean_id] = google_id
+        self._reverse_mapping[google_id] = clean_id
+        return clean_id
 
     def assign_slide_id(self, google_id: str) -> str:
         """Assign a clean slide ID."""
-        clean_id = self._next_id("s")
-        self.id_mapping[clean_id] = google_id
-        self._reverse_mapping[google_id] = clean_id
-        return clean_id
+        return self._assign_id(google_id, "s")
 
-    def assign_element_id(self, google_id: str) -> str:
-        """Assign a clean element ID."""
-        clean_id = self._next_id("e")
-        self.id_mapping[clean_id] = google_id
-        self._reverse_mapping[google_id] = clean_id
-        return clean_id
+    def assign_element_id(
+        self, google_id: str, *, preserve_authored: bool = False
+    ) -> str:
+        """Assign a clean element ID, optionally reusing an authored name."""
+        return self._assign_id(
+            google_id, "e", preserve_authored=preserve_authored
+        )
 
-    def assign_group_id(self, google_id: str) -> str:
-        """Assign a clean group ID."""
-        clean_id = self._next_id("g")
-        self.id_mapping[clean_id] = google_id
-        self._reverse_mapping[google_id] = clean_id
-        return clean_id
+    def assign_group_id(
+        self, google_id: str, *, preserve_authored: bool = False
+    ) -> str:
+        """Assign a clean group ID, optionally reusing an authored name."""
+        return self._assign_id(
+            google_id, "g", preserve_authored=preserve_authored
+        )
 
     def assign_master_id(self, google_id: str) -> str:
         """Assign a clean master ID."""
-        clean_id = self._next_id("m")
-        self.id_mapping[clean_id] = google_id
-        self._reverse_mapping[google_id] = clean_id
-        return clean_id
+        return self._assign_id(google_id, "m")
 
     def assign_layout_id(self, google_id: str) -> str:
         """Assign a clean layout ID."""
-        clean_id = self._next_id("l")
-        self.id_mapping[clean_id] = google_id
-        self._reverse_mapping[google_id] = clean_id
-        return clean_id
+        return self._assign_id(google_id, "l")
 
     def get_clean_id(self, google_id: str) -> str | None:
         """Get clean ID for a Google object ID."""
@@ -94,9 +126,13 @@ class IDManager:
 
         # Reconstruct counters from existing IDs
         for clean_id in mapping:
-            prefix = clean_id.rstrip("0123456789")
-            num = int(clean_id[len(prefix) :])
-            manager._counters[prefix] = max(manager._counters.get(prefix, 0), num)
+            generated = re.fullmatch(r"([segml])(\d+)", clean_id)
+            if generated is None:
+                continue
+            prefix, number = generated.groups()
+            manager._counters[prefix] = max(
+                manager._counters.get(prefix, 0), int(number)
+            )
 
         return manager
 
@@ -153,9 +189,9 @@ def _assign_page_element_ids(
 
         # Check if this is a group
         if "elementGroup" in elem:
-            manager.assign_group_id(google_id)
+            manager.assign_group_id(google_id, preserve_authored=True)
             # Recursively assign IDs to children
             children = elem["elementGroup"].get("children", [])
             _assign_page_element_ids(children, manager)
         else:
-            manager.assign_element_id(google_id)
+            manager.assign_element_id(google_id, preserve_authored=True)

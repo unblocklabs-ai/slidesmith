@@ -50,10 +50,13 @@ encoding the known parser gap. C3–C5 are live-deck stubs
   pass `writeControl.requiredRevisionId` (captured at that fetch) on the
   write; refetch-and-rebase on 400.
 - **Ownership via chosen objectIds.** The API allows caller-chosen objectIds
-  (5–50 chars) at creation. Agent-created elements get an `ag_` prefix so
-  agent-managed vs human-owned is recoverable from the deck itself, even
-  without the local folder. Layout intent lives only in this repo's folder; a
-  deck without its folder degrades to "everything detached/absolute" — correct.
+  (5–50 chars) at creation. Slidesmith sends a valid, unoccupied authored SML ID
+  directly and recognizes it again on pull; older `new_<id>` creations normalize
+  back to `<id>`. Collisions receive a safe suffix, while Google-generated ID
+  patterns continue to receive local `eN`/`gN` names. This preserves meaningful
+  identity in the deck and keeps `id_mapping.json` stable without relying on an
+  ownership prefix. Layout intent lives only in this repo's folder; a deck
+  without its folder degrades to "everything detached/absolute" — correct.
 - **The deck is the source of truth.** The local folder is a projection plus a
   pristine base for diffing (git-style working tree), not a co-equal replica.
 - **Authoring layout is one-shot in v1.** `Stack`, `Grid`, and `h="auto"` are

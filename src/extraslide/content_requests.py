@@ -6,6 +6,7 @@ Key feature: Handles copy operations by recreating elements with source styles.
 
 from __future__ import annotations
 
+import re
 import time
 from typing import Any
 
@@ -22,6 +23,8 @@ from extraslide.units import pt_to_emu
 # Global counter for unique ID generation within a session
 _id_counter = 0
 
+_GOOGLE_OBJECT_ID_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_-]{4,49}$")
+
 
 def _get_unique_suffix() -> str:
     """Generate a unique suffix for object IDs."""
@@ -30,6 +33,26 @@ def _get_unique_suffix() -> str:
     # Use timestamp (last 6 digits) + counter for uniqueness
     ts = int(time.time() * 1000) % 1000000
     return f"{ts}_{_id_counter}"
+
+
+def _allocate_create_object_id(authored_id: str, reserved_ids: set[str]) -> str:
+    """Choose a valid, unoccupied Google object ID for an authored element."""
+    if _GOOGLE_OBJECT_ID_RE.fullmatch(authored_id) and authored_id not in reserved_ids:
+        return authored_id
+
+    stem = re.sub(r"[^a-zA-Z0-9_-]", "_", authored_id)
+    if not stem or not re.match(r"^[a-zA-Z_]", stem):
+        stem = f"new_{stem}"
+    if len(stem) < 5:
+        stem = f"new_{stem}"
+
+    suffix_number = 2
+    while True:
+        suffix = f"_{suffix_number}"
+        candidate = f"{stem[: 50 - len(suffix)]}{suffix}"
+        if _GOOGLE_OBJECT_ID_RE.fullmatch(candidate) and candidate not in reserved_ids:
+            return candidate
+        suffix_number += 1
 
 
 def generate_batch_requests(
@@ -54,6 +77,7 @@ def generate_batch_requests(
 
     # Make a mutable copy of slide_id_mapping for adding new slides
     slide_ids = dict(slide_id_mapping)
+    reserved_object_ids = set(id_mapping.values()) | set(slide_ids.values())
 
     # Process changes in order: deletes first, then modifications, then creates/copies
     # This ensures space is freed before new elements are created
@@ -88,6 +112,7 @@ def generate_batch_requests(
         new_slide_id = f"new_slide_{slide_index}_{suffix}"
         requests.append(_create_slide_request(new_slide_id))
         slide_ids[slide_index] = new_slide_id
+        reserved_object_ids.add(new_slide_id)
 
     # Generate delete requests
     # Order: deepest leaves first, then root shapes (groups auto-delete when empty)
@@ -194,13 +219,25 @@ def generate_batch_requests(
                     diff_result.pristine_styles,
                 )
                 requests.extend(copy_requests)
+                for request in copy_requests:
+                    for body in request.values():
+                        if isinstance(body, dict) and isinstance(
+                            body.get("objectId"), str
+                        ):
+                            reserved_object_ids.add(body["objectId"])
 
     # Generate create requests (new elements)
     for change in creates:
         if change.slide_index:
             slide_google_id = slide_ids.get(change.slide_index)
             if slide_google_id:
-                create_requests = _create_element_requests(change, slide_google_id)
+                new_object_id = _allocate_create_object_id(
+                    change.target_id, reserved_object_ids
+                )
+                reserved_object_ids.add(new_object_id)
+                create_requests = _create_element_requests(
+                    change, slide_google_id, new_object_id
+                )
                 requests.extend(create_requests)
 
     return requests
@@ -2058,6 +2095,7 @@ def _create_text_insert_requests(
 def _create_element_requests(
     change: Change,
     slide_google_id: str,
+    new_object_id: str,
 ) -> list[dict[str, Any]]:
     """Create requests for a new element."""
     requests: list[dict[str, Any]] = []
@@ -2065,9 +2103,6 @@ def _create_element_requests(
     # Determine shape type from metadata
     tag = change.metadata.get("tag", "Rect")
     position = change.new_position or {"x": 0, "y": 0, "w": 100, "h": 100}
-
-    # Generate unique ID
-    new_object_id = f"new_{change.target_id}"
 
     # Map tags to shape types
     tag_to_shape = {

@@ -75,12 +75,22 @@ def cmd_pull(args: Any) -> None:
 
 
 def cmd_diff(args: Any) -> None:
-    from extraslide.client import diff_folder
-
     _warn_if_stale(args.folder)
-    requests = diff_folder(args.folder)
+    summary = bool(getattr(args, "summary", False))
+    if summary:
+        from extraslide.client import diff_folder_with_result
+
+        diff_result, requests = diff_folder_with_result(args.folder)
+    else:
+        from extraslide.client import diff_folder
+
+        requests = diff_folder(args.folder)
     if not requests:
         print("No changes detected.")
+    elif summary:
+        from extraslide.content_diff import format_diff_summary
+
+        print(format_diff_summary(diff_result, len(requests)))
     else:
         print(json.dumps(requests, indent=2))
         mapping = json.loads(
@@ -97,8 +107,9 @@ def _request_id_legend(
     """Describe request object IDs without making stdout cease to be JSON."""
     reverse_mapping = {google_id: clean_id for clean_id, google_id in id_mapping.items()}
     labels: dict[str, str] = {}
+    create_operations = {"createShape", "createLine", "createImage"}
     for request in requests:
-        for body in request.values():
+        for operation, body in request.items():
             if not isinstance(body, dict):
                 continue
             object_id = body.get("objectId")
@@ -108,6 +119,8 @@ def _request_id_legend(
                 labels[object_id] = reverse_mapping[object_id]
             elif object_id.startswith("new_"):
                 labels[object_id] = f"{object_id[4:]}(new)"
+            elif operation in create_operations:
+                labels[object_id] = f"{object_id}(new)"
     return ", ".join(
         f"{object_id} = {clean_id}" for object_id, clean_id in labels.items()
     )
@@ -231,6 +244,11 @@ def main(argv: list[str] | None = None) -> None:
 
     sd = sub.add_parser("diff", help="Preview batchUpdate requests (local only, no API calls)")
     sd.add_argument("folder", help="Presentation folder created by pull")
+    sd.add_argument(
+        "--summary",
+        action="store_true",
+        help="Print a compact slide-grouped summary instead of request JSON",
+    )
     sd.set_defaults(func=cmd_diff)
 
     spu = sub.add_parser("push", help="Apply local edits to the same deck in place")

@@ -22,6 +22,7 @@ from extraslide.classes import (
     parse_stroke_classes,
     parse_text_style_classes,
 )
+from extraslide.layout import compile_layout
 
 
 @dataclass
@@ -128,6 +129,8 @@ def parse_slide_content(content: str) -> list[ParsedElement]:
     """
     if not content.strip():
         return []
+
+    content = compile_layout(content)
 
     try:
         root = ET.fromstring(content)

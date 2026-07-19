@@ -56,6 +56,11 @@ encoding the known parser gap. C3–C5 are live-deck stubs
   deck without its folder degrades to "everything detached/absolute" — correct.
 - **The deck is the source of truth.** The local folder is a projection plus a
   pristine base for diffing (git-style working tree), not a co-equal replica.
+- **Authoring layout is one-shot in v1.** `Stack`, `Grid`, and `h="auto"` are
+  compiled to plain absolutely-positioned SML when content is read for a diff
+  or push. Containers never become deck elements, and after the push a later
+  pull returns only the resolved absolute SML. Persisting layout intent across
+  pull/push cycles is deliberately deferred to a later milestone.
 
 ## API constraints that shaped this (verified July 2026)
 

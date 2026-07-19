@@ -737,6 +737,97 @@ def parse_class_string(class_str: str) -> list[str]:
     return class_str.split() if class_str else []
 
 
+_MUTUALLY_EXCLUSIVE_CLASS_FAMILIES: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("content alignment", re.compile(r"^content-align-(?:top|middle|bottom)$")),
+    (
+        "fill",
+        re.compile(
+            r"^fill-(?:none|inherit|theme-[a-z0-9-]+(?:/\d+)?|"
+            r"#[0-9a-fA-F]{6}(?:/\d+)?)$"
+        ),
+    ),
+    (
+        "stroke color or state",
+        re.compile(
+            r"^stroke-(?:none|inherit|theme-[a-z0-9-]+(?:/\d+)?|"
+            r"#[0-9a-fA-F]{6}(?:/\d+)?)$"
+        ),
+    ),
+    ("stroke weight", re.compile(r"^stroke-w-\d+(?:\.\d+)?$")),
+    (
+        "stroke dash style",
+        re.compile(
+            r"^stroke-(?:solid|dot|dash|dash-dot|long-dash|long-dash-dot)$"
+        ),
+    ),
+    (
+        "text alignment",
+        re.compile(r"^text-align-(?:left|center|right|justify)$"),
+    ),
+    ("line spacing", re.compile(r"^leading-\d+$")),
+    ("space above", re.compile(r"^space-above-\d+(?:\.\d+)?$")),
+    ("space below", re.compile(r"^space-below-\d+(?:\.\d+)?$")),
+    ("start indent", re.compile(r"^indent-start-\d+(?:\.\d+)?$")),
+    ("first-line indent", re.compile(r"^indent-first-\d+(?:\.\d+)?$")),
+    (
+        "paragraph spacing mode",
+        re.compile(r"^spacing-(?:never-collapse|collapse-lists)$"),
+    ),
+    ("baseline offset", re.compile(r"^(?:superscript|subscript)$")),
+    ("font family", re.compile(r"^font-family-.+$")),
+    ("font size", re.compile(r"^text-size-\d+(?:\.\d+)?$")),
+    ("font weight", re.compile(r"^font-weight-\d+$")),
+    (
+        "text color",
+        re.compile(
+            r"^text-color-(?:theme-[a-z0-9-]+|"
+            r"#[0-9a-fA-F]{6}(?:/\d+)?)$"
+        ),
+    ),
+    ("text background color", re.compile(r"^bg-#[0-9a-fA-F]{6}$")),
+)
+
+
+def mutually_exclusive_class_family(cls: str) -> str | None:
+    """Return the single-value property family for a recognized class."""
+    for family, pattern in _MUTUALLY_EXCLUSIVE_CLASS_FAMILIES:
+        if pattern.fullmatch(cls):
+            return family
+    return None
+
+
+def validate_mutually_exclusive_classes(
+    classes: list[str],
+    element_id: str,
+    *,
+    scope: str = "element",
+) -> None:
+    """Reject distinct classes that set the same single-value property.
+
+    Identical repeats are harmless and remain accepted. Unknown classes are
+    deliberately ignored here so the existing scope-specific loud errors can
+    report them.
+    """
+    selected: dict[str, str] = {}
+    for cls in classes:
+        family = mutually_exclusive_class_family(cls)
+        if family is None:
+            continue
+        previous = selected.get(family)
+        if previous is None:
+            selected[family] = cls
+        elif previous != cls:
+            location = (
+                f"element '{element_id}'"
+                if scope == "element"
+                else f"{scope} in element '{element_id}'"
+            )
+            raise ValueError(
+                f"Conflicting classes '{previous}' and '{cls}' on {location}: "
+                f"both set the mutually-exclusive {family} family; remove one."
+            )
+
+
 def parse_content_alignment_class(cls: str) -> ContentAlignment | None:
     """Parse one ``content-align-*`` class, or return None."""
     return _CLASS_CONTENT_ALIGNMENTS.get(cls)

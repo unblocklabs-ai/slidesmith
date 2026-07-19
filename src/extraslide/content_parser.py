@@ -23,6 +23,7 @@ from extraslide.classes import (
     parse_paragraph_style_classes,
     parse_stroke_classes,
     parse_text_style_classes,
+    validate_mutually_exclusive_classes,
 )
 from extraslide.layout import compile_layout
 
@@ -261,6 +262,7 @@ def parse_element_classes(
         return None
 
     classes = parse_class_string(class_str)
+    validate_mutually_exclusive_classes(classes, element_id)
 
     fill_classes: list[str] = []
     stroke_classes: list[str] = []
@@ -305,6 +307,7 @@ def _parse_run_classes(class_str: str | None, element_id: str) -> TextStyle | No
         return None
 
     classes = parse_class_string(class_str)
+    validate_mutually_exclusive_classes(classes, element_id, scope="<T> run")
     for cls in classes:
         if parse_text_style_classes([cls]) == TextStyle():
             raise ValueError(
@@ -323,9 +326,12 @@ def _parse_paragraph_classes(
     if class_str is None:
         return None
 
+    classes = parse_class_string(class_str)
+    validate_mutually_exclusive_classes(classes, element_id, scope="<P>")
+
     text_classes: list[str] = []
     paragraph_classes: list[str] = []
-    for cls in parse_class_string(class_str):
+    for cls in classes:
         if parse_text_style_classes([cls]) != TextStyle():
             text_classes.append(cls)
         elif parse_paragraph_style_classes([cls]) is not None:

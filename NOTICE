@@ -1,0 +1,11 @@
+slidesmith
+Copyright (c) 2026 Bek
+
+This project vendors code from ExtraSuite (https://github.com/think41/extrasuite),
+Copyright (c) 2025 Think41, licensed under the MIT License.
+See third_party/extrasuite-LICENSE for the full license text.
+
+Vendored components:
+- src/extraslide/            (the extraslide package, from extraslide/src/extraslide)
+- src/slidesmith/credentials.py  (from client/src/extrasuite/client/credentials.py)
+- tests/vendor/              (extraslide unit tests and golden fixtures)

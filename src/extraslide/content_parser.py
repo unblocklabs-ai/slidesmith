@@ -11,6 +11,44 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from extraslide.classes import (
+    Fill,
+    ParagraphStyle,
+    Stroke,
+    TextStyle,
+    parse_class_string,
+    parse_fill_class,
+    parse_paragraph_style_classes,
+    parse_stroke_classes,
+    parse_text_style_classes,
+)
+
+
+@dataclass
+class ElementStyles:
+    """Styles parsed from an element's class attribute.
+
+    Each field holds the classes.py data structure for one property group,
+    or None if no classes of that group were present.
+    """
+
+    fill: Fill | None = None
+    stroke: Stroke | None = None
+    text_style: TextStyle | None = None
+    paragraph_style: ParagraphStyle | None = None
+
+
+@dataclass
+class ParsedRun:
+    """A single text run within a paragraph.
+
+    Plain <P>text</P> paragraphs produce one unstyled run; <T class="...">
+    children produce styled runs.
+    """
+
+    text: str
+    text_style: TextStyle | None = None
+
 
 @dataclass
 class ParsedElement:
@@ -30,6 +68,12 @@ class ParsedElement:
 
     # Text content (list of paragraph texts)
     paragraphs: list[str] = field(default_factory=list)
+
+    # Text content as styled runs (parallel to paragraphs; one list per paragraph)
+    runs: list[list[ParsedRun]] = field(default_factory=list)
+
+    # Styles parsed from the class attribute (None if no class attribute)
+    styles: ElementStyles | None = None
 
     # Children
     children: list[ParsedElement] = field(default_factory=list)
@@ -114,11 +158,18 @@ def _parse_element(elem: ET.Element, parent_id: str | None) -> ParsedElement:
     w = _parse_float(elem.get("w"))
     h = _parse_float(elem.get("h"))
 
-    # Parse text paragraphs
-    paragraphs = []
+    # Parse the class attribute into typed styles (fails loudly on unknown classes)
+    styles = parse_element_classes(elem.get("class"), clean_id)
+
+    # Parse text paragraphs (plain text or nested <T> runs)
+    paragraphs: list[str] = []
+    runs: list[list[ParsedRun]] = []
     for p_elem in elem.findall("P"):
-        if p_elem.text:
-            paragraphs.append(p_elem.text)
+        para_runs = _parse_paragraph_runs(p_elem, clean_id)
+        para_text = "".join(run.text for run in para_runs)
+        if para_text:
+            paragraphs.append(para_text)
+            runs.append(para_runs)
 
     # Parse children (excluding P elements)
     children = []
@@ -134,9 +185,109 @@ def _parse_element(elem: ET.Element, parent_id: str | None) -> ParsedElement:
         w=w,
         h=h,
         paragraphs=paragraphs,
+        runs=runs,
+        styles=styles,
         children=children,
         parent_id=parent_id,
     )
+
+
+def _parse_paragraph_runs(p_elem: ET.Element, element_id: str) -> list[ParsedRun]:
+    """Parse a <P> element into text runs.
+
+    A <P> may contain plain text, <T class="...">text</T> runs, or a mix
+    (leading text plus runs with tail text). Plain segments become unstyled
+    runs so `"".join(run.text)` always reconstructs the paragraph text.
+    """
+    runs: list[ParsedRun] = []
+
+    if p_elem.text:
+        runs.append(ParsedRun(text=p_elem.text))
+
+    for child in p_elem:
+        if child.tag != "T":
+            raise ValueError(
+                f"Unsupported element <{child.tag}> inside <P> of element "
+                f"'{element_id}': only <T> runs are allowed"
+            )
+        text_style = _parse_run_classes(child.get("class"), element_id)
+        if child.text:
+            runs.append(ParsedRun(text=child.text, text_style=text_style))
+        if child.tail:
+            runs.append(ParsedRun(text=child.tail))
+
+    return runs
+
+
+def parse_element_classes(
+    class_str: str | None, element_id: str
+) -> ElementStyles | None:
+    """Parse an element's class attribute into typed styles.
+
+    Uses the conversion functions in classes.py as the single source of truth.
+    Raises ValueError for any class not recognized by classes.py, naming the
+    class and the element id.
+
+    Args:
+        class_str: The raw class attribute value (may be None)
+        element_id: The element's clean id (for error messages)
+
+    Returns:
+        ElementStyles, or None if there was no class attribute
+    """
+    if class_str is None:
+        return None
+
+    classes = parse_class_string(class_str)
+
+    fill_classes: list[str] = []
+    stroke_classes: list[str] = []
+    text_classes: list[str] = []
+    para_classes: list[str] = []
+
+    for cls in classes:
+        if parse_fill_class(cls) is not None:
+            fill_classes.append(cls)
+        elif parse_stroke_classes([cls]) is not None:
+            stroke_classes.append(cls)
+        elif parse_text_style_classes([cls]) != TextStyle():
+            text_classes.append(cls)
+        elif parse_paragraph_style_classes([cls]) is not None:
+            para_classes.append(cls)
+        else:
+            raise ValueError(
+                f"Unrecognized class '{cls}' on element '{element_id}': "
+                f"not a known fill, stroke, text, or paragraph class"
+            )
+
+    return ElementStyles(
+        fill=parse_fill_class(fill_classes[-1]) if fill_classes else None,
+        stroke=parse_stroke_classes(stroke_classes) if stroke_classes else None,
+        text_style=parse_text_style_classes(text_classes) if text_classes else None,
+        paragraph_style=parse_paragraph_style_classes(para_classes)
+        if para_classes
+        else None,
+    )
+
+
+def _parse_run_classes(class_str: str | None, element_id: str) -> TextStyle | None:
+    """Parse a <T> run's class attribute into a TextStyle.
+
+    Only text-style classes are valid on runs; anything else fails loudly.
+    """
+    if class_str is None:
+        return None
+
+    classes = parse_class_string(class_str)
+    for cls in classes:
+        if parse_text_style_classes([cls]) == TextStyle():
+            raise ValueError(
+                f"Unrecognized class '{cls}' on <T> run in element "
+                f"'{element_id}': only text-style classes are allowed on runs"
+            )
+
+    text_style = parse_text_style_classes(classes)
+    return text_style if text_style != TextStyle() else None
 
 
 def _parse_float(value: str | None) -> float | None:

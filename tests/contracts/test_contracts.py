@@ -7,9 +7,8 @@ C4  Human and agent edit different properties of the same element; both survive.
 C5  Human and agent edit the same property; push aborts with a useful conflict.
 C6  Pull -> push -> pull is idempotent.
 
-C1/C6 run offline against the golden fixture. C2 is xfail until the parser
-consumes class attributes (the donor codebase never wired classes.py in).
-C3-C5 need a live deck: set SLIDESMITH_LIVE_DECK=<presentationId> to enable.
+C1/C2/C6 run offline against the golden fixture. C3-C5 need a live deck:
+set SLIDESMITH_LIVE_DECK=<presentationId> to enable.
 """
 
 from __future__ import annotations
@@ -48,14 +47,6 @@ def test_c1_pull_without_edits_diffs_to_zero_requests(golden_folder: Path) -> No
     assert diff_folder(golden_folder) == []
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Known gap inherited from extraslide: the SML parser only reads "
-        "id/x/y/w/h and <P> text; class attributes are dropped, so new "
-        "elements lose their styling. Fixed by the typed parser rewrite."
-    ),
-)
 def test_c2_create_styled_textbox_via_documented_syntax(golden_folder: Path) -> None:
     slide_dir = sorted((golden_folder / "slides").iterdir())[0]
     sml = slide_dir / "content.sml"
@@ -69,11 +60,90 @@ def test_c2_create_styled_textbox_via_documented_syntax(golden_folder: Path) -> 
     )
 
     requests = diff_folder(golden_folder)
-    blob = json.dumps(requests)
-    assert any("createShape" in r for r in requests), "new element not created at all"
-    assert "shapeBackgroundFill" in blob or "fontSize" in blob, (
-        "class-derived styling was dropped on the way to batchUpdate requests"
+
+    creates = [r for r in requests if "createShape" in r]
+    assert creates, "new element not created at all"
+    assert creates[0]["createShape"]["shapeType"] == "TEXT_BOX"
+    object_id = creates[0]["createShape"]["objectId"]
+
+    inserts = [
+        r
+        for r in requests
+        if "insertText" in r and r["insertText"]["objectId"] == object_id
+    ]
+    assert inserts and inserts[0]["insertText"]["text"] == "Hello"
+
+    # fill-#ff0000 must arrive as a red shapeBackgroundFill with a field mask
+    # naming only the fill.
+    fills = [
+        r
+        for r in requests
+        if "updateShapeProperties" in r
+        and r["updateShapeProperties"]["objectId"] == object_id
+    ]
+    assert len(fills) == 1, "expected exactly one shape style request"
+    fill_update = fills[0]["updateShapeProperties"]
+    assert fill_update["fields"] == "shapeBackgroundFill.solidFill"
+    rgb = fill_update["shapeProperties"]["shapeBackgroundFill"]["solidFill"]["color"][
+        "rgbColor"
+    ]
+    assert rgb == {"red": 1.0, "green": 0.0, "blue": 0.0}
+
+    # text-size-24 must arrive as a 24pt fontSize with a field mask naming
+    # only the font size.
+    text_styles = [
+        r
+        for r in requests
+        if "updateTextStyle" in r and r["updateTextStyle"]["objectId"] == object_id
+    ]
+    assert len(text_styles) == 1, "expected exactly one text style request"
+    text_update = text_styles[0]["updateTextStyle"]
+    assert text_update["fields"] == "fontSize"
+    assert text_update["style"]["fontSize"] == {"magnitude": 24.0, "unit": "PT"}
+
+
+def test_c2b_style_update_on_existing_element(golden_folder: Path) -> None:
+    """Adding classes to an element that existed in pristine emits field-masked
+    updates for just the class-derived properties -- no recreate, no deletes."""
+    id_mapping = json.loads(
+        (golden_folder / "id_mapping.json").read_text(encoding="utf-8")
     )
+    sml = golden_folder / "slides" / "01" / "content.sml"
+    content = sml.read_text(encoding="utf-8")
+    assert '<TextBox id="e121"' in content
+    sml.write_text(
+        content.replace(
+            '<TextBox id="e121"',
+            '<TextBox id="e121" class="fill-#00ff00 text-size-30"',
+        ),
+        encoding="utf-8",
+    )
+
+    requests = diff_folder(golden_folder)
+    google_id = id_mapping["e121"]
+
+    blob = json.dumps(requests)
+    assert "createShape" not in blob, "existing element must not be recreated"
+    assert "deleteObject" not in blob
+    assert "deleteText" not in blob, "style-only change must not rewrite text"
+
+    fills = [r for r in requests if "updateShapeProperties" in r]
+    assert len(fills) == 1
+    fill_update = fills[0]["updateShapeProperties"]
+    assert fill_update["objectId"] == google_id
+    assert fill_update["fields"] == "shapeBackgroundFill.solidFill"
+    rgb = fill_update["shapeProperties"]["shapeBackgroundFill"]["solidFill"]["color"][
+        "rgbColor"
+    ]
+    assert rgb == {"red": 0.0, "green": 1.0, "blue": 0.0}
+
+    text_styles = [r for r in requests if "updateTextStyle" in r]
+    assert len(text_styles) == 1
+    text_update = text_styles[0]["updateTextStyle"]
+    assert text_update["objectId"] == google_id
+    assert text_update["fields"] == "fontSize"
+    assert text_update["style"]["fontSize"] == {"magnitude": 30.0, "unit": "PT"}
+    assert len(requests) == 2, "only the two styled properties may be touched"
 
 
 def test_c6_materialize_is_deterministic(tmp_path: Path) -> None:

@@ -9,7 +9,14 @@ from __future__ import annotations
 import time
 from typing import Any
 
+from extraslide.classes import (
+    ParagraphStyle,
+    PropertyState,
+    Stroke,
+    TextStyle,
+)
 from extraslide.content_diff import Change, ChangeType, DiffResult
+from extraslide.content_parser import ElementStyles, ParsedRun
 from extraslide.units import pt_to_emu
 
 # Global counter for unique ID generation within a session
@@ -57,6 +64,9 @@ def generate_batch_requests(
     text_updates = [
         c for c in diff_result.changes if c.change_type == ChangeType.TEXT_UPDATE
     ]
+    style_updates = [
+        c for c in diff_result.changes if c.change_type == ChangeType.STYLE_UPDATE
+    ]
     copies = [c for c in diff_result.changes if c.change_type == ChangeType.COPY]
     creates = [c for c in diff_result.changes if c.change_type == ChangeType.CREATE]
 
@@ -101,9 +111,20 @@ def generate_batch_requests(
         text_google_id = id_mapping.get(change.target_id)
         if text_google_id and change.new_text is not None:
             text_requests = _create_text_update_requests(
-                text_google_id, change.new_text
+                text_google_id, change.new_text, change.new_runs
             )
             requests.extend(text_requests)
+
+    # Generate style update requests (class-derived styling on existing elements)
+    for change in style_updates:
+        style_google_id = id_mapping.get(change.target_id)
+        if style_google_id and change.new_styles:
+            style_requests = _create_class_style_requests(
+                style_google_id,
+                change.new_styles,
+                has_text=bool(change.new_text),
+            )
+            requests.extend(style_requests)
 
     # Generate copy requests (recreate elements with source styles)
     for change in copies:
@@ -217,10 +238,12 @@ def _create_move_request(google_id: str, position: dict[str, float]) -> dict[str
 def _create_text_update_requests(
     google_id: str,
     new_text: list[str],
+    new_runs: list[list[ParsedRun]] | None = None,
 ) -> list[dict[str, Any]]:
     """Create requests to update element text.
 
     Strategy: Delete all existing text, then insert new text.
+    If styled runs are provided, per-run text styles are applied after insert.
     """
     requests: list[dict[str, Any]] = []
 
@@ -248,6 +271,10 @@ def _create_text_update_requests(
                 }
             }
         )
+
+        # Apply per-run text styles from <T> runs
+        if new_runs:
+            requests.extend(_create_run_style_requests(google_id, new_runs))
 
     return requests
 
@@ -1287,6 +1314,333 @@ def _create_outline_request(
     }
 
 
+def _create_class_style_requests(
+    object_id: str,
+    styles: ElementStyles,
+    *,
+    has_text: bool,
+) -> list[dict[str, Any]]:
+    """Generate requests applying class-derived styles to an existing element.
+
+    Emits field-masked updates covering only the properties derived from
+    the element's classes. Text/paragraph styles are skipped when the
+    element has no text (updateTextStyle on empty text is an API error).
+    """
+    requests: list[dict[str, Any]] = []
+
+    requests.extend(_create_class_shape_style_requests(object_id, styles))
+
+    if has_text:
+        text_request = _create_class_text_style_request(object_id, styles.text_style)
+        if text_request:
+            requests.append(text_request)
+        para_request = _create_class_paragraph_style_request(
+            object_id, styles.paragraph_style
+        )
+        if para_request:
+            requests.append(para_request)
+
+    return requests
+
+
+def _create_class_shape_style_requests(
+    object_id: str,
+    styles: ElementStyles,
+) -> list[dict[str, Any]]:
+    """Generate updateShapeProperties requests from class-derived styles.
+
+    Field masks name only the properties the classes set.
+    """
+    requests: list[dict[str, Any]] = []
+
+    fill = styles.fill
+    if fill:
+        if fill.state == PropertyState.NOT_RENDERED:
+            requests.append(
+                {
+                    "updateShapeProperties": {
+                        "objectId": object_id,
+                        "shapeProperties": {
+                            "shapeBackgroundFill": {
+                                "propertyState": "NOT_RENDERED",
+                            },
+                        },
+                        "fields": "shapeBackgroundFill.propertyState",
+                    }
+                }
+            )
+        elif fill.color:
+            requests.append(
+                {
+                    "updateShapeProperties": {
+                        "objectId": object_id,
+                        "shapeProperties": {
+                            "shapeBackgroundFill": {
+                                "solidFill": {
+                                    "color": fill.color.to_api(),
+                                    "alpha": fill.color.alpha,
+                                },
+                            },
+                        },
+                        "fields": "shapeBackgroundFill.solidFill",
+                    }
+                }
+            )
+
+    stroke = styles.stroke
+    if stroke:
+        outline_request = _create_class_outline_request(object_id, stroke)
+        if outline_request:
+            requests.append(outline_request)
+
+    return requests
+
+
+def _create_class_outline_request(
+    object_id: str,
+    stroke: Stroke,
+) -> dict[str, Any] | None:
+    """Create updateShapeProperties request for class-derived stroke classes."""
+    if stroke.state == PropertyState.NOT_RENDERED:
+        return {
+            "updateShapeProperties": {
+                "objectId": object_id,
+                "shapeProperties": {
+                    "outline": {
+                        "propertyState": "NOT_RENDERED",
+                    },
+                },
+                "fields": "outline.propertyState",
+            }
+        }
+    if stroke.state == PropertyState.INHERIT:
+        return None
+
+    outline: dict[str, Any] = {}
+    fields: list[str] = []
+
+    if stroke.color:
+        outline["outlineFill"] = {
+            "solidFill": {
+                "color": stroke.color.to_api(),
+                "alpha": stroke.color.alpha,
+            },
+        }
+        fields.append("outline.outlineFill.solidFill")
+
+    if stroke.weight_pt is not None:
+        outline["weight"] = {"magnitude": pt_to_emu(stroke.weight_pt), "unit": "EMU"}
+        fields.append("outline.weight")
+
+    if stroke.dash_style is not None:
+        outline["dashStyle"] = stroke.dash_style.value
+        fields.append("outline.dashStyle")
+
+    if not fields:
+        return None
+
+    return {
+        "updateShapeProperties": {
+            "objectId": object_id,
+            "shapeProperties": {
+                "outline": outline,
+            },
+            "fields": ",".join(fields),
+        }
+    }
+
+
+def _class_text_style_to_api(
+    text_style: TextStyle,
+) -> tuple[dict[str, Any], list[str]]:
+    """Convert a class-derived TextStyle to API style dict + field mask parts."""
+    style: dict[str, Any] = {}
+    fields: list[str] = []
+
+    if text_style.bold is not None:
+        style["bold"] = text_style.bold
+        fields.append("bold")
+    if text_style.italic is not None:
+        style["italic"] = text_style.italic
+        fields.append("italic")
+    if text_style.underline is not None:
+        style["underline"] = text_style.underline
+        fields.append("underline")
+    if text_style.strikethrough is not None:
+        style["strikethrough"] = text_style.strikethrough
+        fields.append("strikethrough")
+    if text_style.small_caps is not None:
+        style["smallCaps"] = text_style.small_caps
+        fields.append("smallCaps")
+
+    if text_style.baseline_offset:
+        style["baselineOffset"] = text_style.baseline_offset
+        fields.append("baselineOffset")
+
+    if text_style.font_family:
+        style["fontFamily"] = text_style.font_family
+        fields.append("fontFamily")
+
+    if text_style.font_size_pt:
+        style["fontSize"] = {"magnitude": text_style.font_size_pt, "unit": "PT"}
+        fields.append("fontSize")
+
+    if text_style.font_weight:
+        weighted: dict[str, Any] = {"weight": text_style.font_weight}
+        if text_style.font_family:
+            weighted["fontFamily"] = text_style.font_family
+        style["weightedFontFamily"] = weighted
+        fields.append("weightedFontFamily")
+
+    if text_style.foreground_color:
+        style["foregroundColor"] = {
+            "opaqueColor": text_style.foreground_color.to_api()
+        }
+        fields.append("foregroundColor")
+
+    if text_style.background_color:
+        style["backgroundColor"] = {
+            "opaqueColor": text_style.background_color.to_api()
+        }
+        fields.append("backgroundColor")
+
+    if text_style.link:
+        style["link"] = {"url": text_style.link}
+        fields.append("link")
+
+    return style, fields
+
+
+def _create_class_text_style_request(
+    object_id: str,
+    text_style: TextStyle | None,
+    text_range: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Create updateTextStyle request from class-derived text styles.
+
+    Defaults to the ALL range; pass text_range for a specific run.
+    """
+    if text_style is None:
+        return None
+
+    style, fields = _class_text_style_to_api(text_style)
+    if not fields:
+        return None
+
+    return {
+        "updateTextStyle": {
+            "objectId": object_id,
+            "textRange": text_range or {"type": "ALL"},
+            "style": style,
+            "fields": ",".join(fields),
+        }
+    }
+
+
+def _create_class_paragraph_style_request(
+    object_id: str,
+    paragraph_style: ParagraphStyle | None,
+) -> dict[str, Any] | None:
+    """Create updateParagraphStyle request from class-derived paragraph styles."""
+    if paragraph_style is None:
+        return None
+
+    style: dict[str, Any] = {}
+    fields: list[str] = []
+
+    if paragraph_style.alignment:
+        style["alignment"] = paragraph_style.alignment.value
+        fields.append("alignment")
+
+    if paragraph_style.line_spacing:
+        style["lineSpacing"] = paragraph_style.line_spacing
+        fields.append("lineSpacing")
+
+    if paragraph_style.space_above_pt is not None:
+        style["spaceAbove"] = {
+            "magnitude": paragraph_style.space_above_pt,
+            "unit": "PT",
+        }
+        fields.append("spaceAbove")
+
+    if paragraph_style.space_below_pt is not None:
+        style["spaceBelow"] = {
+            "magnitude": paragraph_style.space_below_pt,
+            "unit": "PT",
+        }
+        fields.append("spaceBelow")
+
+    if paragraph_style.indent_start_pt is not None:
+        style["indentStart"] = {
+            "magnitude": paragraph_style.indent_start_pt,
+            "unit": "PT",
+        }
+        fields.append("indentStart")
+
+    if paragraph_style.indent_first_line_pt is not None:
+        style["indentFirstLine"] = {
+            "magnitude": paragraph_style.indent_first_line_pt,
+            "unit": "PT",
+        }
+        fields.append("indentFirstLine")
+
+    if paragraph_style.direction:
+        style["direction"] = paragraph_style.direction
+        fields.append("direction")
+
+    if paragraph_style.spacing_mode:
+        style["spacingMode"] = paragraph_style.spacing_mode
+        fields.append("spacingMode")
+
+    if not fields:
+        return None
+
+    return {
+        "updateParagraphStyle": {
+            "objectId": object_id,
+            "textRange": {"type": "ALL"},
+            "style": style,
+            "fields": ",".join(fields),
+        }
+    }
+
+
+def _create_run_style_requests(
+    object_id: str,
+    runs: list[list[ParsedRun]],
+) -> list[dict[str, Any]]:
+    """Create updateTextStyle requests for styled <T> runs.
+
+    Assumes the element's text is the paragraphs joined with newlines
+    (matching _create_text_insert_requests), and computes FIXED_RANGE
+    indices over that combined text.
+    """
+    requests: list[dict[str, Any]] = []
+    index = 0
+
+    for para_num, para_runs in enumerate(runs):
+        if para_num > 0:
+            index += 1  # Newline separator between paragraphs
+
+        for run in para_runs:
+            end_index = index + len(run.text)
+            if run.text_style is not None:
+                request = _create_class_text_style_request(
+                    object_id,
+                    run.text_style,
+                    text_range={
+                        "type": "FIXED_RANGE",
+                        "startIndex": index,
+                        "endIndex": end_index,
+                    },
+                )
+                if request:
+                    requests.append(request)
+            index = end_index
+
+    return requests
+
+
 def _create_text_insert_requests(
     object_id: str,
     text_lines: list[str],
@@ -1344,9 +1698,32 @@ def _create_element_requests(
             )
         )
 
+    # Apply class-derived shape styling (fill, stroke)
+    if change.new_styles:
+        requests.extend(
+            _create_class_shape_style_requests(new_object_id, change.new_styles)
+        )
+
     # Add text if provided
     if change.new_text:
         requests.extend(_create_text_insert_requests(new_object_id, change.new_text))
+
+        # Apply class-derived text/paragraph styling to the inserted text
+        if change.new_styles:
+            text_request = _create_class_text_style_request(
+                new_object_id, change.new_styles.text_style
+            )
+            if text_request:
+                requests.append(text_request)
+            para_request = _create_class_paragraph_style_request(
+                new_object_id, change.new_styles.paragraph_style
+            )
+            if para_request:
+                requests.append(para_request)
+
+        # Apply per-run text styles from <T> runs (override element-level styles)
+        if change.new_runs:
+            requests.extend(_create_run_style_requests(new_object_id, change.new_runs))
 
     return requests
 

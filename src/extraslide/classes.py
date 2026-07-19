@@ -810,6 +810,65 @@ def parse_stroke_classes(classes: list[str]) -> Stroke | None:
     return stroke if found_stroke else None
 
 
+def parse_paragraph_style_classes(classes: list[str]) -> ParagraphStyle | None:
+    """Parse paragraph styling classes into a ParagraphStyle object.
+
+    Reverse of ParagraphStyle.to_classes(). Returns None if no
+    paragraph-level classes were found.
+    """
+    ps = ParagraphStyle()
+    found = False
+
+    align_map = {
+        "text-align-left": TextAlignment.START,
+        "text-align-center": TextAlignment.CENTER,
+        "text-align-right": TextAlignment.END,
+        "text-align-justify": TextAlignment.JUSTIFIED,
+    }
+
+    for cls in classes:
+        # Alignment
+        if cls in align_map:
+            ps.alignment = align_map[cls]
+            found = True
+
+        # Line spacing
+        elif match := re.match(r"^leading-(\d+)$", cls):
+            ps.line_spacing = int(match.group(1))
+            found = True
+
+        # Space above/below
+        elif match := re.match(r"^space-above-(\d+(?:\.\d+)?)$", cls):
+            ps.space_above_pt = float(match.group(1))
+            found = True
+        elif match := re.match(r"^space-below-(\d+(?:\.\d+)?)$", cls):
+            ps.space_below_pt = float(match.group(1))
+            found = True
+
+        # Indentation
+        elif match := re.match(r"^indent-start-(\d+(?:\.\d+)?)$", cls):
+            ps.indent_start_pt = float(match.group(1))
+            found = True
+        elif match := re.match(r"^indent-first-(\d+(?:\.\d+)?)$", cls):
+            ps.indent_first_line_pt = float(match.group(1))
+            found = True
+
+        # Direction
+        elif cls == "dir-rtl":
+            ps.direction = "RIGHT_TO_LEFT"
+            found = True
+
+        # Spacing mode
+        elif cls == "spacing-never-collapse":
+            ps.spacing_mode = "NEVER_COLLAPSE"
+            found = True
+        elif cls == "spacing-collapse-lists":
+            ps.spacing_mode = "COLLAPSE_LISTS"
+            found = True
+
+    return ps if found else None
+
+
 def parse_text_style_classes(classes: list[str]) -> TextStyle:
     """Parse text styling classes into a TextStyle object."""
     ts = TextStyle()

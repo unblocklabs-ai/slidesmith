@@ -16,7 +16,9 @@ from enum import Enum
 from typing import Any
 
 from extraslide.content_parser import (
+    ElementStyles,
     ParsedElement,
+    ParsedRun,
     flatten_elements,
     parse_slide_content,
 )
@@ -40,6 +42,9 @@ class ChangeType(Enum):
     # Truly new element (no source)
     CREATE = "create"
 
+    # Class-derived styles changed on an existing element
+    STYLE_UPDATE = "style_update"
+
 
 @dataclass
 class Change:
@@ -62,6 +67,12 @@ class Change:
 
     # For TEXT_UPDATE: new text
     new_text: list[str] | None = None
+
+    # For CREATE/STYLE_UPDATE: class-derived styles from the edited element
+    new_styles: ElementStyles | None = None
+
+    # For CREATE/TEXT_UPDATE: styled text runs (one list per paragraph)
+    new_runs: list[list[ParsedRun]] | None = None
 
     # Slide index where this change occurs
     slide_index: str | None = None
@@ -307,6 +318,8 @@ def diff_presentation(
                         new_text=edited_elem.paragraphs
                         if edited_elem.paragraphs
                         else None,
+                        new_styles=edited_elem.styles,
+                        new_runs=edited_elem.runs if edited_elem.runs else None,
                         metadata={"tag": edited_elem.tag},
                     )
                 )
@@ -354,14 +367,27 @@ def _compare_elements(
             )
         )
 
-    # Check text change
-    if pristine.paragraphs != edited.paragraphs:
+    # Check text change (text content or per-run styling)
+    if pristine.paragraphs != edited.paragraphs or pristine.runs != edited.runs:
         changes.append(
             Change(
                 change_type=ChangeType.TEXT_UPDATE,
                 target_id=pristine.clean_id,
                 slide_index=slide_idx,
                 new_text=edited.paragraphs,
+                new_runs=edited.runs if edited.runs else None,
+            )
+        )
+
+    # Check class-derived style change
+    if edited.styles is not None and edited.styles != pristine.styles:
+        changes.append(
+            Change(
+                change_type=ChangeType.STYLE_UPDATE,
+                target_id=pristine.clean_id,
+                slide_index=slide_idx,
+                new_styles=edited.styles,
+                new_text=edited.paragraphs if edited.paragraphs else None,
             )
         )
 

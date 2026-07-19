@@ -58,7 +58,7 @@ def cmd_diff(args: Any) -> None:
 
 
 def cmd_push(args: Any) -> None:
-    from extraslide.client import SlidesClient
+    from extraslide.client import ConflictError, SlidesClient
     from extraslide.transport import GoogleSlidesTransport
 
     token = _token("slide.push", str(args.folder))
@@ -66,12 +66,19 @@ def cmd_push(args: Any) -> None:
     async def run() -> None:
         transport = GoogleSlidesTransport(token)
         try:
-            resp = await SlidesClient(transport).push(Path(args.folder))
+            resp = await SlidesClient(transport).push(
+                Path(args.folder), force=args.force
+            )
             print(f"Push applied {len(resp.get('replies', []))} change(s).")
         finally:
             await transport.close()
 
-    asyncio.run(run())
+    try:
+        asyncio.run(run())
+    except ConflictError as e:
+        # The message already names the conflicting elements and what changed.
+        print(str(e), file=sys.stderr)
+        sys.exit(2)
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -96,6 +103,15 @@ def main(argv: list[str] | None = None) -> None:
 
     spu = sub.add_parser("push", help="Apply local edits to the same deck in place")
     spu.add_argument("folder", help="Presentation folder created by pull")
+    spu.add_argument(
+        "--force",
+        action="store_true",
+        help=(
+            "Bypass the conflict guard and revision lock: push even if the "
+            "elements being changed were also edited in Google Slides "
+            "(their remote edits are overwritten; a warning is logged)"
+        ),
+    )
     spu.set_defaults(func=cmd_push)
 
     args = p.parse_args(argv)

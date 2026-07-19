@@ -8,6 +8,7 @@ import json
 import re
 import sys
 import xml.etree.ElementTree as ET
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +27,31 @@ def _token(command_type: str, target: str) -> str:
         reason=f"slidesmith {command_type}",
     )
     return cred.token
+
+
+def _warn_if_stale(folder: str | Path, *, now: datetime | None = None) -> None:
+    """Warn when a workspace's pull timestamp is more than 24 hours old."""
+    metadata_path = Path(folder) / "presentation.json"
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        pulled_at_raw = metadata.get("pulledAt")
+        if not isinstance(pulled_at_raw, str):
+            return
+        pulled_at = datetime.fromisoformat(pulled_at_raw.replace("Z", "+00:00"))
+        if pulled_at.tzinfo is None:
+            pulled_at = pulled_at.replace(tzinfo=timezone.utc)
+    except (OSError, json.JSONDecodeError, ValueError, AttributeError):
+        return
+
+    current = now or datetime.now(timezone.utc)
+    if current.astimezone(timezone.utc) - pulled_at.astimezone(
+        timezone.utc
+    ) > timedelta(hours=24):
+        print(
+            f"workspace pulled {pulled_at_raw}; deck may have changed — "
+            "re-pull recommended",
+            file=sys.stderr,
+        )
 
 
 def cmd_pull(args: Any) -> None:
@@ -51,6 +77,7 @@ def cmd_pull(args: Any) -> None:
 def cmd_diff(args: Any) -> None:
     from extraslide.client import diff_folder
 
+    _warn_if_stale(args.folder)
     requests = diff_folder(args.folder)
     if not requests:
         print("No changes detected.")
@@ -62,6 +89,7 @@ def cmd_push(args: Any) -> None:
     from extraslide.client import ConflictError, SlidesClient
     from extraslide.transport import GoogleSlidesTransport
 
+    _warn_if_stale(args.folder)
     token = _token("slide.push", str(args.folder))
 
     async def run() -> None:
@@ -86,6 +114,7 @@ def cmd_check(args: Any) -> None:
     from extraslide.qa import check_folder
 
     folder = Path(args.folder)
+    _warn_if_stale(folder)
     if not args.no_thumbnails:
         from extraslide.transport import GoogleSlidesTransport
 
@@ -131,6 +160,20 @@ def cmd_check(args: Any) -> None:
         sys.exit(exit_code)
 
 
+def cmd_auth_doctor(_: Any) -> None:
+    from slidesmith.credentials import auth_doctor_lines
+
+    print("\n".join(auth_doctor_lines()))
+
+
+def cmd_auth_login(_: Any) -> None:
+    from slidesmith.credentials import CredentialsManager
+
+    session = CredentialsManager().login(force=True)
+    expires = datetime.fromtimestamp(session.expires_at).astimezone().isoformat()
+    print(f"Authentication refreshed; session saved to available stores; expires {expires}")
+
+
 def main(argv: list[str] | None = None) -> None:
     p = argparse.ArgumentParser(
         prog="slidesmith",
@@ -140,6 +183,17 @@ def main(argv: list[str] | None = None) -> None:
         ),
     )
     sub = p.add_subparsers(dest="command", required=True)
+
+    sa = sub.add_parser("auth", help="Diagnose or refresh authentication")
+    auth_sub = sa.add_subparsers(dest="auth_command", required=True)
+    sad = auth_sub.add_parser(
+        "doctor", help="Print layered, agent-actionable authentication diagnostics"
+    )
+    sad.set_defaults(func=cmd_auth_doctor)
+    sal = auth_sub.add_parser(
+        "login", help="Force fresh browser consent and save the session"
+    )
+    sal.set_defaults(func=cmd_auth_login)
 
     sp = sub.add_parser("pull", help="Pull a presentation to a local SML folder")
     sp.add_argument("url", help="Presentation URL or ID")

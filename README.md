@@ -25,6 +25,12 @@ client from `~/Library/Application Support/gogcli/credentials.json` (or
 `GOG_ACCESS_TOKEN` / `GOOGLE_WORKSPACE_CLI_TOKEN` env vars, or a service
 account via `SERVICE_ACCOUNT_PATH`).
 
+## For agents
+
+Read [docs/AGENT-GUIDE.md](docs/AGENT-GUIDE.md) before editing a deck. It is the
+source-derived reference for the pull/diff/check/push loop, accepted SML class
+vocabulary, one-shot Stack/Grid layout, QA judgment, and auth recovery.
+
 ## Status
 
 Scaffold. Working today: pull, diff (fixed), push, offline contract tests C1 +

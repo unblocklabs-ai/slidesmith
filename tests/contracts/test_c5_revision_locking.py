@@ -204,6 +204,7 @@ async def test_pull_records_revision_id_and_base_snapshot(ws: Workspace) -> None
         (ws.folder / "presentation.json").read_text(encoding="utf-8")
     )
     assert metadata["revisionId"] == golden_revision
+    assert metadata["pulledAt"].endswith("Z")
 
     base_path = ws.folder / ".pristine" / "base.json"
     assert base_path.exists(), "pull must persist the pristine base raw tree"

@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import sys
 import zipfile
+from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
@@ -30,6 +31,10 @@ RAW_DIR = ".raw"
 PRISTINE_DIR = ".pristine"
 PRISTINE_ZIP = "presentation.zip"
 PRISTINE_BASE_FILE = "base.json"
+
+
+def _pull_timestamp() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 class ConflictError(Exception):
@@ -220,6 +225,7 @@ class SlidesClient:
         revision_id = presentation_data.revision_id
         if revision_id:
             result["presentation_info"]["revisionId"] = revision_id
+        result["presentation_info"]["pulledAt"] = _pull_timestamp()
 
         # Write the new format files
         written_files.extend(write_new_format(result, presentation_dir))
@@ -405,6 +411,7 @@ class SlidesClient:
         result = process_presentation(refreshed.data)
         if refreshed.revision_id:
             result["presentation_info"]["revisionId"] = refreshed.revision_id
+        result["presentation_info"]["pulledAt"] = _pull_timestamp()
 
         with TemporaryDirectory(prefix="slidesmith-push-refresh-") as temp_dir:
             staging_dir = Path(temp_dir)

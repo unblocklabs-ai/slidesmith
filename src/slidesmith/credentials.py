@@ -42,6 +42,7 @@ try:
 
     _KEYRING_AVAILABLE = True
 except ImportError:
+    _keyring = None  # type: ignore[assignment]
     _KEYRING_AVAILABLE = False
 
 _KEYRING_SERVICE = "extrasuite"
@@ -105,6 +106,7 @@ class OAuthClientCredentials:
     client_id: str
     client_secret: str
     source: str  # "gws" | "gogcli" — used only in log/error messages
+    location: str = ""
 
 
 def _parse_oauth_client_json(data: dict[str, Any]) -> tuple[str, str] | None:
@@ -144,7 +146,15 @@ def _find_gws_client_credentials() -> OAuthClientCredentials | None:
     cid = os.environ.get("GOOGLE_WORKSPACE_CLI_CLIENT_ID", "")
     csec = os.environ.get("GOOGLE_WORKSPACE_CLI_CLIENT_SECRET", "")
     if cid and csec:
-        return OAuthClientCredentials(client_id=cid, client_secret=csec, source="gws")
+        return OAuthClientCredentials(
+            client_id=cid,
+            client_secret=csec,
+            source="gws",
+            location=(
+                "environment variables GOOGLE_WORKSPACE_CLI_CLIENT_ID + "
+                "GOOGLE_WORKSPACE_CLI_CLIENT_SECRET"
+            ),
+        )
 
     creds_file = os.environ.get("GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE", "")
     candidates = [Path(creds_file)] if creds_file else []
@@ -158,7 +168,10 @@ def _find_gws_client_credentials() -> OAuthClientCredentials | None:
         parsed = _parse_oauth_client_json(data)
         if parsed:
             return OAuthClientCredentials(
-                client_id=parsed[0], client_secret=parsed[1], source="gws"
+                client_id=parsed[0],
+                client_secret=parsed[1],
+                source="gws",
+                location=str(path),
             )
 
     return None
@@ -188,7 +201,10 @@ def _find_gogcli_client_credentials() -> OAuthClientCredentials | None:
     parsed = _parse_oauth_client_json(data)
     if parsed:
         return OAuthClientCredentials(
-            client_id=parsed[0], client_secret=parsed[1], source="gogcli"
+            client_id=parsed[0],
+            client_secret=parsed[1],
+            source="gogcli",
+            location=str(path),
         )
     return None
 
@@ -366,8 +382,14 @@ class SessionStore(Protocol):
 class KeyringSessionStore:
     """Session token storage backed by the OS keyring."""
 
+    @staticmethod
+    def _backend() -> Any:
+        if not _KEYRING_AVAILABLE or _keyring is None:
+            raise RuntimeError("keyring package is not available")
+        return _keyring
+
     def load(self, profile_name: str) -> SessionToken | None:
-        raw = _keyring.get_password(_KEYRING_SERVICE, profile_name)
+        raw = self._backend().get_password(_KEYRING_SERVICE, profile_name)
         if not raw:
             return None
         try:
@@ -377,13 +399,153 @@ class KeyringSessionStore:
             return None
 
     def save(self, profile_name: str, token: SessionToken) -> None:
-        _keyring.set_password(
+        self._backend().set_password(
             _KEYRING_SERVICE, profile_name, json.dumps(token.to_dict())
         )
 
     def delete(self, profile_name: str) -> None:
-        with contextlib.suppress(Exception):
-            _keyring.delete_password(_KEYRING_SERVICE, profile_name)
+        self._backend().delete_password(_KEYRING_SERVICE, profile_name)
+
+
+class FileSessionStore:
+    """Session token storage at ``~/.config/slidesmith/session.json``.
+
+    The file contains one SessionToken payload per profile and is always written
+    with mode 0600. OAuth client credentials and client secrets are never stored
+    here.
+    """
+
+    def __init__(self, path: str | Path | None = None) -> None:
+        self.path = (
+            Path(path)
+            if path is not None
+            else Path.home() / ".config" / "slidesmith" / "session.json"
+        )
+
+    def _load_profiles(self) -> dict[str, dict[str, Any]]:
+        try:
+            data = json.loads(self.path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return {}
+        except (OSError, json.JSONDecodeError):
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        profiles = data.get("profiles")
+        if isinstance(profiles, dict):
+            return {
+                str(name): payload
+                for name, payload in profiles.items()
+                if isinstance(payload, dict)
+            }
+        # Accept a direct SessionToken payload for forward compatibility with
+        # hand-provisioned single-profile files.
+        if {"raw_token", "email", "expires_at"}.issubset(data):
+            return {_DEFAULT_PROFILE: data}
+        return {}
+
+    def load(self, profile_name: str) -> SessionToken | None:
+        payload = self._load_profiles().get(profile_name)
+        if payload is None:
+            return None
+        try:
+            token = SessionToken.from_dict(payload)
+        except (KeyError, TypeError, ValueError):
+            return None
+        return token if token.is_valid() else None
+
+    def save(self, profile_name: str, token: SessionToken) -> None:
+        profiles = self._load_profiles()
+        profiles[profile_name] = token.to_dict()
+        self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        payload = json.dumps({"profiles": profiles}, indent=2, ensure_ascii=False)
+        fd = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(payload)
+                handle.write("\n")
+        except Exception:
+            with contextlib.suppress(OSError):
+                os.close(fd)
+            raise
+        os.chmod(self.path, stat.S_IRUSR | stat.S_IWUSR)
+
+    def delete(self, profile_name: str) -> None:
+        profiles = self._load_profiles()
+        if profile_name not in profiles:
+            return
+        profiles.pop(profile_name)
+        if profiles:
+            self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            payload = json.dumps(
+                {"profiles": profiles}, indent=2, ensure_ascii=False
+            )
+            fd = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                    handle.write(payload)
+                    handle.write("\n")
+            except Exception:
+                with contextlib.suppress(OSError):
+                    os.close(fd)
+                raise
+            os.chmod(self.path, stat.S_IRUSR | stat.S_IWUSR)
+        else:
+            self.path.unlink(missing_ok=True)
+
+
+class FallbackSessionStore:
+    """Read keyring first and fall back to a file after any keyring error."""
+
+    def __init__(
+        self,
+        keyring_store: SessionStore | None = None,
+        file_store: SessionStore | None = None,
+    ) -> None:
+        self.keyring_store = keyring_store or KeyringSessionStore()
+        self.file_store = file_store or FileSessionStore()
+        self._notice_printed = False
+
+    def _notice(self, exc: Exception) -> None:
+        if self._notice_printed:
+            return
+        self._notice_printed = True
+        print(
+            f"warning: keyring unavailable ({exc!r}); using file session store",
+            file=sys.stderr,
+        )
+
+    def load(self, profile_name: str) -> SessionToken | None:
+        try:
+            return self.keyring_store.load(profile_name)
+        except Exception as exc:
+            self._notice(exc)
+            return self.file_store.load(profile_name)
+
+    def save(self, profile_name: str, token: SessionToken) -> None:
+        keyring_saved = False
+        try:
+            self.keyring_store.save(profile_name, token)
+            keyring_saved = True
+        except Exception as exc:
+            self._notice(exc)
+        try:
+            self.file_store.save(profile_name, token)
+        except Exception as exc:
+            if not keyring_saved:
+                raise
+            print(
+                f"warning: file session store unavailable ({exc!r}); "
+                "session saved to keyring only",
+                file=sys.stderr,
+            )
+
+    def delete(self, profile_name: str) -> None:
+        try:
+            self.keyring_store.delete(profile_name)
+        except Exception as exc:
+            self._notice(exc)
+        self.file_store.delete(profile_name)
 
 
 class InMemorySessionStore:
@@ -405,6 +567,153 @@ class InMemorySessionStore:
         self._tokens.pop(profile_name, None)
 
 
+def _inspect_session_payload(payload: Any) -> tuple[str, SessionToken | None]:
+    if payload is None:
+        return "absent", None
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except json.JSONDecodeError:
+            return "invalid", None
+    if not isinstance(payload, dict):
+        return "invalid", None
+    try:
+        token = SessionToken.from_dict(payload)
+    except (KeyError, TypeError, ValueError):
+        return "invalid", None
+    return ("valid" if token.is_valid() else "expired"), token
+
+
+def _format_expiry(token: SessionToken | None) -> str:
+    if token is None:
+        return ""
+    return datetime.fromtimestamp(token.expires_at).astimezone().isoformat()
+
+
+def auth_doctor_lines() -> list[str]:
+    """Return a layered, secret-safe authentication diagnosis."""
+    oauth_creds = _find_gws_client_credentials() or _find_gogcli_client_credentials()
+    server_url = os.environ.get("EXTRASUITE_SERVER_URL", "").strip()
+    service_account = os.environ.get("SERVICE_ACCOUNT_PATH", "").strip()
+    bare_token = bool(
+        os.environ.get("GOOGLE_WORKSPACE_CLI_TOKEN")
+        or os.environ.get("GOG_ACCESS_TOKEN")
+    )
+
+    if oauth_creds is not None:
+        credential_line = (
+            f"OAuth client credentials: FOUND ({oauth_creds.source}: "
+            f"{oauth_creds.location})"
+        )
+        profile_name = f"{oauth_creds.source}-default"
+    else:
+        credential_line = "OAuth client credentials: ABSENT"
+        profile_name = _DEFAULT_PROFILE
+        profiles_path = Path.home() / ".config" / "extrasuite" / "profiles.json"
+        try:
+            profiles = json.loads(profiles_path.read_text(encoding="utf-8"))
+            profile_name = profiles.get("active") or profile_name
+        except (OSError, json.JSONDecodeError, AttributeError):
+            pass
+
+    gateway_source = "environment variable EXTRASUITE_SERVER_URL"
+    if not server_url:
+        gateway_path = Path.home() / ".config" / "extrasuite" / "gateway.json"
+        try:
+            gateway_data = json.loads(gateway_path.read_text(encoding="utf-8"))
+            candidate = gateway_data.get("EXTRASUITE_SERVER_URL", "")
+            if isinstance(candidate, str):
+                server_url = candidate.strip()
+                gateway_source = str(gateway_path)
+        except (OSError, json.JSONDecodeError, AttributeError):
+            pass
+
+    lines = [credential_line]
+    if server_url:
+        lines.append(f"ExtraSuite gateway: FOUND ({gateway_source})")
+    if service_account:
+        sa_path = Path(service_account).expanduser()
+        sa_state = "FOUND" if sa_path.is_file() else "MISSING"
+        lines.append(f"Service account: {sa_state} ({sa_path})")
+    if bare_token:
+        lines.append("Pre-obtained access token: FOUND (environment variable)")
+    lines.append(f"Session profile: {profile_name}")
+
+    keyring_error: Exception | None = None
+    keyring_status = "absent"
+    keyring_token: SessionToken | None = None
+    try:
+        raw = KeyringSessionStore._backend().get_password(
+            _KEYRING_SERVICE, profile_name
+        )
+        keyring_status, keyring_token = _inspect_session_payload(raw)
+        detail = keyring_status.upper()
+        if keyring_token is not None:
+            detail += f"; expires {_format_expiry(keyring_token)}"
+        lines.append(f"Keyring: READABLE; token {detail}")
+    except Exception as exc:
+        keyring_error = exc
+        lines.append(f"Keyring: DENIED OR BROKEN; error: {exc!r}")
+
+    file_store = FileSessionStore()
+    file_status = "absent"
+    file_token: SessionToken | None = None
+    if not file_store.path.exists():
+        lines.append(f"File store: ABSENT ({file_store.path})")
+    else:
+        try:
+            data = json.loads(file_store.path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            file_status = "invalid"
+            lines.append(f"File store: INVALID ({file_store.path}); error: {exc!r}")
+        else:
+            payload: Any = None
+            recognized_format = False
+            if isinstance(data, dict) and isinstance(data.get("profiles"), dict):
+                payload = data["profiles"].get(profile_name)
+                recognized_format = True
+            elif isinstance(data, dict) and {
+                "raw_token",
+                "email",
+                "expires_at",
+            }.issubset(data):
+                payload = data
+                recognized_format = True
+            if not recognized_format:
+                file_status = "invalid"
+            else:
+                file_status, file_token = _inspect_session_payload(payload)
+            detail = file_status.upper()
+            if file_token is not None:
+                detail += f"; expires {_format_expiry(file_token)}"
+            lines.append(f"File store: PRESENT ({file_store.path}); token {detail}")
+
+    service_account_valid = bool(service_account and Path(service_account).is_file())
+    credentials_found = bool(
+        oauth_creds is not None or server_url or service_account_valid or bare_token
+    )
+    immediate_auth = service_account_valid or bare_token
+    token_statuses = {keyring_status, file_status}
+    if not credentials_found:
+        verdict = "CREDENTIAL ABSENT"
+        next_command = "gws auth setup"
+    elif "valid" in token_statuses or immediate_auth:
+        verdict = "READY"
+        next_command = "slidesmith pull <presentation-url-or-id>"
+    elif "expired" in token_statuses:
+        verdict = "TOKEN EXPIRED"
+        next_command = "slidesmith auth login"
+    elif keyring_error is not None:
+        verdict = "KEYRING DENIED OR BROKEN"
+        next_command = "slidesmith auth login"
+    else:
+        verdict = "SESSION TOKEN ABSENT"
+        next_command = "slidesmith auth login"
+
+    lines.extend([f"Verdict: {verdict}", f"Next command: {next_command}"])
+    return lines
+
+
 class CredentialsManager:
     """Manages credentials for Google API access.
 
@@ -412,9 +721,9 @@ class CredentialsManager:
     1. ExtraSuite protocol - obtains short-lived tokens via the v2 session flow
     2. Service account file - uses credentials from a JSON key file
 
-    Session tokens are stored in the OS keyring (macOS Keychain, Linux
-    SecretService, Windows Credential Locker).  Access tokens are never
-    written to disk.
+    Session tokens are mirrored to the OS keyring (macOS Keychain, Linux
+    SecretService, Windows Credential Locker) and a 0600 Slidesmith file.
+    Access tokens and OAuth client secrets are never written there.
 
     Profile metadata (name → email, active pointer) is kept in
     ``~/.config/extrasuite/profiles.json`` (0600). No tokens in that file.
@@ -505,15 +814,32 @@ class CredentialsManager:
                 else:
                     raise ValueError(_NO_AUTH_MESSAGE)
 
+        self._session_store_injected = session_store is not None
+        self._keyring_session_store: SessionStore | None = None
+        self._file_session_store: SessionStore | None = None
         if session_store is not None:
             self._session_store: SessionStore = session_store
         elif self._auth_mode in ("extrasuite", "oauth_client"):
-            if not _KEYRING_AVAILABLE:
-                raise RuntimeError(
-                    "keyring package is required but is not installed.\n"
-                    "Install it with: pip install keyring"
+            self._keyring_session_store = KeyringSessionStore()
+            self._file_session_store = FileSessionStore()
+            store_choice = os.environ.get("SLIDESMITH_TOKEN_STORE", "").strip()
+            if store_choice not in ("", "keyring", "file"):
+                raise ValueError(
+                    "SLIDESMITH_TOKEN_STORE must be 'keyring' or 'file', "
+                    f"got {store_choice!r}"
                 )
-            self._session_store = KeyringSessionStore()
+            if store_choice == "keyring":
+                if not _KEYRING_AVAILABLE:
+                    raise RuntimeError(
+                        "SLIDESMITH_TOKEN_STORE=keyring but keyring is not available"
+                    )
+                self._session_store = self._keyring_session_store
+            elif store_choice == "file":
+                self._session_store = self._file_session_store
+            else:
+                self._session_store = FallbackSessionStore(
+                    self._keyring_session_store, self._file_session_store
+                )
         else:
             self._session_store = InMemorySessionStore()
 
@@ -616,7 +942,7 @@ class CredentialsManager:
         return active if active else _DEFAULT_PROFILE
 
     # =========================================================================
-    # Session Token Methods (keyring-backed)
+    # Session Token Methods
     # =========================================================================
 
     def _load_session_token(
@@ -627,8 +953,23 @@ class CredentialsManager:
         return self._session_store.load(name)
 
     def _save_session_token(self, token: SessionToken, profile_name: str) -> None:
-        """Save session token and update profile email in profiles.json."""
-        self._session_store.save(profile_name, token)
+        """Save a session token to both persistent stores when possible."""
+        if self._session_store_injected or self._auth_mode not in (
+            "extrasuite",
+            "oauth_client",
+        ):
+            self._session_store.save(profile_name, token)
+        else:
+            assert self._keyring_session_store is not None
+            assert self._file_session_store is not None
+            mirror = (
+                self._session_store
+                if isinstance(self._session_store, FallbackSessionStore)
+                else FallbackSessionStore(
+                    self._keyring_session_store, self._file_session_store
+                )
+            )
+            mirror.save(profile_name, token)
         data = self._load_profiles()
         data.setdefault("profiles", {})[profile_name] = token.email
         self._save_profiles(data)
@@ -658,7 +999,16 @@ class CredentialsManager:
 
     def _delete_session_token(self, profile_name: str) -> None:
         """Remove the session token for a profile from storage."""
-        self._session_store.delete(profile_name)
+        if self._session_store_injected or self._auth_mode not in (
+            "extrasuite",
+            "oauth_client",
+        ):
+            self._session_store.delete(profile_name)
+            return
+        for store in (self._keyring_session_store, self._file_session_store):
+            if store is not None:
+                with contextlib.suppress(Exception):
+                    store.delete(profile_name)
 
     def _migrate_legacy_files(self) -> None:
         """Delete legacy plain-text session/credential files from pre-keyring versions."""
@@ -697,6 +1047,31 @@ class CredentialsManager:
         Returns:
             A valid SessionToken.
         """
+        if self._auth_mode == "oauth_client":
+            assert self._oauth_client_creds is not None
+            creds = self._oauth_client_creds
+            profile_name = f"{creds.source}-default"
+            if not force:
+                existing = self._load_session_token(profile_name)
+                if existing:
+                    return existing
+            self._delete_session_token(profile_name)
+            _, refresh_token = self._run_oauth_browser_flow(
+                creds.client_id, creds.client_secret
+            )
+            session = SessionToken(
+                raw_token=refresh_token,
+                email="",
+                expires_at=time.time() + 30 * 86400,
+            )
+            self._save_session_token(session, profile_name)
+            return session
+
+        if self._auth_mode != "extrasuite":
+            raise RuntimeError(
+                f"browser login is not available for auth mode {self._auth_mode!r}"
+            )
+
         profile_name = profile if profile is not None else self._resolve_profile()
         if force:
             existing = self._load_session_token(profile_name)

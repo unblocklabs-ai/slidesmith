@@ -12,6 +12,7 @@ import json
 import sys
 import zipfile
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any
 
 from extraslide.content_diff import diff_presentation
@@ -334,7 +335,9 @@ class SlidesClient:
                 "will be overwritten",
                 file=sys.stderr,
             )
-            return await self._transport.batch_update(presentation_id, requests)
+            response = await self._transport.batch_update(presentation_id, requests)
+            await self._refresh_after_push(folder_path, presentation_id)
+            return response
 
         # (a) Re-fetch the remote presentation and capture its revision.
         remote = await self._transport.get_presentation(presentation_id)
@@ -371,7 +374,7 @@ class SlidesClient:
 
         # (d) Guarded write: fail if the deck is revised between (a) and now.
         try:
-            return await self._transport.batch_update(
+            response = await self._transport.batch_update(
                 presentation_id, requests, required_revision_id=required_revision
             )
         except APIError as e:
@@ -382,6 +385,57 @@ class SlidesClient:
                     "Re-pull and retry."
                 ) from e
             raise
+
+        await self._refresh_after_push(folder_path, presentation_id)
+        return response
+
+    async def _refresh_after_push(
+        self, folder_path: Path, presentation_id: str
+    ) -> None:
+        """Replace the pristine base with the authoritative post-push deck.
+
+        Re-fetch instead of treating the local pre-push SML as authoritative:
+        Google Slides may normalize values while applying a batch. Generate the
+        same files as pull() in a staging directory, then promote them into the
+        workspace. An SML file that already byte-matches the generated version
+        is deliberately left untouched; a mismatch is replaced by the remote-
+        derived version so the working tree and pristine snapshot agree.
+        """
+        refreshed = await self._transport.get_presentation(presentation_id)
+        result = process_presentation(refreshed.data)
+        if refreshed.revision_id:
+            result["presentation_info"]["revisionId"] = refreshed.revision_id
+
+        with TemporaryDirectory(prefix="slidesmith-push-refresh-") as temp_dir:
+            staging_dir = Path(temp_dir)
+            staged_files = write_new_format(result, staging_dir)
+            refreshed_files: list[Path] = []
+
+            for staged_path in staged_files:
+                relative_path = staged_path.relative_to(staging_dir)
+                destination = folder_path / relative_path
+                generated = staged_path.read_bytes()
+                is_sml = (
+                    relative_path.parts[0] == SLIDES_DIR
+                    and relative_path.name == "content.sml"
+                )
+
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                if not (
+                    is_sml
+                    and destination.exists()
+                    and destination.read_bytes() == generated
+                ):
+                    destination.write_bytes(generated)
+                refreshed_files.append(destination)
+
+            self._create_pristine_copy(folder_path, refreshed_files)
+
+        base_path = folder_path / PRISTINE_DIR / PRISTINE_BASE_FILE
+        base_path.write_text(
+            json.dumps(refreshed.data, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
 
     def _read_base_raw(self, folder_path: Path) -> dict[str, Any] | None:
         """Read the pristine base raw API tree, if this folder has one.

@@ -67,6 +67,21 @@ class StubTransport(Transport):
         )
         if self.batch_error is not None:
             raise self.batch_error
+
+        for request in requests:
+            update = request.get("updateShapeProperties")
+            if update is None:
+                continue
+            element = find_element(self.data, update["objectId"])
+            shape_properties = element.setdefault("shape", {}).setdefault(
+                "shapeProperties", {}
+            )
+            if update["fields"] == "shapeBackgroundFill.solidFill":
+                shape_properties["shapeBackgroundFill"] = copy.deepcopy(
+                    update["shapeProperties"]["shapeBackgroundFill"]
+                )
+
+        self.data["revisionId"] = f"rev-after-push-{len(self.batch_calls)}"
         return {"replies": [{}] * len(requests)}
 
     async def close(self) -> None:
@@ -102,6 +117,21 @@ def edit_e121_locally(folder: Path) -> None:
     sml.write_text(
         content.replace(
             '<TextBox id="e121"', '<TextBox id="e121" class="fill-#00ff00"'
+        ),
+        encoding="utf-8",
+    )
+
+
+def recolor_e121_locally(folder: Path, color: str) -> None:
+    """Set e121's local fill class on a freshly regenerated SML file."""
+    sml = folder / "slides" / "01" / "content.sml"
+    content = sml.read_text(encoding="utf-8")
+    assert '<TextBox id="e121"' in content
+    assert 'class="fill-' not in content
+    sml.write_text(
+        content.replace(
+            '<TextBox id="e121"',
+            f'<TextBox id="e121" class="fill-{color}"',
         ),
         encoding="utf-8",
     )
@@ -312,3 +342,59 @@ async def test_force_bypasses_guard_with_warning(
     assert len(ws.stub.batch_calls) == 1
     assert ws.stub.batch_calls[0]["required_revision_id"] is None
     assert "warning" in capsys.readouterr().err.lower()
+    metadata = json.loads(
+        (ws.folder / "presentation.json").read_text(encoding="utf-8")
+    )
+    base = json.loads(
+        (ws.folder / ".pristine" / "base.json").read_text(encoding="utf-8")
+    )
+    assert metadata["revisionId"] == "rev-after-push-1"
+    assert base["revisionId"] == "rev-after-push-1"
+
+
+# --- push: successful writes refresh the local pristine base -------------
+
+
+async def test_immediate_second_push_is_a_noop_against_refreshed_pristine(
+    ws: Workspace,
+) -> None:
+    recolor_e121_locally(ws.folder, "#00ff00")
+
+    await ws.client.push(ws.folder)
+
+    assert len(ws.stub.batch_calls) == 1
+    metadata = json.loads(
+        (ws.folder / "presentation.json").read_text(encoding="utf-8")
+    )
+    base = json.loads(
+        (ws.folder / ".pristine" / "base.json").read_text(encoding="utf-8")
+    )
+    assert metadata["revisionId"] == "rev-after-push-1"
+    assert base["revisionId"] == "rev-after-push-1"
+
+    # Re-fetch regeneration is authoritative: the API representation stores
+    # this as styles data, so the local class syntax is normalized away.
+    sml = ws.folder / "slides" / "01" / "content.sml"
+    assert 'class="fill-#00ff00"' not in sml.read_text(encoding="utf-8")
+
+    response = await ws.client.push(ws.folder)
+
+    assert response == {"replies": [], "message": "No changes detected"}
+    assert len(ws.stub.batch_calls) == 1
+
+
+async def test_second_edit_pushes_against_just_pushed_base(ws: Workspace) -> None:
+    recolor_e121_locally(ws.folder, "#00ff00")
+    await ws.client.push(ws.folder)
+
+    recolor_e121_locally(ws.folder, "#0000ff")
+    response = await ws.client.push(ws.folder)
+
+    assert response["replies"]
+    assert len(ws.stub.batch_calls) == 2
+    assert ws.stub.batch_calls[1]["required_revision_id"] == "rev-after-push-1"
+    base = json.loads(
+        (ws.folder / ".pristine" / "base.json").read_text(encoding="utf-8")
+    )
+    assert base["revisionId"] == "rev-after-push-2"
+    assert ws.client.diff(ws.folder) == []

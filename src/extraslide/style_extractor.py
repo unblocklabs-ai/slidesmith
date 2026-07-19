@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from extraslide.classes import Fill, ParagraphStyle, Stroke, TextStyle
+from extraslide.classes import ContentAlignment, Fill, ParagraphStyle, Stroke, TextStyle
 from extraslide.units import emu_to_pt
 
 if TYPE_CHECKING:
@@ -30,6 +30,14 @@ def extract_sml_element_classes(node: RenderNode) -> list[str]:
     classes: list[str] = []
     shape_props = shape.get("shapeProperties", {})
 
+    if "contentAlignment" in shape_props:
+        try:
+            classes.append(
+                ContentAlignment(shape_props["contentAlignment"]).to_class()
+            )
+        except ValueError:
+            pass
+
     if "shapeBackgroundFill" in shape_props:
         fill = Fill.from_api(shape_props["shapeBackgroundFill"])
         if fill:
@@ -45,24 +53,26 @@ def extract_sml_element_classes(node: RenderNode) -> list[str]:
     paragraph_class_sets: list[list[str]] = []
     for text_element in shape.get("text", {}).get("textElements", []):
         marker = text_element.get("paragraphMarker")
-        if marker is None:
+        if marker is not None:
+            paragraph_style = ParagraphStyle.from_api(marker.get("style"))
+            paragraph_class_sets.append(
+                paragraph_style.to_classes() if paragraph_style else []
+            )
             continue
-        paragraph_style = ParagraphStyle.from_api(marker.get("style"))
-        paragraph_class_sets.append(
-            paragraph_style.to_classes() if paragraph_style else []
-        )
 
     if paragraph_class_sets:
-        classes.extend(
-            cls
-            for cls in paragraph_class_sets[0]
-            if all(
-                cls in paragraph_classes
-                for paragraph_classes in paragraph_class_sets
-            )
-        )
+        classes.extend(_common_classes(paragraph_class_sets))
 
     return classes
+
+
+def _common_classes(class_sets: list[list[str]]) -> list[str]:
+    """Return classes explicitly present in every set, preserving order."""
+    return [
+        cls
+        for cls in class_sets[0]
+        if all(cls in candidate for candidate in class_sets[1:])
+    ]
 
 
 def extract_sml_text_classes(run_style: dict[str, Any] | None) -> list[str]:

@@ -33,11 +33,14 @@ vocabulary, one-shot Stack/Grid layout, QA judgment, and auth recovery.
 
 ## Status
 
-Scaffold. Working today: pull, diff (fixed), push, offline contract tests C1 +
-C6. Next, in order: typed parser that consumes class styling (C2), style
-diffing, revision locking (`writeControl`) for safe human-concurrent pushes
-(C5), then the Stack/Grid/AutoSize authoring layer.
+Working today: styled pull to editable SML, field-masked diff, conflict-aware
+in-place push with post-push refresh, and baseline-aware offline/thumbnail QA via
+`check`. The parser and generator preserve element, paragraph, and text-run
+styling; authoring supports one-shot `Stack`, `Grid`, and automatic text height.
+`slidesmith auth doctor` diagnoses credentials before a pull. See the
+[agent guide](docs/AGENT-GUIDE.md) for the supported class vocabulary and the
+complete edit/diff/push/check loop.
 
 ```bash
-pytest             # runs vendored unit tests + the six contracts
+.venv/bin/pytest -q
 ```

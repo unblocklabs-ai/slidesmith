@@ -10,7 +10,7 @@ from typing import Any
 import httpx
 import pytest
 
-from extraslide.qa import check_folder, lint_folder
+from extraslide.qa import check_folder, lint_folder, record_qa_baseline
 from extraslide.transport import GoogleSlidesTransport
 from slidesmith import cli
 from slidesmith.workspace import materialize
@@ -170,6 +170,33 @@ def test_check_folder_strict_exit_and_clean_bill(
     )
     assert check_folder(qa_folder, strict=False, output=lambda _: None) == 0
     assert check_folder(qa_folder, strict=True, output=lambda _: None) == 1
+
+
+def test_check_labels_new_pre_existing_and_resolved_findings(
+    qa_folder: Path,
+) -> None:
+    _replace_slides(
+        qa_folder,
+        '<Rect id="old" x="700" y="10" w="30" h="30" />',
+    )
+    baseline_path = record_qa_baseline(qa_folder)
+    assert baseline_path == qa_folder / ".pristine" / "qa-baseline.json"
+
+    output: list[str] = []
+    check_folder(qa_folder, output=output.append)
+    assert output[0] == "1 findings (0 new, 1 pre-existing, 0 resolved)"
+    assert output[1].startswith("[PRE-EXISTING] [WARNING] OUT_OF_BOUNDS")
+
+    _replace_slides(
+        qa_folder,
+        '<Rect id="new" x="10" y="10" w="100" h="100" />'
+        '<Rect id="other" x="90" y="10" w="100" h="100" />',
+    )
+    output = []
+    check_folder(qa_folder, output=output.append)
+    assert output[0] == "1 findings (1 new, 0 pre-existing, 1 resolved)"
+    assert any(line.startswith("[NEW] [WARNING] OVERLAP") for line in output)
+    assert any(line.startswith("[RESOLVED] [WARNING] OUT_OF_BOUNDS") for line in output)
 
 
 def test_cli_no_thumbnails_uses_no_auth_or_transport(

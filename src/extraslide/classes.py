@@ -65,6 +65,21 @@ class ContentAlignment(Enum):
     MIDDLE = "MIDDLE"
     BOTTOM = "BOTTOM"
 
+    def to_class(self) -> str:
+        """Convert a Slides vertical alignment to its SML class."""
+        return _CONTENT_ALIGNMENT_CLASSES[self]
+
+
+_CONTENT_ALIGNMENT_CLASSES = {
+    ContentAlignment.TOP: "content-align-top",
+    ContentAlignment.MIDDLE: "content-align-middle",
+    ContentAlignment.BOTTOM: "content-align-bottom",
+}
+_CLASS_CONTENT_ALIGNMENTS = {
+    class_name: alignment
+    for alignment, class_name in _CONTENT_ALIGNMENT_CLASSES.items()
+}
+
 
 class TextAlignment(Enum):
     """Horizontal text alignment."""
@@ -720,6 +735,11 @@ class ParagraphStyle:
 def parse_class_string(class_str: str) -> list[str]:
     """Parse class string into individual classes."""
     return class_str.split() if class_str else []
+
+
+def parse_content_alignment_class(cls: str) -> ContentAlignment | None:
+    """Parse one ``content-align-*`` class, or return None."""
+    return _CLASS_CONTENT_ALIGNMENTS.get(cls)
 
 
 def parse_position_classes(classes: list[str]) -> dict[str, float]:

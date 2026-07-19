@@ -255,6 +255,10 @@ class SlidesClient:
         )
         written_files.append(base_path)
 
+        from extraslide.qa import record_qa_baseline
+
+        written_files.append(record_qa_baseline(presentation_dir))
+
         return written_files
 
     def diff(self, folder_path: Path) -> list[dict[str, Any]]:
@@ -443,6 +447,10 @@ class SlidesClient:
             json.dumps(refreshed.data, indent=2, ensure_ascii=False),
             encoding="utf-8",
         )
+
+        from extraslide.qa import record_qa_baseline
+
+        record_qa_baseline(folder_path)
 
     def _read_base_raw(self, folder_path: Path) -> dict[str, Any] | None:
         """Read the pristine base raw API tree, if this folder has one.

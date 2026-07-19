@@ -83,6 +83,34 @@ def cmd_diff(args: Any) -> None:
         print("No changes detected.")
     else:
         print(json.dumps(requests, indent=2))
+        mapping = json.loads(
+            (Path(args.folder) / "id_mapping.json").read_text(encoding="utf-8")
+        )
+        legend = _request_id_legend(requests, mapping)
+        if legend:
+            print(f"Object IDs: {legend}", file=sys.stderr)
+
+
+def _request_id_legend(
+    requests: list[dict[str, Any]], id_mapping: dict[str, str]
+) -> str:
+    """Describe request object IDs without making stdout cease to be JSON."""
+    reverse_mapping = {google_id: clean_id for clean_id, google_id in id_mapping.items()}
+    labels: dict[str, str] = {}
+    for request in requests:
+        for body in request.values():
+            if not isinstance(body, dict):
+                continue
+            object_id = body.get("objectId")
+            if not isinstance(object_id, str) or object_id in labels:
+                continue
+            if object_id in reverse_mapping:
+                labels[object_id] = reverse_mapping[object_id]
+            elif object_id.startswith("new_"):
+                labels[object_id] = f"{object_id[4:]}(new)"
+    return ", ".join(
+        f"{object_id} = {clean_id}" for object_id, clean_id in labels.items()
+    )
 
 
 def cmd_push(args: Any) -> None:

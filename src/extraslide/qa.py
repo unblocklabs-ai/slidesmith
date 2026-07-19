@@ -14,6 +14,7 @@ from extraslide.layout import ApproximateTextMeasurer, TextMeasurer
 
 OVERLAP_THRESHOLD = 0.15
 TEXT_OVERFLOW_TOLERANCE = 1.10
+QA_BASELINE_FILE = "qa-baseline.json"
 
 
 @dataclass(frozen=True)
@@ -26,6 +27,62 @@ class Finding:
     slide_number: int
     description: str
     suggested_fix: str
+
+
+def _finding_key(finding: Finding) -> tuple[str, tuple[str, ...], int]:
+    """Stable identity for comparing lint results across workspace refreshes."""
+    return finding.rule, finding.element_ids, finding.slide_number
+
+
+def _finding_to_dict(finding: Finding) -> dict[str, Any]:
+    return {
+        "severity": finding.severity,
+        "rule": finding.rule,
+        "elementIds": list(finding.element_ids),
+        "slideNumber": finding.slide_number,
+        "description": finding.description,
+        "suggestedFix": finding.suggested_fix,
+    }
+
+
+def _finding_from_dict(data: dict[str, Any]) -> Finding:
+    return Finding(
+        severity=str(data["severity"]),
+        rule=str(data["rule"]),
+        element_ids=tuple(str(value) for value in data["elementIds"]),
+        slide_number=int(data["slideNumber"]),
+        description=str(data["description"]),
+        suggested_fix=str(data["suggestedFix"]),
+    )
+
+
+def record_qa_baseline(folder: str | Path) -> Path:
+    """Persist the current offline lint findings under ``.pristine``."""
+    folder_path = Path(folder)
+    baseline_path = folder_path / ".pristine" / QA_BASELINE_FILE
+    baseline_path.parent.mkdir(parents=True, exist_ok=True)
+    findings = lint_folder(folder_path)
+    baseline_path.write_text(
+        json.dumps(
+            {"version": 1, "findings": [_finding_to_dict(item) for item in findings]},
+            indent=2,
+            ensure_ascii=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return baseline_path
+
+
+def _read_qa_baseline(folder: Path) -> list[Finding] | None:
+    baseline_path = folder / ".pristine" / QA_BASELINE_FILE
+    if not baseline_path.exists():
+        return None
+    data = _read_json(baseline_path)
+    raw_findings = data.get("findings", [])
+    if not isinstance(raw_findings, list):
+        raise ValueError(f"Expected a findings list in {baseline_path}")
+    return [_finding_from_dict(item) for item in raw_findings]
 
 
 def lint_folder(
@@ -131,20 +188,54 @@ def lint_folder(
     return findings
 
 
-def print_report(findings: list[Finding], output: Callable[[str], None] = print) -> None:
+def print_report(
+    findings: list[Finding],
+    output: Callable[[str], None] = print,
+    *,
+    baseline: list[Finding] | None = None,
+) -> None:
     """Print findings in a stable, agent-readable two-line format."""
-    if not findings:
-        output("QA clean: no issues found.")
+    if baseline is None:
+        if not findings:
+            output("QA clean: no issues found.")
+            return
+
+        output(f"QA found {len(findings)} issue(s):")
+        for finding in findings:
+            _print_finding(finding, "CURRENT", output)
         return
 
-    output(f"QA found {len(findings)} issue(s):")
+    baseline_by_key = {_finding_key(item): item for item in baseline}
+    current_keys = {_finding_key(item) for item in findings}
+    new = [item for item in findings if _finding_key(item) not in baseline_by_key]
+    pre_existing = [
+        item for item in findings if _finding_key(item) in baseline_by_key
+    ]
+    resolved = [item for item in baseline if _finding_key(item) not in current_keys]
+
+    output(
+        f"{len(findings)} findings ({len(new)} new, "
+        f"{len(pre_existing)} pre-existing, {len(resolved)} resolved)"
+    )
     for finding in findings:
-        ids = ", ".join(finding.element_ids)
-        output(
-            f"[{finding.severity}] {finding.rule} slide {finding.slide_number:02d} "
-            f"({ids}): {finding.description}"
-        )
-        output(f"  Suggested fix: {finding.suggested_fix}")
+        label = "PRE-EXISTING" if _finding_key(finding) in baseline_by_key else "NEW"
+        _print_finding(finding, label, output)
+    for finding in resolved:
+        _print_finding(finding, "RESOLVED", output)
+
+
+def _print_finding(
+    finding: Finding,
+    label: str,
+    output: Callable[[str], None],
+) -> None:
+    """Print one labeled finding and its suggested fix."""
+    ids = ", ".join(finding.element_ids)
+    output(
+        f"[{label}] [{finding.severity}] {finding.rule} "
+        f"slide {finding.slide_number:02d} ({ids}): {finding.description}"
+    )
+    output(f"  Suggested fix: {finding.suggested_fix}")
 
 
 def check_folder(
@@ -155,8 +246,10 @@ def check_folder(
     text_measurer: TextMeasurer | None = None,
 ) -> int:
     """Lint and report a folder, returning its CLI exit code."""
-    findings = lint_folder(folder, text_measurer=text_measurer)
-    print_report(findings, output)
+    folder_path = Path(folder)
+    findings = lint_folder(folder_path, text_measurer=text_measurer)
+    baseline = _read_qa_baseline(folder_path)
+    print_report(findings, output, baseline=baseline)
     return 1 if strict and findings else 0
 
 

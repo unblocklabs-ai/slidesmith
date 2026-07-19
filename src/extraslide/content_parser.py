@@ -12,11 +12,13 @@ from pathlib import Path
 from typing import Any
 
 from extraslide.classes import (
+    ContentAlignment,
     Fill,
     ParagraphStyle,
     Stroke,
     TextStyle,
     parse_class_string,
+    parse_content_alignment_class,
     parse_fill_class,
     parse_paragraph_style_classes,
     parse_stroke_classes,
@@ -37,6 +39,7 @@ class ElementStyles:
     stroke: Stroke | None = None
     text_style: TextStyle | None = None
     paragraph_style: ParagraphStyle | None = None
+    content_alignment: ContentAlignment | None = None
 
 
 @dataclass
@@ -49,6 +52,14 @@ class ParsedRun:
 
     text: str
     text_style: TextStyle | None = None
+
+
+@dataclass
+class ParagraphStyles:
+    """Paragraph-scoped defaults parsed from one ``<P class>`` attribute."""
+
+    text_style: TextStyle | None = None
+    paragraph_style: ParagraphStyle | None = None
 
 
 @dataclass
@@ -72,6 +83,9 @@ class ParsedElement:
 
     # Text content as styled runs (parallel to paragraphs; one list per paragraph)
     runs: list[list[ParsedRun]] = field(default_factory=list)
+
+    # Explicit defaults from each <P class>, parallel to paragraphs/runs.
+    paragraph_styles: list[ParagraphStyles | None] = field(default_factory=list)
 
     # Styles parsed from the class attribute (None if no class attribute)
     styles: ElementStyles | None = None
@@ -167,12 +181,16 @@ def _parse_element(elem: ET.Element, parent_id: str | None) -> ParsedElement:
     # Parse text paragraphs (plain text or nested <T> runs)
     paragraphs: list[str] = []
     runs: list[list[ParsedRun]] = []
+    paragraph_styles: list[ParagraphStyles | None] = []
     for p_elem in elem.findall("P"):
         para_runs = _parse_paragraph_runs(p_elem, clean_id)
         para_text = "".join(run.text for run in para_runs)
         if para_text:
             paragraphs.append(para_text)
             runs.append(para_runs)
+            paragraph_styles.append(
+                _parse_paragraph_classes(p_elem.get("class"), clean_id)
+            )
 
     # Parse children (excluding P elements)
     children = []
@@ -189,6 +207,7 @@ def _parse_element(elem: ET.Element, parent_id: str | None) -> ParsedElement:
         h=h,
         paragraphs=paragraphs,
         runs=runs,
+        paragraph_styles=paragraph_styles,
         styles=styles,
         children=children,
         parent_id=parent_id,
@@ -247,9 +266,12 @@ def parse_element_classes(
     stroke_classes: list[str] = []
     text_classes: list[str] = []
     para_classes: list[str] = []
+    content_alignment: ContentAlignment | None = None
 
     for cls in classes:
-        if parse_fill_class(cls) is not None:
+        if parsed_alignment := parse_content_alignment_class(cls):
+            content_alignment = parsed_alignment
+        elif parse_fill_class(cls) is not None:
             fill_classes.append(cls)
         elif parse_stroke_classes([cls]) is not None:
             stroke_classes.append(cls)
@@ -260,7 +282,7 @@ def parse_element_classes(
         else:
             raise ValueError(
                 f"Unrecognized class '{cls}' on element '{element_id}': "
-                f"not a known fill, stroke, text, or paragraph class"
+                f"not a known shape, fill, stroke, text, or paragraph class"
             )
 
     return ElementStyles(
@@ -270,6 +292,7 @@ def parse_element_classes(
         paragraph_style=parse_paragraph_style_classes(para_classes)
         if para_classes
         else None,
+        content_alignment=content_alignment,
     )
 
 
@@ -291,6 +314,35 @@ def _parse_run_classes(class_str: str | None, element_id: str) -> TextStyle | No
 
     text_style = parse_text_style_classes(classes)
     return text_style if text_style != TextStyle() else None
+
+
+def _parse_paragraph_classes(
+    class_str: str | None, element_id: str
+) -> ParagraphStyles | None:
+    """Parse paragraph- and text-family defaults from a ``<P class>``."""
+    if class_str is None:
+        return None
+
+    text_classes: list[str] = []
+    paragraph_classes: list[str] = []
+    for cls in parse_class_string(class_str):
+        if parse_text_style_classes([cls]) != TextStyle():
+            text_classes.append(cls)
+        elif parse_paragraph_style_classes([cls]) is not None:
+            paragraph_classes.append(cls)
+        else:
+            raise ValueError(
+                f"Unrecognized class '{cls}' on <P> in element '{element_id}': "
+                "only text- and paragraph-style classes are allowed on paragraphs"
+            )
+
+    parsed = ParagraphStyles(
+        text_style=parse_text_style_classes(text_classes) if text_classes else None,
+        paragraph_style=parse_paragraph_style_classes(paragraph_classes)
+        if paragraph_classes
+        else None,
+    )
+    return parsed if parsed != ParagraphStyles() else None
 
 
 def _parse_float(value: str | None) -> float | None:

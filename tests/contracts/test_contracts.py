@@ -22,16 +22,21 @@ from pathlib import Path
 import pytest
 
 from extraslide.classes import (
+    ContentAlignment,
     ParagraphStyle,
     Stroke,
     TextStyle,
     parse_paragraph_style_classes,
+    parse_content_alignment_class,
     parse_stroke_classes,
     parse_text_style_classes,
 )
 from extraslide.client import diff_folder
 from extraslide.content_diff import DiffResult, diff_slide_content
 from extraslide.content_requests import generate_batch_requests
+from extraslide.bounds import BoundingBox
+from extraslide.content_generator import generate_slide_content
+from extraslide.render_tree import RenderNode
 from slidesmith.workspace import materialize
 
 GOLDEN = (
@@ -70,7 +75,11 @@ def test_styled_pull_emits_explicit_element_and_run_classes(
     # e75 has an explicitly-set solid shape fill and hidden outline.
     filled = root.find(".//*[@id='e75']")
     assert filled is not None
-    assert filled.get("class", "").split() == ["fill-#f4f4f4", "stroke-none"]
+    assert filled.get("class", "").split() == [
+        "content-align-middle",
+        "fill-#f4f4f4",
+        "stroke-none",
+    ]
 
     # e121 is a placeholder whose fill/outline are explicitly INHERIT. Those
     # must remain absent, while its explicit text-run styles are visible in
@@ -83,10 +92,10 @@ def test_styled_pull_emits_explicit_element_and_run_classes(
         for cls in title.get("class", "").split()
     )
 
-    run = title.find("./P/T")
-    assert run is not None
-    assert run.text == "Driving GenAI Transformations"
-    assert run.get("class", "").split() == [
+    title_paragraph = title.find("./P")
+    assert title_paragraph is not None
+    assert title_paragraph.text == "Driving GenAI Transformations"
+    assert title_paragraph.get("class", "").split() == [
         "font-family-montserrat",
         "text-size-43",
         "font-weight-400",
@@ -154,6 +163,125 @@ def test_styled_pull_forward_classes_use_existing_reverse_mappings() -> None:
     paragraph_classes = paragraph_style.to_classes()
     assert paragraph_classes == ["leading-100", "space-above-0", "indent-start-0"]
     assert parse_paragraph_style_classes(paragraph_classes) == paragraph_style
+
+    assert ContentAlignment.MIDDLE.to_class() == "content-align-middle"
+    assert parse_content_alignment_class("content-align-middle") is ContentAlignment.MIDDLE
+
+
+def test_content_alignment_existing_element_is_one_field_masked_request(
+    golden_folder: Path,
+) -> None:
+    id_mapping = json.loads(
+        (golden_folder / "id_mapping.json").read_text(encoding="utf-8")
+    )
+    sml = golden_folder / "slides" / "01" / "content.sml"
+    content = sml.read_text(encoding="utf-8")
+    marker = 'class="text-align-left leading-90"'
+    assert marker in content
+    sml.write_text(
+        content.replace(
+            marker,
+            marker[:-1] + ' content-align-middle"',
+            1,
+        ),
+        encoding="utf-8",
+    )
+
+    requests = diff_folder(golden_folder)
+    assert requests == [
+        {
+            "updateShapeProperties": {
+                "objectId": id_mapping["e121"],
+                "shapeProperties": {"contentAlignment": "MIDDLE"},
+                "fields": "contentAlignment",
+            }
+        }
+    ]
+
+
+def test_generator_emits_different_paragraph_defaults_and_round_trips() -> None:
+    node = RenderNode(
+        clean_id="e1",
+        bounds=BoundingBox(0, 0, 200, 80),
+        element={
+            "objectId": "g_e1",
+            "shape": {
+                "shapeType": "TEXT_BOX",
+                "text": {
+                    "textElements": [
+                        {"paragraphMarker": {"style": {"alignment": "START", "lineSpacing": 100}}},
+                        {"textRun": {"content": "Alpha\n", "style": {"fontSize": {"magnitude": 12, "unit": "PT"}}}},
+                        {"paragraphMarker": {"style": {"alignment": "END", "lineSpacing": 140}}},
+                        {"textRun": {"content": "Beta\n", "style": {"fontSize": {"magnitude": 18, "unit": "PT"}}}},
+                    ]
+                },
+            },
+        },
+    )
+
+    content = generate_slide_content([node])
+    assert '<P class="text-align-left leading-100 text-size-12">Alpha</P>' in content
+    assert '<P class="text-align-right leading-140 text-size-18">Beta</P>' in content
+    assert diff_slide_content(content, content, {}, "01") == []
+
+
+def test_editing_one_paragraph_class_touches_only_its_range() -> None:
+    pristine = (
+        '<Slide id="s1"><TextBox id="e1" x="0" y="0" w="100" h="50" '
+        'class="text-size-12"><P class="text-align-left leading-100">Alpha</P>'
+        '<P class="text-align-right leading-120">Beta</P></TextBox></Slide>'
+    )
+    edited = pristine.replace(
+        "text-align-right leading-120",
+        "text-align-center leading-120 bold",
+    )
+
+    assert _text_edit_requests(pristine, edited) == [
+        {
+            "updateParagraphStyle": {
+                "objectId": "g_e1",
+                "textRange": {"type": "FIXED_RANGE", "startIndex": 6, "endIndex": 10},
+                "style": {"alignment": "CENTER"},
+                "fields": "alignment",
+            }
+        },
+        {
+            "updateTextStyle": {
+                "objectId": "g_e1",
+                "textRange": {"type": "FIXED_RANGE", "startIndex": 6, "endIndex": 10},
+                "style": {"bold": True},
+                "fields": "bold",
+            }
+        },
+    ]
+
+
+def test_paragraph_text_default_reapplies_nested_run_override() -> None:
+    pristine = (
+        '<Slide id="s1"><TextBox id="e1" x="0" y="0" w="100" h="50">'
+        '<P class="text-size-12">Plain <T class="text-size-20">large</T></P>'
+        "</TextBox></Slide>"
+    )
+    edited = pristine.replace("text-size-12", "text-size-14", 1)
+
+    assert _text_edit_requests(pristine, edited) == [
+        {
+            "updateTextStyle": {
+                "objectId": "g_e1",
+                "textRange": {"type": "FIXED_RANGE", "startIndex": 0, "endIndex": 11},
+                "style": {"fontSize": {"magnitude": 14.0, "unit": "PT"}},
+                "fields": "fontSize",
+            }
+        },
+        {
+            "updateTextStyle": {
+                "objectId": "g_e1",
+                "textRange": {"type": "FIXED_RANGE", "startIndex": 6, "endIndex": 11},
+                "style": {"fontSize": {"magnitude": 20.0, "unit": "PT"}},
+                "fields": "fontSize",
+            }
+        },
+    ]
 
 
 def test_c2_create_styled_textbox_via_documented_syntax(golden_folder: Path) -> None:
@@ -224,9 +352,9 @@ def test_c2b_style_update_on_existing_element(golden_folder: Path) -> None:
     sml.write_text(
         content.replace(
             original_classes,
-            'class="text-align-left leading-90 fill-#00ff00 text-size-30"',
+            'class="text-align-left leading-90 fill-#00ff00"',
             1,
-        ),
+        ).replace("text-size-43", "text-size-30", 1),
         encoding="utf-8",
     )
 
@@ -252,6 +380,11 @@ def test_c2b_style_update_on_existing_element(golden_folder: Path) -> None:
     assert len(text_styles) == 1
     text_update = text_styles[0]["updateTextStyle"]
     assert text_update["objectId"] == google_id
+    assert text_update["textRange"] == {
+        "type": "FIXED_RANGE",
+        "startIndex": 0,
+        "endIndex": 29,
+    }
     assert text_update["fields"] == "fontSize"
     assert text_update["style"]["fontSize"] == {"magnitude": 30.0, "unit": "PT"}
     assert len(requests) == 2, "only the two styled properties may be touched"
@@ -274,8 +407,7 @@ def _text_edit_requests(
 def test_c3_single_word_edit_preserves_explicit_run_style(
     golden_folder: Path,
 ) -> None:
-    """C3 (offline half): a styled paragraph is replaced and restyled without
-    touching its sibling paragraph or issuing a delete-all request."""
+    """C3: paragraph defaults let a word edit stay minimal and scoped."""
     id_mapping = json.loads(
         (golden_folder / "id_mapping.json").read_text(encoding="utf-8")
     )
@@ -293,37 +425,27 @@ def test_c3_single_word_edit_preserves_explicit_run_style(
     blob = json.dumps(requests)
     assert '"ALL"' not in blob, "range edits must never touch the whole text"
 
-    # The existing diff semantics replace a changed styled paragraph as one
-    # range, then reapply its visible <T> classes. Paragraph 1 stays untouched.
+    # Paragraph 2's style now lives on <P>, so only the changed word is edited;
+    # the paragraph default and paragraph 1 stay untouched.
     assert "GCCs in India" not in blob
     assert requests[0] == {
         "deleteText": {
             "objectId": google_id,
             "textRange": {
                 "type": "FIXED_RANGE",
-                "startIndex": 14,
-                "endIndex": 35,
+                "startIndex": 19,
+                "endIndex": 29,
             },
         }
     }
     assert requests[1] == {
         "insertText": {
             "objectId": google_id,
-            "insertionIndex": 14,
-            "text": "With Platform teams",
+            "insertionIndex": 19,
+            "text": "Platform",
         }
     }
-    restyle = requests[2]["updateTextStyle"]
-    assert restyle["objectId"] == google_id
-    assert restyle["textRange"] == {
-        "type": "FIXED_RANGE",
-        "startIndex": 14,
-        "endIndex": 33,
-    }
-    assert restyle["fields"] == (
-        "fontFamily,fontSize,weightedFontFamily,foregroundColor"
-    )
-    assert len(requests) == 3
+    assert len(requests) == 2
 
 
 def test_c3_non_bmp_text_indices_count_utf16_units() -> None:

@@ -73,6 +73,13 @@ encoding the known parser gap. C3–C5 are live-deck stubs
   explicit" from "leave inherited" to avoid baking theme values in.
 - Writes: 60 batchUpdate/min/user — one batched call per agent commit.
 
+## Deferred / candidates
+
+- **Local approximate preview.** A fast local renderer could shorten layout
+  iteration, but it would only approximate Google Slides font metrics, wrapping,
+  theme inheritance, and effects. Thumbnail QA against the pushed deck remains
+  the visual source of truth.
+
 ## Provenance
 
 Vendored from ExtraSuite (MIT, think41/extrasuite — see NOTICE): the

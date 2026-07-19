@@ -17,6 +17,7 @@ from typing import Any
 
 from extraslide.content_parser import (
     ElementStyles,
+    ParagraphStyles,
     ParsedElement,
     ParsedRun,
     flatten_elements,
@@ -44,6 +45,18 @@ class ChangeType(Enum):
 
     # Class-derived styles changed on an existing element
     STYLE_UPDATE = "style_update"
+
+    # Explicit defaults on one or more <P class> attributes changed.
+    PARAGRAPH_STYLE_UPDATE = "paragraph_style_update"
+
+
+@dataclass
+class ParagraphClassUpdate:
+    """One changed paragraph's scoped text/paragraph defaults."""
+
+    paragraph_index: int
+    old_styles: ParagraphStyles | None
+    new_styles: ParagraphStyles | None
 
 
 @dataclass
@@ -77,6 +90,12 @@ class Change:
 
     # For CREATE/TEXT_UPDATE: styled text runs (one list per paragraph)
     new_runs: list[list[ParsedRun]] | None = None
+
+    # For CREATE: explicit <P class> defaults, parallel to new_text.
+    new_paragraph_styles: list[ParagraphStyles | None] | None = None
+
+    # For PARAGRAPH_STYLE_UPDATE: only paragraphs whose class changed.
+    paragraph_style_updates: list[ParagraphClassUpdate] | None = None
 
     # Slide index where this change occurs
     slide_index: str | None = None
@@ -324,6 +343,9 @@ def diff_presentation(
                         else None,
                         new_styles=edited_elem.styles,
                         new_runs=edited_elem.runs if edited_elem.runs else None,
+                        new_paragraph_styles=edited_elem.paragraph_styles
+                        if edited_elem.paragraph_styles
+                        else None,
                         metadata={"tag": edited_elem.tag},
                     )
                 )
@@ -385,6 +407,37 @@ def _compare_elements(
             )
         )
 
+    paragraph_updates = [
+        ParagraphClassUpdate(index, old_style, new_style)
+        for index, (old_style, new_style) in enumerate(
+            zip(
+                pristine.paragraph_styles,
+                edited.paragraph_styles,
+                strict=False,
+            )
+        )
+        if old_style != new_style
+    ]
+    if len(edited.paragraph_styles) > len(pristine.paragraph_styles):
+        paragraph_updates.extend(
+            ParagraphClassUpdate(index, None, edited.paragraph_styles[index])
+            for index in range(
+                len(pristine.paragraph_styles), len(edited.paragraph_styles)
+            )
+            if edited.paragraph_styles[index] is not None
+        )
+    if paragraph_updates:
+        changes.append(
+            Change(
+                change_type=ChangeType.PARAGRAPH_STYLE_UPDATE,
+                target_id=pristine.clean_id,
+                slide_index=slide_idx,
+                new_text=edited.paragraphs,
+                new_runs=edited.runs,
+                paragraph_style_updates=paragraph_updates,
+            )
+        )
+
     # Check class-derived style change
     if edited.styles is not None and edited.styles != pristine.styles:
         pristine_styles = pristine.styles or ElementStyles()
@@ -404,6 +457,9 @@ def _compare_elements(
             paragraph_style=edited.styles.paragraph_style
             if edited.styles.paragraph_style != pristine_styles.paragraph_style
             else None,
+            content_alignment=edited.styles.content_alignment
+            if edited.styles.content_alignment != pristine_styles.content_alignment
+            else None,
         )
         changes.append(
             Change(
@@ -412,6 +468,10 @@ def _compare_elements(
                 slide_index=slide_idx,
                 new_styles=style_delta,
                 new_text=edited.paragraphs if edited.paragraphs else None,
+                new_runs=edited.runs if edited.runs else None,
+                new_paragraph_styles=edited.paragraph_styles
+                if edited.paragraph_styles
+                else None,
             )
         )
 

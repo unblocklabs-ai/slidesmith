@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from extraslide.content_parser import parse_element_classes
+from extraslide.content_parser import parse_element_classes, parse_slide_content
 
 
 GUIDE = Path(__file__).parent.parent / "docs" / "AGENT-GUIDE.md"
@@ -16,7 +16,9 @@ def test_every_documented_class_example_parses() -> None:
     guide = GUIDE.read_text(encoding="utf-8")
     blocks = re.findall(r"```sml-classes\n(.*?)```", guide, flags=re.DOTALL)
 
-    assert len(blocks) == 4, "fill, stroke, text, and paragraph blocks are required"
+    assert len(blocks) == 5, (
+        "shape, fill, stroke, text, and paragraph blocks are required"
+    )
     examples = [
         line.strip()
         for block in blocks
@@ -27,3 +29,15 @@ def test_every_documented_class_example_parses() -> None:
 
     for index, class_string in enumerate(examples):
         assert parse_element_classes(class_string, f"guide_{index}") is not None
+
+
+def test_documented_paragraph_class_example_parses() -> None:
+    guide = GUIDE.read_text(encoding="utf-8")
+    blocks = re.findall(r"```sml-paragraph\n(.*?)```", guide, flags=re.DOTALL)
+    assert len(blocks) == 1
+
+    elements = parse_slide_content(f'<Slide id="s1">{blocks[0]}</Slide>')
+    assert len(elements) == 1
+    assert len(elements[0].paragraph_styles) == 2
+    assert elements[0].paragraph_styles[1] is not None
+    assert elements[0].runs[1][-1].text_style is not None

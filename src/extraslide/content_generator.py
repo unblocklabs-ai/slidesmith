@@ -21,6 +21,7 @@ from extraslide.style_extractor import (
     extract_sml_element_classes,
     extract_sml_text_classes,
 )
+from extraslide.classes import ParagraphStyle
 
 # Pattern to match XML-invalid control characters (except tab, newline, carriage return)
 _CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
@@ -294,30 +295,56 @@ def _generate_text_content(
     if not text_elements:
         return
 
-    # Group text runs by paragraph
-    paragraphs: list[list[dict[str, Any]]] = []
+    element_classes = set(extract_sml_element_classes(node))
+
+    # Group each paragraph marker with its following text runs.
+    paragraphs: list[tuple[dict[str, Any], list[dict[str, Any]]]] = []
+    current_marker: dict[str, Any] = {}
     current_para: list[dict[str, Any]] = []
 
     for te in text_elements:
         if "paragraphMarker" in te:
             if current_para:
-                paragraphs.append(current_para)
+                paragraphs.append((current_marker, current_para))
+            current_marker = te["paragraphMarker"]
             current_para = []
         elif "textRun" in te:
             current_para.append(te["textRun"])
 
     if current_para:
-        paragraphs.append(current_para)
+        paragraphs.append((current_marker, current_para))
 
     # Generate paragraph elements. Character styles stay on their source runs;
     # they are not promoted to the element because that would change scope.
-    for para_runs in paragraphs:
+    for marker, para_runs in paragraphs:
+        paragraph_style = ParagraphStyle.from_api(marker.get("style"))
+        paragraph_classes = paragraph_style.to_classes() if paragraph_style else []
+        run_class_sets = [
+            extract_sml_text_classes(run.get("style"))
+            for run in para_runs
+            if _sanitize_text(run.get("content", "")).rstrip("\n")
+        ]
+        if run_class_sets:
+            paragraph_classes.extend(
+                cls
+                for cls in run_class_sets[0]
+                if all(cls in candidate for candidate in run_class_sets[1:])
+            )
+        paragraph_classes = [
+            cls for cls in paragraph_classes if cls not in element_classes
+        ]
+        paragraph_defaults = element_classes | set(paragraph_classes)
+
         segments: list[tuple[str, tuple[str, ...]]] = []
         for run in para_runs:
             content = _sanitize_text(run.get("content", "").rstrip("\n"))
             if not content:
                 continue
-            run_classes = tuple(extract_sml_text_classes(run.get("style")))
+            run_classes = tuple(
+                cls
+                for cls in extract_sml_text_classes(run.get("style"))
+                if cls not in paragraph_defaults
+            )
             if segments and segments[-1][1] == run_classes:
                 previous, previous_classes = segments[-1]
                 segments[-1] = (previous + content, previous_classes)
@@ -347,7 +374,11 @@ def _generate_text_content(
                 )
             else:
                 content_parts.append(escaped_text)
-        lines.append(f"{prefix}<P>{''.join(content_parts)}</P>")
+        paragraph_attr = ""
+        if paragraph_classes:
+            class_value = escape(" ".join(paragraph_classes), {'"': "&quot;"})
+            paragraph_attr = f' class="{class_value}"'
+        lines.append(f"{prefix}<P{paragraph_attr}>{''.join(content_parts)}</P>")
 
 
 def generate_presentation_content(

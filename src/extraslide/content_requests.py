@@ -15,8 +15,8 @@ from extraslide.classes import (
     Stroke,
     TextStyle,
 )
-from extraslide.content_diff import Change, ChangeType, DiffResult
-from extraslide.content_parser import ElementStyles, ParsedRun
+from extraslide.content_diff import Change, ChangeType, DiffResult, ParagraphClassUpdate
+from extraslide.content_parser import ElementStyles, ParagraphStyles, ParsedRun
 from extraslide.units import pt_to_emu
 
 # Global counter for unique ID generation within a session
@@ -66,6 +66,11 @@ def generate_batch_requests(
     ]
     style_updates = [
         c for c in diff_result.changes if c.change_type == ChangeType.STYLE_UPDATE
+    ]
+    paragraph_style_updates = [
+        c
+        for c in diff_result.changes
+        if c.change_type == ChangeType.PARAGRAPH_STYLE_UPDATE
     ]
     copies = [c for c in diff_result.changes if c.change_type == ChangeType.COPY]
     creates = [c for c in diff_result.changes if c.change_type == ChangeType.CREATE]
@@ -129,6 +134,50 @@ def generate_batch_requests(
                 has_text=bool(change.new_text),
             )
             requests.extend(style_requests)
+            if (
+                change.new_text
+                and (
+                    change.new_styles.text_style is not None
+                    or change.new_styles.paragraph_style is not None
+                )
+            ):
+                if change.new_paragraph_styles:
+                    paragraph_updates = [
+                        ParagraphClassUpdate(index, None, styles)
+                        for index, styles in enumerate(change.new_paragraph_styles)
+                        if styles is not None
+                    ]
+                    requests.extend(
+                        _create_paragraph_class_update_requests(
+                            style_google_id,
+                            change.new_text,
+                            change.new_runs or [],
+                            paragraph_updates,
+                            reapply_runs=False,
+                        )
+                    )
+                if change.new_styles.text_style is not None and change.new_runs:
+                    requests.extend(
+                        _create_run_style_requests(style_google_id, change.new_runs)
+                    )
+
+    # Paragraph defaults follow element defaults and precede/reapply explicit
+    # <T> overrides, so scope and inheritance match the SML nesting.
+    for change in paragraph_style_updates:
+        style_google_id = id_mapping.get(change.target_id)
+        if (
+            style_google_id
+            and change.new_text is not None
+            and change.paragraph_style_updates
+        ):
+            requests.extend(
+                _create_paragraph_class_update_requests(
+                    style_google_id,
+                    change.new_text,
+                    change.new_runs or [],
+                    change.paragraph_style_updates,
+                )
+            )
 
     # Generate copy requests (recreate elements with source styles)
     for change in copies:
@@ -1531,6 +1580,19 @@ def _create_class_shape_style_requests(
     """
     requests: list[dict[str, Any]] = []
 
+    if styles.content_alignment is not None:
+        requests.append(
+            {
+                "updateShapeProperties": {
+                    "objectId": object_id,
+                    "shapeProperties": {
+                        "contentAlignment": styles.content_alignment.value,
+                    },
+                    "fields": "contentAlignment",
+                }
+            }
+        )
+
     fill = styles.fill
     if fill:
         if fill.state == PropertyState.NOT_RENDERED:
@@ -1718,10 +1780,30 @@ def _create_class_text_style_request(
 def _create_class_paragraph_style_request(
     object_id: str,
     paragraph_style: ParagraphStyle | None,
+    text_range: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """Create updateParagraphStyle request from class-derived paragraph styles."""
     if paragraph_style is None:
         return None
+
+    style, fields = _class_paragraph_style_to_api(paragraph_style)
+    if not fields:
+        return None
+
+    return {
+        "updateParagraphStyle": {
+            "objectId": object_id,
+            "textRange": text_range or {"type": "ALL"},
+            "style": style,
+            "fields": ",".join(fields),
+        }
+    }
+
+
+def _class_paragraph_style_to_api(
+    paragraph_style: ParagraphStyle,
+) -> tuple[dict[str, Any], list[str]]:
+    """Convert a class-derived ParagraphStyle to API style + field names."""
 
     style: dict[str, Any] = {}
     fields: list[str] = []
@@ -1755,6 +1837,13 @@ def _create_class_paragraph_style_request(
         }
         fields.append("indentStart")
 
+    if paragraph_style.indent_end_pt is not None:
+        style["indentEnd"] = {
+            "magnitude": paragraph_style.indent_end_pt,
+            "unit": "PT",
+        }
+        fields.append("indentEnd")
+
     if paragraph_style.indent_first_line_pt is not None:
         style["indentFirstLine"] = {
             "magnitude": paragraph_style.indent_first_line_pt,
@@ -1770,17 +1859,7 @@ def _create_class_paragraph_style_request(
         style["spacingMode"] = paragraph_style.spacing_mode
         fields.append("spacingMode")
 
-    if not fields:
-        return None
-
-    return {
-        "updateParagraphStyle": {
-            "objectId": object_id,
-            "textRange": {"type": "ALL"},
-            "style": style,
-            "fields": ",".join(fields),
-        }
-    }
+    return style, fields
 
 
 def _create_run_style_requests(
@@ -1822,6 +1901,136 @@ def _create_run_style_requests(
                 if request:
                     requests.append(request)
             index = end_index
+
+    return requests
+
+
+_TEXT_STYLE_FIELD_NAMES = {
+    "bold": "bold",
+    "italic": "italic",
+    "underline": "underline",
+    "strikethrough": "strikethrough",
+    "small_caps": "smallCaps",
+    "baseline_offset": "baselineOffset",
+    "font_family": "fontFamily",
+    "font_size_pt": "fontSize",
+    "font_weight": "weightedFontFamily",
+    "foreground_color": "foregroundColor",
+    "background_color": "backgroundColor",
+    "link": "link",
+}
+_PARAGRAPH_STYLE_FIELD_NAMES = {
+    "alignment": "alignment",
+    "line_spacing": "lineSpacing",
+    "space_above_pt": "spaceAbove",
+    "space_below_pt": "spaceBelow",
+    "indent_start_pt": "indentStart",
+    "indent_end_pt": "indentEnd",
+    "indent_first_line_pt": "indentFirstLine",
+    "direction": "direction",
+    "spacing_mode": "spacingMode",
+}
+
+
+def _changed_style_fields(
+    old_style: Any,
+    new_style: Any,
+    field_names: dict[str, str],
+) -> list[str]:
+    """Return API fields whose typed style values changed."""
+    return [
+        api_name
+        for attr_name, api_name in field_names.items()
+        if getattr(old_style, attr_name, None) != getattr(new_style, attr_name, None)
+    ]
+
+
+def _paragraph_text_range(
+    paragraphs: list[str], paragraph_index: int
+) -> dict[str, Any]:
+    """Return the fixed UTF-16 range containing one paragraph's text."""
+    start = sum(_utf16_len(text) + 1 for text in paragraphs[:paragraph_index])
+    return {
+        "type": "FIXED_RANGE",
+        "startIndex": start,
+        "endIndex": start + _utf16_len(paragraphs[paragraph_index]),
+    }
+
+
+def _create_paragraph_class_update_requests(
+    object_id: str,
+    paragraphs: list[str],
+    runs: list[list[ParsedRun]],
+    updates: list[ParagraphClassUpdate],
+    *,
+    reapply_runs: bool = True,
+) -> list[dict[str, Any]]:
+    """Create precise-range updates for changed ``<P class>`` defaults."""
+    requests: list[dict[str, Any]] = []
+    for update in updates:
+        if update.paragraph_index >= len(paragraphs):
+            continue
+        old = update.old_styles or ParagraphStyles()
+        new = update.new_styles or ParagraphStyles()
+        text_range = _paragraph_text_range(paragraphs, update.paragraph_index)
+
+        paragraph_fields = _changed_style_fields(
+            old.paragraph_style,
+            new.paragraph_style,
+            _PARAGRAPH_STYLE_FIELD_NAMES,
+        )
+        if paragraph_fields:
+            style, _ = _class_paragraph_style_to_api(
+                new.paragraph_style or ParagraphStyle()
+            )
+            requests.append(
+                {
+                    "updateParagraphStyle": {
+                        "objectId": object_id,
+                        "textRange": text_range,
+                        "style": {
+                            key: value
+                            for key, value in style.items()
+                            if key in paragraph_fields
+                        },
+                        "fields": ",".join(paragraph_fields),
+                    }
+                }
+            )
+
+        text_fields = _changed_style_fields(
+            old.text_style,
+            new.text_style,
+            _TEXT_STYLE_FIELD_NAMES,
+        )
+        if text_fields:
+            style, _ = _class_text_style_to_api(new.text_style or TextStyle())
+            requests.append(
+                {
+                    "updateTextStyle": {
+                        "objectId": object_id,
+                        "textRange": text_range,
+                        "style": {
+                            key: value
+                            for key, value in style.items()
+                            if key in text_fields
+                        },
+                        "fields": ",".join(text_fields),
+                    }
+                }
+            )
+
+        if reapply_runs and text_fields and update.paragraph_index < len(runs):
+            requests.extend(
+                _create_run_style_requests(
+                    object_id,
+                    runs,
+                    paragraph_range=(
+                        update.paragraph_index,
+                        update.paragraph_index + 1,
+                    ),
+                )
+            )
 
     return requests
 
@@ -1905,6 +2114,22 @@ def _create_element_requests(
             )
             if para_request:
                 requests.append(para_request)
+
+        if change.new_paragraph_styles:
+            paragraph_updates = [
+                ParagraphClassUpdate(index, None, styles)
+                for index, styles in enumerate(change.new_paragraph_styles)
+                if styles is not None
+            ]
+            requests.extend(
+                _create_paragraph_class_update_requests(
+                    new_object_id,
+                    change.new_text,
+                    change.new_runs or [],
+                    paragraph_updates,
+                    reapply_runs=False,
+                )
+            )
 
         # Apply per-run text styles from <T> runs (override element-level styles)
         if change.new_runs:

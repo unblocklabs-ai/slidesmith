@@ -15,22 +15,28 @@ slidesmith pull "https://docs.google.com/presentation/d/<ID>/edit"
 ```
 
 The pull creates `<ID>/`. Make the smallest possible edits under `slides/`, then
-inspect and validate them before writing remotely:
+inspect and validate them before writing remotely, then check the rendered deck:
 
 ```bash
 slidesmith diff <ID>
 slidesmith check <ID> --no-thumbnails
-slidesmith check <ID>
 slidesmith push <ID>
+slidesmith check <ID>
 ```
 
-`diff` is local-only and prints the exact request list. `check --no-thumbnails`
-is also local-only. Plain `check` downloads current slide thumbnails into
+`diff` is local-only and prints the exact request list plus a stderr legend from
+Google object IDs to clean SML IDs. `check --no-thumbnails` is also local-only.
+Plain `check`, run after push, downloads current slide thumbnails into
 `<ID>/.qa/` before running geometry QA, so it needs authentication. `push`
 re-fetches the remote deck, aborts if a locally touched object changed remotely,
 uses a revision lock for the write, and refreshes the local projection after a
 successful batch. Use `push --force` only when the user explicitly accepts
 overwriting concurrent edits to touched properties.
+
+Visual work is iterative: edit, `diff`, run the offline check, `push`, then run
+plain `check` and inspect the new thumbnails. Repeat that push-then-check loop
+until the rendered deck is correct; the local approximation is not a substitute
+for the Slides render.
 
 If `diff`, `push`, or `check` says the workspace was pulled more than 24 hours
 ago, re-pull before continuing. A re-pull replaces the projection; preserve any
@@ -52,7 +58,8 @@ uncommitted SML edits first.
 Each `content.sml` has one `Slide` root. Elements use point-valued `x`, `y`, `w`,
 and `h` attributes. Preserve IDs when modifying pulled elements: identity drives
 the diff and conflict guard. Paragraphs are `P` nodes. A paragraph may contain
-plain text and styled `T` runs; only text-family classes are valid on `T`.
+plain text and styled `T` runs. A `P` may carry paragraph- and text-family
+defaults for that paragraph; a nested `T` may carry text-family overrides.
 
 ```xml
 <Slide id="s1">
@@ -63,6 +70,15 @@ plain text and styled `T` runs; only text-family classes are valid on `T`.
   <Ellipse id="accent" x="640" y="-45" w="150" h="150"
            class="fill-theme-accent1/40 stroke-none" />
 </Slide>
+```
+
+This paragraph-scoping example is parsed by the documentation contract test:
+
+```sml-paragraph
+<TextBox id="summary" x="48" y="72" w="360" h="90" class="text-size-14">
+  <P class="text-align-left leading-110 text-color-#333333">Default paragraph</P>
+  <P class="text-align-right leading-140 bold">Right-aligned <T class="italic text-color-theme-accent1">override</T></P>
+</TextBox>
 ```
 
 Pulled decks may contain nested `Group` elements and many Google shape tags;
@@ -83,6 +99,16 @@ Opacity is an integer suffix after `/` (normally 0–100).
 Theme names accepted by the color model are `dark1`, `light1`, `dark2`,
 `light2`, `accent1` through `accent6`, `text1`, `text2`, `background1`,
 `background2`, `hyperlink`, and `followed-hyperlink`.
+
+### Shape family
+
+Vertical text placement is explicit shape styling:
+
+```sml-classes
+content-align-top
+content-align-middle
+content-align-bottom
+```
 
 ### Fill family
 
@@ -128,7 +154,8 @@ stroke-long-dash-dot
 ### Text family
 
 Text classes may be placed on a shape or `TextBox` for element-level styling,
-or on a `T` run for an explicit range style.
+on `P` for that paragraph's default run styling, or on `T` for an explicit
+range override. The precedence is element, then paragraph, then text run.
 
 - Decorations: `bold`, `italic`, `underline`, `line-through`, `small-caps`.
 - Baseline: `superscript`, `subscript`.
@@ -159,8 +186,8 @@ normal CSS-like weights such as 400, 600, or 700.
 
 ### Paragraph family
 
-Paragraph classes are element-level in current SML; they apply through the
-shape's paragraph style.
+Paragraph classes may be element-level defaults or scoped to one `P`. A
+`P class` changes only that paragraph's fixed text range.
 
 - Alignment: `text-align-left`, `text-align-center`, `text-align-right`,
   `text-align-justify`.
@@ -282,7 +309,11 @@ fixes:
 - `TEXT_OVERFLOW`: approximate wrapped text height exceeds box height by more
   than the 10% tolerance.
 
-Findings are warnings by default; `--strict` exits 1 when any finding exists.
+Pull and every successful post-push refresh save the offline findings snapshot
+to `.pristine/qa-baseline.json`. Later checks label current findings `NEW` or
+`PRE-EXISTING`, list findings that disappeared as `RESOLVED`, and summarize the
+counts. Findings are warnings by default; `--strict` exits 1 when any current
+finding exists.
 They are prompts for judgment, not automatic proof of a defect. Decorative
 bleed is intentional when the element is clearly non-content (for example, a
 large accent circle crossing one edge), the visible crop matches the design,

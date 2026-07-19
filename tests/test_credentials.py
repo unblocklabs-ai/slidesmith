@@ -162,7 +162,9 @@ def test_browser_flow_binds_callback_once_and_uses_bound_port(
 
     with pytest.raises(Exception, match="Authentication timed out"):
         manager._run_browser_flow(
-            lambda port: advertised_ports.append(port) or f"http://auth/{port}",
+            lambda port, _state: (
+                advertised_ports.append(port) or f"http://auth/{port}"
+            ),
             "Authenticate:",
         )
 

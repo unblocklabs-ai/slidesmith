@@ -362,6 +362,11 @@ mirrors the long-lived session or refresh token to the OS keyring and
 `~/.config/slidesmith/session.json` when each is available. The file is mode
 0600. OAuth client secrets are never copied into the session file.
 
+Slidesmith now requests only Google Slides, per-file Drive, OpenID, and email
+scopes. Run `slidesmith auth login` once to re-consent after upgrading to this
+scope set. Existing stored sessions issued with the previous broader scopes
+continue to work until they are refreshed.
+
 For an agent or subprocess that must avoid Keychain entirely:
 
 ```bash

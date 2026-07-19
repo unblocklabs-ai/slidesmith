@@ -113,22 +113,22 @@ re-pull required") + do NOT leave half-refreshed state; add bounded retry/backof
 
 ## PART 2 — SECURITY (reviewer 2)
 
-### S-M1 [MEDIUM] OAuth loopback callback: no CSRF `state`; extrasuite-session variant also lacks PKCE
+### [x] S-M1 [MEDIUM] OAuth loopback callback: no CSRF `state`; extrasuite-session variant also lacks PKCE
 `credentials.py:1284, :1615, :1687`. Login-CSRF via localhost code spraying during the
 5-min window (session flow exchanges attacker code). Direct-Google flow protected by
 PKCE. Fix: random `state` generated, sent, verified in both flows; add PKCE to the
 session flow.
 
-### S-M2 [MEDIUM] Thumbnail contentUrl fetched with Bearer token attached, no host allowlist
+### [x] S-M2 [MEDIUM] Thumbnail contentUrl fetched with Bearer token attached, no host allowlist
 `transport.py:175` — token-exfiltration primitive gated on response-body URL.
 Fix: fetch contentUrl with a bare client (no Authorization) and assert an expected
 Google host (e.g. *.googleusercontent.com) before requesting.
 
-### S-L1 [LOW] Reflected unescaped `error` param in callback HTML (`credentials.py:1706`) — html.escape it.
-### S-L2 [LOW] `_presentation_id` fallback returns arbitrary input as output dir name (`cli.py:16`) — validate `^[A-Za-z0-9_-]+$`.
-### S-I1 [INFO] Switch xml.etree → defusedxml for version-independent XXE/amplification protection (parser, layout, cli).
-### S-I2 [INFO] login() sends device fingerprint (MAC/hostname) to extrasuite server — documented; consider trimming.
-### S-EXTRA [MEDIUM] (from dims 3-5 review L3) `_OAUTH_USER_SCOPES` requests spreadsheets/documents/forms for a slides-only tool (`credentials.py:56-64`) — trim to presentations + drive.file + openid/email. Also user-facing messages say `extrasuite auth login` instead of `slidesmith auth login` (`credentials.py:1479, :1659`, `_NO_AUTH_MESSAGE`).
+### [x] S-L1 [LOW] Reflected unescaped `error` param in callback HTML (`credentials.py:1706`) — html.escape it.
+### [x] S-L2 [LOW] `_presentation_id` fallback returns arbitrary input as output dir name (`cli.py:16`) — validate `^[A-Za-z0-9_-]+$`.
+### [x] S-I1 [INFO] Switch xml.etree → defusedxml for version-independent XXE/amplification protection (parser, layout, cli).
+### [x] S-I2 [INFO] login() sends device fingerprint (MAC/hostname) to extrasuite server — documented; consider trimming.
+### [x] S-EXTRA [MEDIUM] (from dims 3-5 review L3) `_OAUTH_USER_SCOPES` requests spreadsheets/documents/forms for a slides-only tool (`credentials.py:56-64`) — trim to presentations + drive.file + openid/email. Also user-facing messages say `extrasuite auth login` instead of `slidesmith auth login` (`credentials.py:1479, :1659`, `_NO_AUTH_MESSAGE`).
 
 ---
 

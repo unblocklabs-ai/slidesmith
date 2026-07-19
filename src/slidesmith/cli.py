@@ -7,15 +7,22 @@ import asyncio
 import json
 import re
 import sys
-import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from defusedxml import ElementTree as DefusedET
+
 
 def _presentation_id(url_or_id: str) -> str:
     m = re.search(r"/presentation/d/([a-zA-Z0-9_-]+)", url_or_id)
-    return m.group(1) if m else url_or_id
+    presentation_id = m.group(1) if m else url_or_id
+    if re.fullmatch(r"[A-Za-z0-9_-]+", presentation_id) is None:
+        raise ValueError(
+            "Invalid presentation URL or ID. Provide a Google Slides URL or an ID "
+            "containing only letters, numbers, underscores, and hyphens."
+        )
+    return presentation_id
 
 
 def _token(command_type: str, target: str) -> str:
@@ -178,7 +185,7 @@ def cmd_check(args: Any) -> None:
                     content_paths, key=lambda path: int(path.parent.name)
                 ):
                     slide_number = content_path.parent.name
-                    slide_clean_id = ET.fromstring(
+                    slide_clean_id = DefusedET.fromstring(
                         content_path.read_text(encoding="utf-8")
                     ).get("id")
                     if not slide_clean_id or slide_clean_id not in id_mapping:

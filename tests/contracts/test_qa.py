@@ -64,14 +64,26 @@ async def test_get_page_thumbnail_fetches_metadata_then_png() -> None:
         if request.url.host == "slides.googleapis.com":
             return httpx.Response(
                 200,
-                json={"contentUrl": "https://thumbnail.example/rendered.png"},
+                json={
+                    "contentUrl": "https://lh3.googleusercontent.com/rendered.png"
+                },
             )
-        assert request.url == httpx.URL("https://thumbnail.example/rendered.png")
+        assert request.url == httpx.URL(
+            "https://lh3.googleusercontent.com/rendered.png"
+        )
+        assert "Authorization" not in request.headers
         return httpx.Response(200, content=png, headers={"content-type": "image/png"})
 
     transport = GoogleSlidesTransport("fake-token")
     await transport._client.aclose()
-    transport._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    await transport._thumbnail_client.aclose()
+    transport._client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+        headers={"Authorization": "Bearer fake-token"},
+    )
+    transport._thumbnail_client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler)
+    )
     try:
         result = await transport.get_page_thumbnail("presentation-1", "page-2")
     finally:

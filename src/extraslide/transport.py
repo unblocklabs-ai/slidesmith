@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import ssl
+import urllib.parse
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -147,6 +148,10 @@ class GoogleSlidesTransport(Transport):
                 "Accept": "application/json",
             },
         )
+        self._thumbnail_client = httpx.AsyncClient(
+            timeout=timeout,
+            verify=ssl_context,
+        )
 
     async def get_presentation(self, presentation_id: str) -> PresentationData:
         """Fetch presentation data from Google Slides API."""
@@ -176,7 +181,25 @@ class GoogleSlidesTransport(Transport):
         if not isinstance(content_url, str) or not content_url:
             raise TransportError("Thumbnail response did not include contentUrl")
 
-        content_response = await self._get_with_retry(content_url)
+        try:
+            parsed_content_url = urllib.parse.urlparse(content_url)
+            host = (parsed_content_url.hostname or "").lower()
+        except ValueError as exc:
+            raise TransportError("Thumbnail contentUrl is not a valid URL") from exc
+        allowed_host = (
+            host == "googleusercontent.com"
+            or host.endswith(".googleusercontent.com")
+            or host == "docs.google.com"
+        )
+        if parsed_content_url.scheme != "https" or not allowed_host:
+            raise TransportError(
+                "Refusing thumbnail contentUrl outside the allowed Google hosts "
+                "(googleusercontent.com subdomains or docs.google.com)"
+            )
+
+        content_response = await self._get_with_retry(
+            content_url, client=self._thumbnail_client
+        )
         return content_response.content
 
     async def batch_update(
@@ -212,11 +235,13 @@ class GoogleSlidesTransport(Transport):
         url: str,
         *,
         params: dict[str, str] | None = None,
+        client: httpx.AsyncClient | None = None,
     ) -> httpx.Response:
         """GET with bounded exponential backoff for throttling/server errors."""
+        request_client = client or self._client
         for attempt in range(self._retry_attempts):
             try:
-                response = await self._client.get(url, params=params)
+                response = await request_client.get(url, params=params)
                 response.raise_for_status()
                 return response
             except httpx.HTTPStatusError as exc:
@@ -247,8 +272,9 @@ class GoogleSlidesTransport(Transport):
         return APIError(f"API error ({status}): {body}", status_code=status)
 
     async def close(self) -> None:
-        """Close the HTTP client."""
+        """Close the authenticated API and bare thumbnail HTTP clients."""
         await self._client.aclose()
+        await self._thumbnail_client.aclose()
 
 
 class LocalFileTransport(Transport):

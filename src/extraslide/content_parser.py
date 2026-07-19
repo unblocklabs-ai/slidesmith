@@ -11,6 +11,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from defusedxml import ElementTree as DefusedET
+from defusedxml.common import DefusedXmlException
+
 from extraslide.classes import (
     ContentAlignment,
     Fill,
@@ -149,14 +152,16 @@ def parse_slide_content(content: str) -> list[ParsedElement]:
     content = compile_layout(content)
 
     try:
-        root = ET.fromstring(content)
+        root = DefusedET.fromstring(content)
+    except DefusedXmlException as e:
+        raise ValueError(f"Invalid content.sml XML: {e}") from e
     except ET.ParseError:
         # Try wrapping in Root for backwards compatibility with old format
         try:
             wrapped = f"<Root>{content}</Root>"
-            root = ET.fromstring(wrapped)
+            root = DefusedET.fromstring(wrapped)
             return [_parse_element(child, None) for child in root]
-        except ET.ParseError as e:
+        except (ET.ParseError, DefusedXmlException) as e:
             raise ValueError(f"Invalid content.sml XML: {e}") from e
 
     # If root is <Slide>, parse its children

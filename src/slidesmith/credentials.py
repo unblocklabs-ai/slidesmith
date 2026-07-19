@@ -9,10 +9,12 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import html
 import http.server
 import json
 import os
 import platform
+import secrets
 import select
 import socket
 import ssl
@@ -54,27 +56,24 @@ _SA_TOKEN_CAP_SECONDS = 3600  # 60 min for service account tokens
 _DWD_TOKEN_CAP_SECONDS = 600  # 10 min for domain-wide delegation tokens
 
 _OAUTH_USER_SCOPES = [
-    "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/documents",
     "https://www.googleapis.com/auth/presentations",
     "https://www.googleapis.com/auth/drive.file",
-    "https://www.googleapis.com/auth/forms.body",
     "openid",
     "email",
 ]
+# Scope changes require ``slidesmith auth login`` once to grant fresh consent.
+# Existing stored sessions minted with the previous scopes continue to work.
 
 _NO_AUTH_MESSAGE = """\
 No authentication method found.
 
-extrasuite checks for credentials in this order:
+slidesmith checks for credentials in this order:
 
   1. ExtraSuite gateway
        EXTRASUITE_SERVER_URL env var
-       --gateway /path/to/gateway.json
        ~/.config/extrasuite/gateway.json
 
   2. Service account file
-       --service-account /path/to/sa.json
        SERVICE_ACCOUNT_PATH env var
 
   3. gws (pre-obtained token)
@@ -93,9 +92,9 @@ extrasuite checks for credentials in this order:
        (~/Library/Application Support/gogcli/ on macOS)
 
 Quick start options:
-  Already use gws?    Run: gws auth setup   (then re-run your extrasuite command)
+  Already use gws?    Run: gws auth setup   (then re-run your slidesmith command)
   Already use gogcli? Run: gog auth credentials <path/to/client_secret.json>
-  Team deployment?    Run: extrasuite auth login   (requires gateway server)\
+  Team deployment?    Run: slidesmith auth login   (requires gateway server)\
 """
 
 
@@ -1073,8 +1072,9 @@ class CredentialsManager:
         new one.  This is the correct way to rotate credentials if a session may
         be compromised.
 
-        Note: This call collects device fingerprint information (MAC address,
-        hostname, OS, platform) that is sent to the ExtraSuite server for audit.
+        Note: Device fingerprint information (MAC address, hostname, OS, and
+        platform) is sent only in the ExtraSuite-server flow. Slidesmith's
+        default ``oauth_client`` mode never collects or sends it.
 
         Args:
             force: If True, always create a new session even if one exists.
@@ -1164,7 +1164,7 @@ class CredentialsManager:
         if profile_name not in data.get("profiles", {}):
             raise ValueError(
                 f"Profile '{profile_name}' not found. "
-                f"Run: extrasuite auth login --profile {profile_name}"
+                "Run: slidesmith auth login"
             )
         data["active"] = profile_name
         self._save_profiles(data)
@@ -1280,7 +1280,7 @@ class CredentialsManager:
         digest = hashlib.sha256(code_verifier.encode()).digest()
         code_challenge = base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
 
-        def auth_url_for_port(port: int) -> str:
+        def auth_url_for_port(port: int, state: str) -> str:
             redirect_uri = f"http://127.0.0.1:{port}"
             params = urllib.parse.urlencode(
                 {
@@ -1288,6 +1288,7 @@ class CredentialsManager:
                     "redirect_uri": redirect_uri,
                     "response_type": "code",
                     "scope": " ".join(_OAUTH_USER_SCOPES),
+                    "state": state,
                     "code_challenge": code_challenge,
                     "code_challenge_method": "S256",
                     "access_type": "offline",
@@ -1460,10 +1461,12 @@ class CredentialsManager:
             )
 
         # Run browser/headless flow to get auth code
-        auth_code = self._run_browser_flow_for_session()
+        auth_code, code_verifier = self._run_browser_flow_for_session()
         session_exchange_url = f"{self._server_base_url}/api/auth/session/exchange"
         device_info = self._collect_device_info()
-        body = json.dumps({"code": auth_code, **device_info}).encode("utf-8")
+        body = json.dumps(
+            {"code": auth_code, "code_verifier": code_verifier, **device_info}
+        ).encode("utf-8")
 
         req = urllib.request.Request(
             session_exchange_url,
@@ -1480,7 +1483,8 @@ class CredentialsManager:
         except urllib.error.HTTPError as e:
             if e.code == 400:
                 raise Exception(
-                    "Auth code invalid or expired. Please re-authenticate: extrasuite auth login"
+                    "Auth code invalid or expired. Please re-authenticate: "
+                    "slidesmith auth login"
                 ) from e
             error_body = e.read().decode("utf-8") if e.fp else str(e)
             raise Exception(f"Session token exchange failed: {error_body}") from e
@@ -1500,7 +1504,7 @@ class CredentialsManager:
 
     def _run_browser_flow(
         self,
-        auth_url_for_port: Callable[[int], str],
+        auth_url_for_port: Callable[[int, str], str],
         display_msg: str,
     ) -> tuple[str, int]:
         """Run browser OAuth and return the auth code plus bound callback port.
@@ -1508,15 +1512,18 @@ class CredentialsManager:
         Starts a local HTTP callback server, opens the browser, and also accepts
         the code from stdin (interactive fallback). Raises on error or timeout.
         """
+        state = secrets.token_urlsafe(32)
         result_holder: dict[str, Any] = {"code": None, "error": None, "done": False}
         result_lock = threading.Lock()
 
-        handler_class = self._create_handler_class(result_holder, result_lock)
+        handler_class = self._create_handler_class(
+            result_holder, result_lock, expected_state=state
+        )
         # Bind once and keep this exact socket. This avoids the free-port
         # probe/rebind race where another process could claim the callback port.
         server = http.server.HTTPServer(("127.0.0.1", 0), handler_class)
         port = int(server.server_port)
-        auth_url = auth_url_for_port(port)
+        auth_url = auth_url_for_port(port, state)
         server.timeout = 1
 
         def serve_loop() -> None:
@@ -1583,8 +1590,8 @@ class CredentialsManager:
             raise Exception("Authentication timed out. Please try again.")
         return str(code), port
 
-    def _run_browser_flow_for_session(self) -> str:
-        """Run OAuth browser flow and return the auth code.
+    def _run_browser_flow_for_session(self) -> tuple[str, str]:
+        """Run OAuth browser flow and return the auth code and PKCE verifier.
 
         In headless mode: calls /api/token/auth (no port), which shows the auth
         code on an HTML page instead of redirecting to localhost. Prints the URL
@@ -1593,8 +1600,21 @@ class CredentialsManager:
         Otherwise: starts a local HTTP callback server, opens the browser, and
         waits for the redirect from the ExtraSuite server.
         """
+        import base64
+
+        code_verifier = base64.urlsafe_b64encode(os.urandom(32)).rstrip(b"=").decode()
+        digest = hashlib.sha256(code_verifier.encode()).digest()
+        code_challenge = base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
+
         if self._headless:
-            auth_url = f"{self._server_base_url}/api/token/auth"
+            params = urllib.parse.urlencode(
+                {
+                    "state": secrets.token_urlsafe(32),
+                    "code_challenge": code_challenge,
+                    "code_challenge_method": "S256",
+                }
+            )
+            auth_url = f"{self._server_base_url}/api/token/auth?{params}"
             print(
                 f"\nOpen this URL to authenticate:\n\n  {auth_url}\n",
                 file=sys.stderr,
@@ -1623,13 +1643,23 @@ class CredentialsManager:
                 raise Exception(
                     f"No auth code provided within {self.DEFAULT_CALLBACK_TIMEOUT}s. Please try again."
                 )
-            return code_holder[0]
+            return code_holder[0], code_verifier
 
         code, _ = self._run_browser_flow(
-            lambda port: f"{self._server_base_url}/api/token/auth?port={port}",
+            lambda port, state: (
+                f"{self._server_base_url}/api/token/auth?"
+                + urllib.parse.urlencode(
+                    {
+                        "port": port,
+                        "state": state,
+                        "code_challenge": code_challenge,
+                        "code_challenge_method": "S256",
+                    }
+                )
+            ),
             "Open this URL to authenticate:",
         )
-        return code
+        return code, code_verifier
 
     def _exchange_session_for_credential(
         self,
@@ -1671,7 +1701,7 @@ class CredentialsManager:
             error_body = e.read().decode("utf-8") if e.fp else str(e)
             if e.code == 401:
                 raise Exception(
-                    "Session expired or revoked. Run: extrasuite auth login"
+                    "Session expired or revoked. Run: slidesmith auth login"
                 ) from e
             raise Exception(f"Access token exchange failed: {error_body}") from e
         except urllib.error.URLError as e:
@@ -1688,7 +1718,9 @@ class CredentialsManager:
 
     @staticmethod
     def _create_handler_class(
-        result_holder: dict[str, Any], result_lock: threading.Lock
+        result_holder: dict[str, Any],
+        result_lock: threading.Lock,
+        expected_state: str,
     ) -> type:
         """Create HTTP handler class for OAuth callback."""
 
@@ -1709,16 +1741,35 @@ class CredentialsManager:
                         self._send_html("Already processed.", 400)
                         return
 
-                    if "error" in params:
+                    callback_state = params.get("state", [""])[0]
+                    if not secrets.compare_digest(callback_state, expected_state):
+                        result_holder["error"] = (
+                            "OAuth state mismatch. Please restart authentication."
+                        )
+                        result_holder["done"] = True
+                        self._send_html(
+                            """
+                            <html>
+                            <head><title>Authentication Failed</title></head>
+                            <body style="font-family: sans-serif; padding: 40px; text-align: center;">
+                                <h1 style="color: #dc3545;">Authentication Failed</h1>
+                                <p>OAuth state mismatch. Please restart authentication.</p>
+                            </body>
+                            </html>
+                            """,
+                            400,
+                        )
+                    elif "error" in params:
                         result_holder["error"] = params["error"][0]
                         result_holder["done"] = True
+                        escaped_error = html.escape(params["error"][0])
                         self._send_html(
                             f"""
                             <html>
                             <head><title>Authentication Failed</title></head>
                             <body style="font-family: sans-serif; padding: 40px; text-align: center;">
                                 <h1 style="color: #dc3545;">Authentication Failed</h1>
-                                <p>{params["error"][0]}</p>
+                                <p>{escaped_error}</p>
                                 <p>Please close this window and try again.</p>
                             </body>
                             </html>

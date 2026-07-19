@@ -24,7 +24,11 @@ from extraslide.transport import (
 async def _mocked_transport(handler: Any) -> GoogleSlidesTransport:
     transport = GoogleSlidesTransport("token", retry_backoff=0)
     await transport._client.aclose()
+    await transport._thumbnail_client.aclose()
     transport._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    transport._thumbnail_client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler)
+    )
     return transport
 
 
@@ -103,7 +107,7 @@ async def test_thumbnail_retries_metadata_and_content_gets() -> None:
                 return httpx.Response(500, request=request)
             return httpx.Response(
                 200,
-                json={"contentUrl": "https://thumb.example/image"},
+                json={"contentUrl": "https://lh3.googleusercontent.com/image"},
                 request=request,
             )
         content_calls += 1

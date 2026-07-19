@@ -22,6 +22,9 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from typing import Protocol
 
+from defusedxml import ElementTree as DefusedET
+from defusedxml.common import DefusedXmlException
+
 from extraslide.classes import parse_class_string, parse_text_style_classes
 from extraslide.units import format_pt
 
@@ -118,12 +121,14 @@ def compile_layout(content: str, text_measurer: TextMeasurer | None = None) -> s
     measurer = text_measurer or _DEFAULT_MEASURER
     wrapped = False
     try:
-        root = ET.fromstring(content)
+        root = DefusedET.fromstring(content)
+    except DefusedXmlException as exc:
+        raise ValueError(f"Invalid content.sml XML: {exc}") from exc
     except ET.ParseError:
         try:
-            root = ET.fromstring(f"<Root>{content}</Root>")
+            root = DefusedET.fromstring(f"<Root>{content}</Root>")
             wrapped = True
-        except ET.ParseError as exc:
+        except (ET.ParseError, DefusedXmlException) as exc:
             raise ValueError(f"Invalid content.sml XML: {exc}") from exc
 
     # The fast marker scan may match a comment or text fragment. Confirm that

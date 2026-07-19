@@ -7,6 +7,7 @@ import asyncio
 import json
 import re
 import sys
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
 
@@ -81,6 +82,55 @@ def cmd_push(args: Any) -> None:
         sys.exit(2)
 
 
+def cmd_check(args: Any) -> None:
+    from extraslide.qa import check_folder
+
+    folder = Path(args.folder)
+    if not args.no_thumbnails:
+        from extraslide.transport import GoogleSlidesTransport
+
+        metadata = json.loads(
+            (folder / "presentation.json").read_text(encoding="utf-8")
+        )
+        id_mapping = json.loads(
+            (folder / "id_mapping.json").read_text(encoding="utf-8")
+        )
+        presentation_id = metadata["presentationId"]
+        token = _token("slide.pull", presentation_id)
+        qa_dir = folder / ".qa"
+        qa_dir.mkdir(parents=True, exist_ok=True)
+
+        async def run() -> None:
+            transport = GoogleSlidesTransport(token)
+            try:
+                content_paths = (folder / "slides").glob("*/content.sml")
+                for content_path in sorted(
+                    content_paths, key=lambda path: int(path.parent.name)
+                ):
+                    slide_number = content_path.parent.name
+                    slide_clean_id = ET.fromstring(
+                        content_path.read_text(encoding="utf-8")
+                    ).get("id")
+                    if not slide_clean_id or slide_clean_id not in id_mapping:
+                        raise ValueError(
+                            f"No Google page object ID for slide {slide_number}"
+                        )
+                    png = await transport.get_page_thumbnail(
+                        presentation_id, id_mapping[slide_clean_id]
+                    )
+                    output_path = qa_dir / f"slide-{slide_number}.png"
+                    output_path.write_bytes(png)
+                    print(output_path, flush=True)
+            finally:
+                await transport.close()
+
+        asyncio.run(run())
+
+    exit_code = check_folder(folder, strict=args.strict)
+    if exit_code:
+        sys.exit(exit_code)
+
+
 def main(argv: list[str] | None = None) -> None:
     p = argparse.ArgumentParser(
         prog="slidesmith",
@@ -113,6 +163,23 @@ def main(argv: list[str] | None = None) -> None:
         ),
     )
     spu.set_defaults(func=cmd_push)
+
+    sc = sub.add_parser(
+        "check",
+        help="Download slide thumbnails and run offline geometry QA",
+    )
+    sc.add_argument("folder", help="Presentation folder created by pull")
+    sc.add_argument(
+        "--no-thumbnails",
+        action="store_true",
+        help="Run offline geometry lint only (no network or authentication)",
+    )
+    sc.add_argument(
+        "--strict",
+        action="store_true",
+        help="Exit with status 1 when geometry findings are reported",
+    )
+    sc.set_defaults(func=cmd_check)
 
     args = p.parse_args(argv)
     try:

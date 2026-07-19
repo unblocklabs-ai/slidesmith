@@ -152,6 +152,34 @@ class GoogleSlidesTransport(Transport):
             data=response,
         )
 
+    async def get_page_thumbnail(
+        self,
+        presentation_id: str,
+        page_object_id: str,
+        size: str = "LARGE",
+    ) -> bytes:
+        """Fetch a page thumbnail's PNG bytes from its temporary content URL."""
+        url = f"{API_BASE}/{presentation_id}/pages/{page_object_id}/thumbnail"
+        params = {
+            "thumbnailProperties.thumbnailSize": size,
+            "thumbnailProperties.mimeType": "PNG",
+        }
+
+        try:
+            metadata_response = await self._client.get(url, params=params)
+            metadata_response.raise_for_status()
+            content_url = metadata_response.json().get("contentUrl")
+            if not isinstance(content_url, str) or not content_url:
+                raise TransportError("Thumbnail response did not include contentUrl")
+
+            content_response = await self._client.get(content_url)
+            content_response.raise_for_status()
+            return content_response.content
+        except httpx.HTTPStatusError as e:
+            raise self._handle_http_error(e) from e
+        except httpx.RequestError as e:
+            raise TransportError(f"Network error: {e}") from e
+
     async def batch_update(
         self,
         presentation_id: str,

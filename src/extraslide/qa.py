@@ -1,0 +1,315 @@
+"""Offline visual QA for a materialized Slidesmith presentation folder."""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass
+from pathlib import Path
+from collections.abc import Iterator
+from typing import Any, Callable
+
+from extraslide.bounds import BoundingBox
+from extraslide.content_parser import ParsedElement, ParsedRun, parse_all_slides
+from extraslide.layout import ApproximateTextMeasurer, TextMeasurer
+
+OVERLAP_THRESHOLD = 0.15
+TEXT_OVERFLOW_TOLERANCE = 1.10
+
+
+@dataclass(frozen=True)
+class Finding:
+    """One actionable geometry issue in a slide."""
+
+    severity: str
+    rule: str
+    element_ids: tuple[str, ...]
+    slide_number: int
+    description: str
+    suggested_fix: str
+
+
+def lint_folder(
+    folder: str | Path,
+    *,
+    text_measurer: TextMeasurer | None = None,
+) -> list[Finding]:
+    """Analyze the current SML projection without making network calls."""
+    folder_path = Path(folder)
+    metadata = _read_json(folder_path / "presentation.json")
+    page_size = metadata.get("pageSize", {})
+    try:
+        page_width = float(page_size["width"])
+        page_height = float(page_size["height"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError(
+            f"Invalid pageSize in {folder_path / 'presentation.json'}"
+        ) from exc
+    if page_width <= 0 or page_height <= 0:
+        raise ValueError("Presentation pageSize width and height must be positive")
+
+    styles_path = folder_path / "styles.json"
+    styles = _read_json(styles_path) if styles_path.exists() else {}
+    slides = parse_all_slides(str(folder_path / "slides"))
+    measurer = text_measurer or ApproximateTextMeasurer()
+
+    findings: list[Finding] = []
+    for slide_name, roots in slides.items():
+        try:
+            slide_number = int(slide_name)
+        except ValueError as exc:
+            raise ValueError(f"Slide folder name must be numeric: {slide_name}") from exc
+
+        findings.extend(_find_overlaps(roots, slide_number))
+        for element in _walk(roots):
+            box = _box(element)
+            if box is None:
+                continue
+            if (
+                box.x < 0
+                or box.y < 0
+                or box.x2 > page_width
+                or box.y2 > page_height
+            ):
+                findings.append(
+                    Finding(
+                        severity="WARNING",
+                        rule="OUT_OF_BOUNDS",
+                        element_ids=(element.clean_id,),
+                        slide_number=slide_number,
+                        description=(
+                            f"Element {element.clean_id} extends beyond the "
+                            f"{page_width:g} x {page_height:g} pt page."
+                        ),
+                        suggested_fix=(
+                            "Move or resize the element so every edge is inside "
+                            "the page."
+                        ),
+                    )
+                )
+
+            text = "\n".join(element.paragraphs)
+            if not text:
+                continue
+            family, size, weight = _text_metrics(
+                element, styles.get(element.clean_id, {})
+            )
+            measured_height = (
+                float("inf")
+                if box.w <= 0
+                else measurer.measure_wrapped_height(
+                    text,
+                    family,
+                    size,
+                    weight,
+                    box.w,
+                )
+            )
+            if measured_height > box.h * TEXT_OVERFLOW_TOLERANCE:
+                needed = (
+                    "an unbounded amount"
+                    if measured_height == float("inf")
+                    else f"about {measured_height:.1f} pt"
+                )
+                findings.append(
+                    Finding(
+                        severity="WARNING",
+                        rule="TEXT_OVERFLOW",
+                        element_ids=(element.clean_id,),
+                        slide_number=slide_number,
+                        description=(
+                            f"Element {element.clean_id} needs {needed} of text height "
+                            f"but is {box.h:.1f} pt tall; likely overflow "
+                            "(approximate measurement)."
+                        ),
+                        suggested_fix=(
+                            "Increase the element height or width, shorten the "
+                            "text, or reduce its font size."
+                        ),
+                    )
+                )
+
+    return findings
+
+
+def print_report(findings: list[Finding], output: Callable[[str], None] = print) -> None:
+    """Print findings in a stable, agent-readable two-line format."""
+    if not findings:
+        output("QA clean: no issues found.")
+        return
+
+    output(f"QA found {len(findings)} issue(s):")
+    for finding in findings:
+        ids = ", ".join(finding.element_ids)
+        output(
+            f"[{finding.severity}] {finding.rule} slide {finding.slide_number:02d} "
+            f"({ids}): {finding.description}"
+        )
+        output(f"  Suggested fix: {finding.suggested_fix}")
+
+
+def check_folder(
+    folder: str | Path,
+    *,
+    strict: bool = False,
+    output: Callable[[str], None] = print,
+    text_measurer: TextMeasurer | None = None,
+) -> int:
+    """Lint and report a folder, returning its CLI exit code."""
+    findings = lint_folder(folder, text_measurer=text_measurer)
+    print_report(findings, output)
+    return 1 if strict and findings else 0
+
+
+def _find_overlaps(
+    siblings: list[ParsedElement],
+    slide_number: int,
+) -> list[Finding]:
+    findings: list[Finding] = []
+    leaves = [element for element in siblings if not element.children]
+    for index, first in enumerate(leaves):
+        first_box = _box(first)
+        if first_box is None or first_box.area <= 0:
+            continue
+        for second in leaves[index + 1 :]:
+            second_box = _box(second)
+            if second_box is None or second_box.area <= 0:
+                continue
+            if first_box.contains(second_box, threshold=1.0) or second_box.contains(
+                first_box, threshold=1.0
+            ):
+                continue
+            intersection = _intersection_area(first_box, second_box)
+            smaller_area = min(first_box.area, second_box.area)
+            if intersection / smaller_area <= OVERLAP_THRESHOLD:
+                continue
+            ids = (first.clean_id, second.clean_id)
+            findings.append(
+                Finding(
+                    severity="WARNING",
+                    rule="OVERLAP",
+                    element_ids=ids,
+                    slide_number=slide_number,
+                    description=(
+                        f"Sibling elements {ids[0]} and {ids[1]} overlap by "
+                        f"{intersection / smaller_area:.0%} of the smaller element."
+                    ),
+                    suggested_fix=(
+                        "Move or resize one element to leave intentional spacing "
+                        "between them."
+                    ),
+                )
+            )
+
+    for element in siblings:
+        findings.extend(_find_overlaps(element.children, slide_number))
+    return findings
+
+
+def _walk(elements: list[ParsedElement]) -> Iterator[ParsedElement]:
+    for element in elements:
+        yield element
+        yield from _walk(element.children)
+
+
+def _box(element: ParsedElement) -> BoundingBox | None:
+    if None in (element.x, element.y, element.w, element.h):
+        return None
+    assert element.x is not None
+    assert element.y is not None
+    assert element.w is not None
+    assert element.h is not None
+    return BoundingBox(element.x, element.y, element.w, element.h)
+
+
+def _intersection_area(first: BoundingBox, second: BoundingBox) -> float:
+    width = max(0.0, min(first.x2, second.x2) - max(first.x, second.x))
+    height = max(0.0, min(first.y2, second.y2) - max(first.y, second.y))
+    return width * height
+
+
+def _text_metrics(
+    element: ParsedElement,
+    raw_style: dict[str, Any],
+) -> tuple[str, float, int]:
+    families: list[str] = []
+    sizes: list[float] = []
+    weights: list[int] = []
+
+    text_style = element.styles.text_style if element.styles else None
+    if text_style is not None:
+        _add_metrics(
+            families,
+            sizes,
+            weights,
+            text_style.font_family,
+            text_style.font_size_pt,
+            text_style.font_weight or (700 if text_style.bold else None),
+        )
+    for paragraph_runs in element.runs:
+        for run in paragraph_runs:
+            _add_run_metrics(run, families, sizes, weights)
+
+    for paragraph in raw_style.get("text", {}).get("paragraphs", []):
+        for run in paragraph.get("runs", []):
+            style = run.get("style", {})
+            _add_metrics(
+                families,
+                sizes,
+                weights,
+                style.get("fontFamily"),
+                style.get("fontSize"),
+                style.get("fontWeight") or (700 if style.get("bold") else None),
+            )
+
+    return (
+        families[0] if families else "Arial",
+        max(sizes) if sizes else 12.0,
+        max(weights) if weights else 400,
+    )
+
+
+def _add_run_metrics(
+    run: ParsedRun,
+    families: list[str],
+    sizes: list[float],
+    weights: list[int],
+) -> None:
+    style = run.text_style
+    if style is None:
+        return
+    _add_metrics(
+        families,
+        sizes,
+        weights,
+        style.font_family,
+        style.font_size_pt,
+        style.font_weight or (700 if style.bold else None),
+    )
+
+
+def _add_metrics(
+    families: list[str],
+    sizes: list[float],
+    weights: list[int],
+    family: Any,
+    size: Any,
+    weight: Any,
+) -> None:
+    if isinstance(family, str) and family:
+        families.append(family)
+    if isinstance(size, (int, float)) and size > 0:
+        sizes.append(float(size))
+    if isinstance(weight, int) and weight > 0:
+        weights.append(weight)
+
+
+def _read_json(path: Path) -> dict[str, Any]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise ValueError(f"Missing Slidesmith workspace file: {path}") from exc
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON in {path}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ValueError(f"Expected a JSON object in {path}")
+    return data

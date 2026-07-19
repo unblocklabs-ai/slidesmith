@@ -53,6 +53,7 @@ class ParsedRun:
 
     text: str
     text_style: TextStyle | None = None
+    auto_text_type: str | None = None
 
 
 @dataclass
@@ -171,10 +172,10 @@ def _parse_element(elem: ET.Element, parent_id: str | None) -> ParsedElement:
     clean_id = elem.get("id", "")
 
     # Parse position attributes (all elements have absolute position now)
-    x = _parse_float(elem.get("x"))
-    y = _parse_float(elem.get("y"))
-    w = _parse_float(elem.get("w"))
-    h = _parse_float(elem.get("h"))
+    x = _parse_float(elem.get("x"), clean_id, "x")
+    y = _parse_float(elem.get("y"), clean_id, "y")
+    w = _parse_float(elem.get("w"), clean_id, "w")
+    h = _parse_float(elem.get("h"), clean_id, "h")
 
     # Parse the class attribute into typed styles (fails loudly on unknown classes)
     styles = parse_element_classes(elem.get("class"), clean_id, elem.tag)
@@ -186,12 +187,11 @@ def _parse_element(elem: ET.Element, parent_id: str | None) -> ParsedElement:
     for p_elem in elem.findall("P"):
         para_runs = _parse_paragraph_runs(p_elem, clean_id)
         para_text = "".join(run.text for run in para_runs)
-        if para_text:
-            paragraphs.append(para_text)
-            runs.append(para_runs)
-            paragraph_styles.append(
-                _parse_paragraph_classes(p_elem.get("class"), clean_id)
-            )
+        paragraphs.append(para_text)
+        runs.append(para_runs)
+        paragraph_styles.append(
+            _parse_paragraph_classes(p_elem.get("class"), clean_id)
+        )
 
     # Parse children (excluding P elements)
     children = []
@@ -234,8 +234,17 @@ def _parse_paragraph_runs(p_elem: ET.Element, element_id: str) -> list[ParsedRun
                 f"'{element_id}': only <T> runs are allowed"
             )
         text_style = _parse_run_classes(child.get("class"), element_id)
+        auto_text_type = child.get("auto-text")
         if child.text:
-            runs.append(ParsedRun(text=child.text, text_style=text_style))
+            runs.append(
+                ParsedRun(
+                    text=child.text,
+                    text_style=text_style,
+                    auto_text_type=auto_text_type,
+                )
+            )
+        elif auto_text_type:
+            runs.append(ParsedRun(text="", auto_text_type=auto_text_type))
         if child.tail:
             runs.append(ParsedRun(text=child.tail))
 
@@ -358,14 +367,21 @@ def _parse_paragraph_classes(
     return parsed if parsed != ParagraphStyles() else None
 
 
-def _parse_float(value: str | None) -> float | None:
-    """Parse a float value from string."""
+def _parse_float(
+    value: str | None,
+    element_id: str = "",
+    attribute: str = "position",
+) -> float | None:
+    """Parse a position attribute, failing loudly on malformed author input."""
     if value is None:
         return None
     try:
         return float(value)
-    except ValueError:
-        return None
+    except ValueError as exc:
+        raise ValueError(
+            f"Invalid {attribute} value {value!r} on element "
+            f"'{element_id}': expected a number"
+        ) from exc
 
 
 def flatten_elements(roots: list[ParsedElement]) -> dict[str, ParsedElement]:

@@ -82,6 +82,7 @@ def process_presentation(
         "presentationId": presentation_data.get("presentationId", ""),
         "slideCount": len(slides_data),
         "pageSize": _extract_page_size(presentation_data),
+        "slideOrder": [slide_id for slide_id, _, _ in slides_data],
     }
 
     return {

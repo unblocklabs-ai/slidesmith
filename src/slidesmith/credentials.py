@@ -27,7 +27,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 # Try to use certifi for SSL certificates (common on macOS)
 try:
@@ -461,13 +461,14 @@ class FileSessionStore:
         payload = json.dumps({"profiles": profiles}, indent=2, ensure_ascii=False)
         fd = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         try:
-            with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                handle.write(payload)
-                handle.write("\n")
+            handle = os.fdopen(fd, "w", encoding="utf-8")
         except Exception:
             with contextlib.suppress(OSError):
                 os.close(fd)
             raise
+        with handle:
+            handle.write(payload)
+            handle.write("\n")
         os.chmod(self.path, stat.S_IRUSR | stat.S_IWUSR)
 
     def delete(self, profile_name: str) -> None:
@@ -482,13 +483,14 @@ class FileSessionStore:
             )
             fd = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
             try:
-                with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                    handle.write(payload)
-                    handle.write("\n")
+                handle = os.fdopen(fd, "w", encoding="utf-8")
             except Exception:
                 with contextlib.suppress(OSError):
                     os.close(fd)
                 raise
+            with handle:
+                handle.write(payload)
+                handle.write("\n")
             os.chmod(self.path, stat.S_IRUSR | stat.S_IWUSR)
         else:
             self.path.unlink(missing_ok=True)
@@ -1278,24 +1280,26 @@ class CredentialsManager:
         digest = hashlib.sha256(code_verifier.encode()).digest()
         code_challenge = base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
 
-        port = self._find_free_port()
-        redirect_uri = f"http://127.0.0.1:{port}"
+        def auth_url_for_port(port: int) -> str:
+            redirect_uri = f"http://127.0.0.1:{port}"
+            params = urllib.parse.urlencode(
+                {
+                    "client_id": client_id,
+                    "redirect_uri": redirect_uri,
+                    "response_type": "code",
+                    "scope": " ".join(_OAUTH_USER_SCOPES),
+                    "code_challenge": code_challenge,
+                    "code_challenge_method": "S256",
+                    "access_type": "offline",
+                    "prompt": "consent",
+                }
+            )
+            return f"https://accounts.google.com/o/oauth2/v2/auth?{params}"
 
-        params = urllib.parse.urlencode(
-            {
-                "client_id": client_id,
-                "redirect_uri": redirect_uri,
-                "response_type": "code",
-                "scope": " ".join(_OAUTH_USER_SCOPES),
-                "code_challenge": code_challenge,
-                "code_challenge_method": "S256",
-                "access_type": "offline",
-                "prompt": "consent",  # always return a refresh_token
-            }
+        code, port = self._run_browser_flow(
+            auth_url_for_port, "Sign in with Google:"
         )
-        auth_url = f"https://accounts.google.com/o/oauth2/v2/auth?{params}"
-
-        code = self._run_browser_flow(port, auth_url, "Sign in with Google:")
+        redirect_uri = f"http://127.0.0.1:{port}"
 
         body = urllib.parse.urlencode(
             {
@@ -1494,8 +1498,12 @@ class CredentialsManager:
         self._save_session_token(session, name)
         return session
 
-    def _run_browser_flow(self, port: int, auth_url: str, display_msg: str) -> str:
-        """Run browser-based OAuth flow and return the auth code.
+    def _run_browser_flow(
+        self,
+        auth_url_for_port: Callable[[int], str],
+        display_msg: str,
+    ) -> tuple[str, int]:
+        """Run browser OAuth and return the auth code plus bound callback port.
 
         Starts a local HTTP callback server, opens the browser, and also accepts
         the code from stdin (interactive fallback). Raises on error or timeout.
@@ -1504,7 +1512,11 @@ class CredentialsManager:
         result_lock = threading.Lock()
 
         handler_class = self._create_handler_class(result_holder, result_lock)
-        server = http.server.HTTPServer(("127.0.0.1", port), handler_class)
+        # Bind once and keep this exact socket. This avoids the free-port
+        # probe/rebind race where another process could claim the callback port.
+        server = http.server.HTTPServer(("127.0.0.1", 0), handler_class)
+        port = int(server.server_port)
+        auth_url = auth_url_for_port(port)
         server.timeout = 1
 
         def serve_loop() -> None:
@@ -1562,13 +1574,14 @@ class CredentialsManager:
 
         with result_lock:
             result_holder["done"] = True
+            error = result_holder.get("error")
+            code = result_holder.get("code")
 
-        if result_holder.get("error"):
-            raise Exception(f"Authentication failed: {result_holder['error']}")
-        code = result_holder.get("code")
+        if error:
+            raise Exception(f"Authentication failed: {error}")
         if not code:
             raise Exception("Authentication timed out. Please try again.")
-        return code
+        return str(code), port
 
     def _run_browser_flow_for_session(self) -> str:
         """Run OAuth browser flow and return the auth code.
@@ -1612,9 +1625,11 @@ class CredentialsManager:
                 )
             return code_holder[0]
 
-        port = self._find_free_port()
-        auth_url = f"{self._server_base_url}/api/token/auth?port={port}"
-        return self._run_browser_flow(port, auth_url, "Open this URL to authenticate:")
+        code, _ = self._run_browser_flow(
+            lambda port: f"{self._server_base_url}/api/token/auth?port={port}",
+            "Open this URL to authenticate:",
+        )
+        return code
 
     def _exchange_session_for_credential(
         self,

@@ -12,6 +12,7 @@ from typing import Any
 
 _AUTHORED_ID_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_-]*$")
 _GOOGLE_GENERATED_ID_RES = (
+    re.compile(r"^[segml]\d+$"),
     re.compile(r"^g[0-9a-f]+_\d+_\d+$"),
     re.compile(r"^p\d+"),
     re.compile(r"^SLIDES_API"),

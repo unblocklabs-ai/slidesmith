@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import stat
 import time
+import webbrowser
 from pathlib import Path
 from typing import Any
 
@@ -101,6 +102,72 @@ def test_file_session_store_round_trip_and_mode_0600(tmp_path: Path) -> None:
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
     data = json.loads(path.read_text(encoding="utf-8"))
     assert data["profiles"]["default"] == token.to_dict()
+
+
+def test_file_session_store_does_not_double_close_after_managed_write_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """B-L4: fdopen owns the descriptor once construction succeeds."""
+    store = FileSessionStore(tmp_path / "session.json")
+    closed: list[int] = []
+
+    class BrokenHandle:
+        exited = False
+
+        def __enter__(self) -> BrokenHandle:
+            return self
+
+        def write(self, _value: str) -> None:
+            raise OSError("disk full")
+
+        def __exit__(self, *_args: object) -> None:
+            self.exited = True
+
+    handle = BrokenHandle()
+    monkeypatch.setattr(credentials.os, "open", lambda *_args, **_kwargs: 99)
+    monkeypatch.setattr(credentials.os, "fdopen", lambda *_args, **_kwargs: handle)
+    monkeypatch.setattr(credentials.os, "close", closed.append)
+
+    with pytest.raises(OSError, match="disk full"):
+        store.save("default", _token())
+
+    assert handle.exited
+    assert closed == []
+
+
+def test_browser_flow_binds_callback_once_and_uses_bound_port(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """B-L4: the advertised callback port comes from the listening socket."""
+    addresses: list[tuple[str, int]] = []
+    advertised_ports: list[int] = []
+
+    class FakeServer:
+        server_port = 43123
+        timeout = 0
+
+        def __init__(self, address: tuple[str, int], _handler: type) -> None:
+            addresses.append(address)
+
+        def handle_request(self) -> None:
+            pass
+
+        def server_close(self) -> None:
+            pass
+
+    manager = object.__new__(CredentialsManager)
+    manager.DEFAULT_CALLBACK_TIMEOUT = 0
+    monkeypatch.setattr(credentials.http.server, "HTTPServer", FakeServer)
+    monkeypatch.setattr(webbrowser, "open", lambda _url: True)
+
+    with pytest.raises(Exception, match="Authentication timed out"):
+        manager._run_browser_flow(
+            lambda port: advertised_ports.append(port) or f"http://auth/{port}",
+            "Authenticate:",
+        )
+
+    assert addresses == [("127.0.0.1", 0)]
+    assert advertised_ports == [43123]
 
 
 def test_keyring_failure_falls_back_once_to_file_store(

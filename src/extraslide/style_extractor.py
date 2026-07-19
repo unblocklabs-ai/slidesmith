@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from extraslide.classes import ContentAlignment, Fill, ParagraphStyle, Stroke, TextStyle
-from extraslide.units import emu_to_pt
+from extraslide.units import emu_to_pt, rgb_to_hex
 
 if TYPE_CHECKING:
     from extraslide.render_tree import RenderNode
@@ -122,6 +122,23 @@ def _extract_element_style(node: RenderNode) -> dict[str, Any]:
         "type": node.element_type,
     }
 
+    size = elem.get("size", {})
+    transform = elem.get("transform", {})
+    if size:
+        style["nativeSize"] = {
+            "w": size.get("width", {}).get("magnitude", 0),
+            "h": size.get("height", {}).get("magnitude", 0),
+        }
+    if transform:
+        style["nativeTransform"] = {
+            "scaleX": transform.get("scaleX", 1),
+            "scaleY": transform.get("scaleY", 1),
+            "shearX": transform.get("shearX", 0),
+            "shearY": transform.get("shearY", 0),
+            "translateX": transform.get("translateX", 0),
+            "translateY": transform.get("translateY", 0),
+        }
+
     # Position - relative if has parent, absolute otherwise
     if node.parent is not None:
         rel_bounds = node.relative_bounds()
@@ -216,8 +233,6 @@ def _extract_element_style(node: RenderNode) -> dict[str, Any]:
             style["imageProperties"] = _extract_image_properties(image_props)
 
         # Store native image size and scale factors for accurate copy
-        size = elem.get("size", {})
-        transform = elem.get("transform", {})
         if size and transform:
             native_w = size.get("width", {}).get("magnitude", 0)
             native_h = size.get("height", {}).get("magnitude", 0)
@@ -337,10 +352,9 @@ def _extract_color(color_data: dict[str, Any]) -> str:
     """Extract color as hex string or theme reference."""
     rgb = color_data.get("rgbColor", {})
     if rgb and any(rgb.values()):
-        r = int(rgb.get("red", 0) * 255)
-        g = int(rgb.get("green", 0) * 255)
-        b = int(rgb.get("blue", 0) * 255)
-        return f"#{r:02x}{g:02x}{b:02x}"
+        return rgb_to_hex(
+            rgb.get("red", 0), rgb.get("green", 0), rgb.get("blue", 0)
+        )
 
     theme_color = color_data.get("themeColor")
     if theme_color:

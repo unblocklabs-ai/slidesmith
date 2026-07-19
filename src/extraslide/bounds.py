@@ -59,7 +59,7 @@ class BoundingBox:
         if other.area == 0:
             return False
 
-        return intersection_area / other.area >= threshold
+        return intersection_area / other.area + 1e-9 >= threshold
 
     def relative_to(self, parent: BoundingBox) -> BoundingBox:
         """Return this box's position relative to a parent box.

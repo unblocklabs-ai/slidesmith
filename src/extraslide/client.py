@@ -9,6 +9,8 @@ Provides the `pull`, `diff`, and `push` methods for the presentation workflow:
 from __future__ import annotations
 
 import json
+import re
+import shutil
 import sys
 import zipfile
 from datetime import datetime, timezone
@@ -84,6 +86,81 @@ def _index_presentation(
                 walk(element)
 
     return elements, page_ids
+
+
+def _pristine_element_metadata(
+    data: dict[str, Any],
+) -> tuple[dict[str, str], dict[str, str | None]]:
+    """Extract element types and group parentage from a pristine API tree."""
+    types: dict[str, str] = {}
+    parents: dict[str, str | None] = {}
+
+    def walk(element: dict[str, Any], parent_id: str | None = None) -> None:
+        object_id = element.get("objectId")
+        if not isinstance(object_id, str) or not object_id:
+            return
+        if "elementGroup" in element:
+            element_type = "GROUP"
+        elif "shape" in element:
+            element_type = element.get("shape", {}).get("shapeType", "SHAPE")
+        elif "line" in element:
+            element_type = "LINE"
+        elif "image" in element:
+            element_type = "IMAGE"
+        elif "table" in element:
+            element_type = "TABLE"
+        elif "video" in element:
+            element_type = "VIDEO"
+        elif "sheetsChart" in element:
+            element_type = "SHEETS_CHART"
+        else:
+            element_type = "UNKNOWN"
+        types[object_id] = element_type
+        parents[object_id] = parent_id
+        for child in element.get("elementGroup", {}).get("children", []):
+            walk(child, object_id)
+
+    for page_kind in ("slides", "layouts", "masters"):
+        for page in data.get(page_kind, []) or []:
+            for element in page.get("pageElements", []) or []:
+                walk(element)
+    return types, parents
+
+
+def _enrich_pristine_geometry(
+    styles: dict[str, dict[str, Any]],
+    id_mapping: dict[str, str],
+    base_raw: dict[str, Any],
+) -> None:
+    """Backfill native geometry for workspaces pulled by older versions."""
+    elements, _ = _index_presentation(base_raw)
+    for clean_id, google_id in id_mapping.items():
+        element = elements.get(google_id)
+        if element is None:
+            continue
+        size = element.get("size")
+        transform = element.get("transform")
+        style = styles.setdefault(clean_id, {})
+        if isinstance(size, dict):
+            style.setdefault(
+                "nativeSize",
+                {
+                    "w": size.get("width", {}).get("magnitude", 0),
+                    "h": size.get("height", {}).get("magnitude", 0),
+                },
+            )
+        if isinstance(transform, dict):
+            style.setdefault(
+                "nativeTransform",
+                {
+                    "scaleX": transform.get("scaleX", 1),
+                    "scaleY": transform.get("scaleY", 1),
+                    "shearX": transform.get("shearX", 0),
+                    "shearY": transform.get("shearY", 0),
+                    "translateX": transform.get("translateX", 0),
+                    "translateY": transform.get("translateY", 0),
+                },
+            )
 
 
 def _collect_request_object_ids(
@@ -229,6 +306,10 @@ class SlidesClient:
 
         # Write the new format files
         written_files.extend(write_new_format(result, presentation_dir))
+        self._prune_stale_slide_folders(
+            presentation_dir,
+            {slide["slide_index"] for slide in result["slides"]},
+        )
 
         # Save raw API response
         if save_raw:
@@ -287,6 +368,8 @@ class SlidesClient:
 
         # Read pristine state
         pristine_slides, pristine_styles = self._read_pristine(folder_path)
+        base_raw = self._read_base_raw(folder_path) or {}
+        _enrich_pristine_geometry(pristine_styles, id_mapping, base_raw)
 
         # Generate diff
         diff_result = diff_presentation(
@@ -297,10 +380,21 @@ class SlidesClient:
         )
 
         # Build slide ID mapping (slide_index -> google_slide_id)
-        slide_id_mapping = self._build_slide_id_mapping(id_mapping)
+        metadata = self._read_json(folder_path / PRESENTATION_FILE)
+        slide_id_mapping = self._build_slide_id_mapping(
+            id_mapping, metadata.get("slideOrder")
+        )
+
+        pristine_types, pristine_parents = _pristine_element_metadata(base_raw)
 
         # Generate API requests
-        requests = generate_batch_requests(diff_result, id_mapping, slide_id_mapping)
+        requests = generate_batch_requests(
+            diff_result,
+            id_mapping,
+            slide_id_mapping,
+            pristine_types,
+            pristine_parents,
+        )
         return diff_result, requests
 
     async def push(self, folder_path: Path, *, force: bool = False) -> dict[str, Any]:
@@ -354,7 +448,9 @@ class SlidesClient:
                 file=sys.stderr,
             )
             response = await self._transport.batch_update(presentation_id, requests)
-            await self._refresh_after_push(folder_path, presentation_id)
+            await self._refresh_after_success(
+                folder_path, presentation_id, response
+            )
             return response
 
         # (a) Re-fetch the remote presentation and capture its revision.
@@ -404,8 +500,25 @@ class SlidesClient:
                 ) from e
             raise
 
-        await self._refresh_after_push(folder_path, presentation_id)
+        await self._refresh_after_success(folder_path, presentation_id, response)
         return response
+
+    async def _refresh_after_success(
+        self,
+        folder_path: Path,
+        presentation_id: str,
+        response: dict[str, Any],
+    ) -> None:
+        """Refresh after a committed write, preserving a clear stale state on error."""
+        try:
+            await self._refresh_after_push(folder_path, presentation_id)
+        except Exception as exc:
+            warning = (
+                "push applied; workspace stale; re-pull required "
+                f"(post-push refresh failed: {exc})"
+            )
+            print(f"warning: {warning}", file=sys.stderr)
+            response.setdefault("warnings", []).append(warning)
 
     async def _refresh_after_push(
         self, folder_path: Path, presentation_id: str
@@ -428,35 +541,72 @@ class SlidesClient:
         result["presentation_info"]["pulledAt"] = _pull_timestamp()
 
         with TemporaryDirectory(prefix="slidesmith-push-refresh-") as temp_dir:
-            staging_dir = Path(temp_dir)
+            temp_root = Path(temp_dir)
+            staging_dir = temp_root / "generated"
+            backup_dir = temp_root / "backup"
             staged_files = write_new_format(result, staging_dir)
             refreshed_files: list[Path] = []
+            tracked_paths = (
+                Path(PRESENTATION_FILE),
+                Path(ID_MAPPING_FILE),
+                Path(STYLES_FILE),
+                Path(SLIDES_DIR),
+                Path(".orphaned-slides"),
+                Path(PRISTINE_DIR) / PRISTINE_ZIP,
+                Path(PRISTINE_DIR) / PRISTINE_BASE_FILE,
+            )
+            for relative_path in tracked_paths:
+                source = folder_path / relative_path
+                backup = backup_dir / relative_path
+                if source.is_dir():
+                    shutil.copytree(source, backup)
+                elif source.exists():
+                    backup.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(source, backup)
 
-            for staged_path in staged_files:
-                relative_path = staged_path.relative_to(staging_dir)
-                destination = folder_path / relative_path
-                generated = staged_path.read_bytes()
-                is_sml = (
-                    relative_path.parts[0] == SLIDES_DIR
-                    and relative_path.name == "content.sml"
+            try:
+                for staged_path in staged_files:
+                    relative_path = staged_path.relative_to(staging_dir)
+                    destination = folder_path / relative_path
+                    generated = staged_path.read_bytes()
+                    is_sml = (
+                        relative_path.parts[0] == SLIDES_DIR
+                        and relative_path.name == "content.sml"
+                    )
+
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    if not (
+                        is_sml
+                        and destination.exists()
+                        and destination.read_bytes() == generated
+                    ):
+                        destination.write_bytes(generated)
+                    refreshed_files.append(destination)
+
+                self._prune_stale_slide_folders(
+                    folder_path,
+                    {slide["slide_index"] for slide in result["slides"]},
                 )
-
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                if not (
-                    is_sml
-                    and destination.exists()
-                    and destination.read_bytes() == generated
-                ):
-                    destination.write_bytes(generated)
-                refreshed_files.append(destination)
-
-            self._create_pristine_copy(folder_path, refreshed_files)
-
-        base_path = folder_path / PRISTINE_DIR / PRISTINE_BASE_FILE
-        base_path.write_text(
-            json.dumps(refreshed.data, indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
+                self._create_pristine_copy(folder_path, refreshed_files)
+                base_path = folder_path / PRISTINE_DIR / PRISTINE_BASE_FILE
+                base_path.write_text(
+                    json.dumps(refreshed.data, indent=2, ensure_ascii=False),
+                    encoding="utf-8",
+                )
+            except Exception:
+                for relative_path in tracked_paths:
+                    destination = folder_path / relative_path
+                    if destination.is_dir():
+                        shutil.rmtree(destination)
+                    elif destination.exists():
+                        destination.unlink()
+                    backup = backup_dir / relative_path
+                    if backup.is_dir():
+                        shutil.copytree(backup, destination)
+                    elif backup.exists():
+                        destination.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(backup, destination)
+                raise
 
     def _read_base_raw(self, folder_path: Path) -> dict[str, Any] | None:
         """Read the pristine base raw API tree, if this folder has one.
@@ -572,7 +722,11 @@ class SlidesClient:
         data: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
         return data
 
-    def _build_slide_id_mapping(self, id_mapping: dict[str, str]) -> dict[str, str]:
+    def _build_slide_id_mapping(
+        self,
+        id_mapping: dict[str, str],
+        slide_order: list[str] | None = None,
+    ) -> dict[str, str]:
         """Build mapping from slide index to Google slide ID.
 
         Slide clean IDs are like "s1", "s2", etc.
@@ -580,18 +734,62 @@ class SlidesClient:
         """
         result: dict[str, str] = {}
 
-        for clean_id, google_id in id_mapping.items():
-            if clean_id.startswith("s"):
-                try:
-                    # Extract number from "s1", "s2", etc.
-                    num = int(clean_id[1:])
-                    # Convert to zero-padded index
-                    slide_index = f"{num:02d}"
-                    result[slide_index] = google_id
-                except ValueError:
-                    continue
+        ordered_ids = slide_order
+        if not isinstance(ordered_ids, list):
+            ordered_ids = sorted(
+                (
+                    clean_id
+                    for clean_id in id_mapping
+                    if re.fullmatch(r"s\d+", clean_id)
+                ),
+                key=lambda value: int(value[1:]),
+            )
+        for index, clean_id in enumerate(ordered_ids, 1):
+            google_id = id_mapping.get(clean_id)
+            if google_id:
+                result[f"{index:02d}"] = google_id
 
         return result
+
+    def _prune_stale_slide_folders(
+        self, presentation_dir: Path, valid_indices: set[str]
+    ) -> None:
+        """Remove stale generated slides, preserving edited ones as orphans."""
+        slides_dir = presentation_dir / SLIDES_DIR
+        if not slides_dir.exists():
+            return
+        pristine_content: dict[str, bytes] = {}
+        pristine_zip = presentation_dir / PRISTINE_DIR / PRISTINE_ZIP
+        if pristine_zip.exists():
+            with zipfile.ZipFile(pristine_zip, "r") as archive:
+                for name in archive.namelist():
+                    if name.startswith(f"{SLIDES_DIR}/") and name.endswith(
+                        "/content.sml"
+                    ):
+                        pristine_content[name.split("/")[1]] = archive.read(name)
+
+        for slide_folder in sorted(slides_dir.iterdir()):
+            if not slide_folder.is_dir() or slide_folder.name in valid_indices:
+                continue
+            content_file = slide_folder / "content.sml"
+            current = content_file.read_bytes() if content_file.exists() else None
+            folder_entries = list(slide_folder.iterdir())
+            generated_only = folder_entries == [content_file]
+            if (
+                generated_only
+                and current is not None
+                and current == pristine_content.get(slide_folder.name)
+            ):
+                shutil.rmtree(slide_folder)
+                continue
+            orphan_root = presentation_dir / ".orphaned-slides"
+            orphan_root.mkdir(parents=True, exist_ok=True)
+            destination = orphan_root / slide_folder.name
+            suffix = 2
+            while destination.exists():
+                destination = orphan_root / f"{slide_folder.name}-{suffix}"
+                suffix += 1
+            shutil.move(str(slide_folder), destination)
 
     def _create_pristine_copy(
         self,

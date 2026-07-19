@@ -7,6 +7,7 @@ Defines the Transport protocol and implementations:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import ssl
 from abc import ABC, abstractmethod
@@ -123,6 +124,9 @@ class GoogleSlidesTransport(Transport):
         self,
         access_token: str,
         timeout: int = DEFAULT_TIMEOUT,
+        *,
+        retry_attempts: int = 3,
+        retry_backoff: float = 0.1,
     ) -> None:
         """Initialize the transport.
 
@@ -132,6 +136,8 @@ class GoogleSlidesTransport(Transport):
         """
         self._access_token = access_token
         self._timeout = timeout
+        self._retry_attempts = max(1, retry_attempts)
+        self._retry_backoff = max(0.0, retry_backoff)
         ssl_context = ssl.create_default_context(cafile=certifi.where())
         self._client = httpx.AsyncClient(
             timeout=timeout,
@@ -165,20 +171,13 @@ class GoogleSlidesTransport(Transport):
             "thumbnailProperties.mimeType": "PNG",
         }
 
-        try:
-            metadata_response = await self._client.get(url, params=params)
-            metadata_response.raise_for_status()
-            content_url = metadata_response.json().get("contentUrl")
-            if not isinstance(content_url, str) or not content_url:
-                raise TransportError("Thumbnail response did not include contentUrl")
+        metadata_response = await self._get_with_retry(url, params=params)
+        content_url = metadata_response.json().get("contentUrl")
+        if not isinstance(content_url, str) or not content_url:
+            raise TransportError("Thumbnail response did not include contentUrl")
 
-            content_response = await self._client.get(content_url)
-            content_response.raise_for_status()
-            return content_response.content
-        except httpx.HTTPStatusError as e:
-            raise self._handle_http_error(e) from e
-        except httpx.RequestError as e:
-            raise TransportError(f"Network error: {e}") from e
+        content_response = await self._get_with_retry(content_url)
+        return content_response.content
 
     async def batch_update(
         self,
@@ -204,15 +203,32 @@ class GoogleSlidesTransport(Transport):
 
     async def _request(self, url: str) -> dict[str, Any]:
         """Make an authenticated GET request."""
-        try:
-            response = await self._client.get(url)
-            response.raise_for_status()
-            result: dict[str, Any] = response.json()
-            return result
-        except httpx.HTTPStatusError as e:
-            raise self._handle_http_error(e) from e
-        except httpx.RequestError as e:
-            raise TransportError(f"Network error: {e}") from e
+        response = await self._get_with_retry(url)
+        result: dict[str, Any] = response.json()
+        return result
+
+    async def _get_with_retry(
+        self,
+        url: str,
+        *,
+        params: dict[str, str] | None = None,
+    ) -> httpx.Response:
+        """GET with bounded exponential backoff for throttling/server errors."""
+        for attempt in range(self._retry_attempts):
+            try:
+                response = await self._client.get(url, params=params)
+                response.raise_for_status()
+                return response
+            except httpx.HTTPStatusError as exc:
+                status = exc.response.status_code
+                retryable = status == 429 or 500 <= status <= 599
+                if not retryable or attempt + 1 >= self._retry_attempts:
+                    raise self._handle_http_error(exc) from exc
+                await asyncio.sleep(self._retry_backoff * (2**attempt))
+            except httpx.RequestError as exc:
+                raise TransportError(f"Network error: {exc}") from exc
+
+        raise AssertionError("retry loop exhausted without returning or raising")
 
     def _handle_http_error(self, e: httpx.HTTPStatusError) -> TransportError:
         """Convert HTTP errors to appropriate transport exceptions."""

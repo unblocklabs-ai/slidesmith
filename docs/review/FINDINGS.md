@@ -11,7 +11,7 @@ push in realistic use; MEDIUM = degraded/unexpected behavior; LOW = polish/hazar
 
 ## PART 1 — BUGS & LOGIC (reviewer 1; repros verified against installed package)
 
-### B-C1 [CRITICAL] Text-edit range math computed against lossy SML projection — silent text corruption
+### [x] B-C1 [CRITICAL] Text-edit range math computed against lossy SML projection — silent text corruption
 Root cause chain: `content_generator.py:341,355-364` (`_generate_text_content` skips
 empty/whitespace-only paragraphs, lstrip/rstrips paragraph outer whitespace, drops
 autoText) and `content_parser.py:189` (`if para_text:` drops empty `<P>`). Pristine
@@ -23,7 +23,7 @@ spaces shift a delete to remove `'d li'` from the wrong place.
 Fix: emit paragraphs losslessly (empty `<P/>`, no trimming; represent autoText), or
 compute offsets against true remote paragraph texts from `.pristine/base.json`.
 
-### B-C2 [CRITICAL] MOVE resets scaleX/scaleY to 1 ABSOLUTE; resizes silently dropped
+### [x] B-C2 [CRITICAL] MOVE resets scaleX/scaleY to 1 ABSOLUTE; resizes silently dropped
 `content_requests.py:319-333` hardcodes scale 1. SML w/h is the visual bbox
 (bounds.py composes size×scale), and tool-created shapes always have scale ≠ 1
 (base 3000024 EMU × scale). A pure x/y move blows the element to intrinsic size and
@@ -32,7 +32,7 @@ but the request carries no size — resize via editing w/h is silently ignored.
 Fix: compute new scale from pristine base size (`target_emu / base_size_emu`),
 preserve sign/shear, emit translate+scale; or RELATIVE translate for pure moves.
 
-### B-H1 [HIGH] Deleting a pristine Google GROUP + children fails push nondeterministically
+### [x] B-H1 [HIGH] Deleting a pristine Google GROUP + children fails push nondeterministically
 `content_requests.py:254-306` `_order_deletes_for_safe_removal` infers hierarchy from
 the `"_c"` ID-naming heuristic; real Google IDs don't match, ordering comes from set
 iteration (hash-randomized). Group delete cascades in Google; later child delete hits
@@ -40,7 +40,7 @@ nonexistent ID → 400 → atomic batch rejects everything.
 Fix: decide hierarchy from pristine element data; emit one deleteObject for the
 top-most deleted ancestor, skip descendants. Deterministic ordering.
 
-### B-H2 [HIGH] Wrapper delete silently skipped for `_c`-named (copy-minted) children
+### [x] B-H2 [HIGH] Wrapper delete silently skipped for `_c`-named (copy-minted) children
 `content_requests.py:288-301` assumes any ID prefixing another via `id + "_c"` is a
 group that auto-deletes. Copy-created children are named `{parent}_c{depth}_{i}` and
 survive round-trip as clean ids; deleting such a wrapper + children emits only child
@@ -48,7 +48,7 @@ deletes — the wrapper survives remotely. (Live pristine-wrapper delete worked 
 because pristine Google IDs don't match the heuristic.)
 Fix: same as B-H1 — group-ness from pristine types, not ID spelling.
 
-### B-H3 [HIGH] Copying a containment wrapper drops same-diff edits to original children
+### [x] B-H3 [HIGH] Copying a containment wrapper drops same-diff edits to original children
 `content_diff.py:307-334`: first pass adds every descendant clean-id of any copied
 element to `copied_group_descendant_ids`; change loop `continue`s on those IDs.
 Repro: edit original label text + copy its wrapper card in one diff → only COPY
@@ -56,55 +56,55 @@ emitted; the TEXT_UPDATE is silently discarded (also moves/styles).
 Fix: skip only the copy instances (match by identity/position), not every instance
 sharing the ID.
 
-### B-H4 [HIGH] Zero-extent geometry: 0 EMU treated as unset by Google → default 3000024 EMU substituted; zero-height shapes emit singular scaleY=0
+### [x] B-H4 [HIGH] Zero-extent geometry: 0 EMU treated as unset by Google → default 3000024 EMU substituted; zero-height shapes emit singular scaleY=0
 `content_requests.py:1216-1219` (line) passes h=0 straight through → Google replaces
 with default size (the observed 236.22pt). `_create_shape_request:1179-1198` turns
 h=0 into scaleY 0.0 → Google rejects, failing the whole batch.
 Fix: clamp emitted EMU magnitudes ≥1 and floor scales away from 0, or reject zero
 extents at parse time with a clear error.
 
-### B-H5 [HIGH] Copied subtree children double-translated when authored at final positions
+### [x] B-H5 [HIGH] Copied subtree children double-translated when authored at final positions
 `content_requests.py:747-763` adds translation (dx from content_diff.py:687-702) to
 authored child positions; convention (children keep SOURCE positions) is undocumented.
 Repro: card copied +300pt, child authored at x=310 → created at x=610.
 Fix: document the convention AND detect children already moved by ≈ the root's delta
 (treat as final positions, translation 0).
 
-### B-M1 [MEDIUM] Element IDs matching `^s\d+$` shadow slide clean-ids, corrupt slide mapping
+### [x] B-M1 [MEDIUM] Element IDs matching `^s\d+$` shadow slide clean-ids, corrupt slide mapping
 `id_manager.py:69-78` preserves authored `s2` for a shape; `client.py:575-594` then
 maps slide index to the shape's ID → creates target a shape as pageObjectId → 400.
 Fix: exclude `^s\d+$` (and generated-pattern lookalikes `^[egml]\d+$`) from preserved
 authored ids; build slide mapping from slide order, not name parsing.
 
-### B-M2 [MEDIUM] CREATE supports only 5 tags; everything else silently becomes RECTANGLE
+### [x] B-M2 [MEDIUM] CREATE supports only 5 tags; everything else silently becomes RECTANGLE
 `content_requests.py:2184-2192` — use the full `_tag_to_type` map (see D-D1 shared
 module) and fail loudly on unknown tags.
 
-### B-M3 [MEDIUM] Stale slide folders resurrect remotely-deleted slides
+### [x] B-M3 [MEDIUM] Stale slide folders resurrect remotely-deleted slides
 Neither pull nor `_refresh_after_push` prunes `slides/NN/` dirs that no longer exist
 remotely; `_read_current_slides` still parses them → wholesale CREATE of a new slide.
 Fix: prune stale slide folders on pull/refresh (with care for user edits present).
 
-### B-M4 [MEDIUM] `_parse_float` swallows malformed numbers → typos become copy semantics
+### [x] B-M4 [MEDIUM] `_parse_float` swallows malformed numbers → typos become copy semantics
 `content_parser.py:361-368` returns None on ValueError; `w="1O0"` → element treated
 as a COPY and duplicated. Fix: raise with element id on unparsable position attrs.
 
-### B-M5 [MEDIUM] GROUP copy without children is a silent no-op; missing style → unstyled RECTANGLE
+### [x] B-M5 [MEDIUM] GROUP copy without children is a silent no-op; missing style → unstyled RECTANGLE
 `content_requests.py:640-660`, `:571`, `_create_children_from_data` style lookup
 misses degrade silently. Fix: error loudly on missing children/styles for copies.
 
-### B-M6 [MEDIUM] Font-family class round-trip mangles capitalization
+### [x] B-M6 [MEDIUM] Font-family class round-trip mangles capitalization
 `classes.py:574-577` emits `font-family-ibm-plex-sans`; parse `.title()`s to
 "Ibm Plex Sans" — wrong family sent to API. Fix: preserve exact name (escaped class
 value or sidecar).
 
-### B-L1 [LOW] Copy text styling applies first run's style to ALL copied text (`content_requests.py:1474-1528`)
-### B-L2 [LOW] `style_extractor._extract_color` truncates (int) vs units.rgb_to_hex rounds — 1/255 drift between pipelines (fold into D-D2)
-### B-L3 [LOW] Removed run styling never reset on text updates (TODO at `content_requests.py:462-465`)
-### B-L4 [LOW] credentials.py: callback port TOCTOU; result_holder read unlocked at deadline; FileSessionStore fd double-close hazard
-### B-L5 [LOW] qa contains(threshold=1.0) float >= flicker with 2-decimal SML rounding
+### [x] B-L1 [LOW] Copy text styling applies first run's style to ALL copied text (`content_requests.py:1474-1528`)
+### [x] B-L2 [LOW] `style_extractor._extract_color` truncates (int) vs units.rgb_to_hex rounds — 1/255 drift between pipelines (fold into D-D2)
+### [x] B-L3 [LOW] Removed run styling never reset on text updates (TODO at `content_requests.py:462-465`)
+### [x] B-L4 [LOW] credentials.py: callback port TOCTOU; result_holder read unlocked at deadline; FileSessionStore fd double-close hazard
+### [x] B-L5 [LOW] qa contains(threshold=1.0) float >= flicker with 2-decimal SML rounding
 
-### B-EXTRA [HIGH] (from dims 6-8 review, behavioral) push succeeds but `_refresh_after_push` fetch fails → workspace silently inconsistent; no retry/backoff anywhere for 429/5xx
+### [x] B-EXTRA [HIGH] (from dims 6-8 review, behavioral) push succeeds but `_refresh_after_push` fetch fails → workspace silently inconsistent; no retry/backoff anywhere for 429/5xx
 Fix: catch refresh failure → clear actionable warning ("push applied; workspace stale;
 re-pull required") + do NOT leave half-refreshed state; add bounded retry/backoff for
 429/5xx on GET paths (pull/refresh/thumbnails).
@@ -166,15 +166,15 @@ Google host (e.g. *.googleusercontent.com) before requesting.
 ### T-C5..C8 [LOW] Docstring style divergence; `_pristine_element_types` naming; Change.tag duality; hex parsing ×3 (== D-D2); vendor-vs-wave test style note.
 
 ### Test gaps
-### T-G1 [HIGH] Zero coverage of _handle_http_error branches; NO retry/backoff for 429/5xx anywhere; push-succeeds-refresh-fails scenario untested (== B-EXTRA — fix + tests together).
-### T-G2 [HIGH] Group/deep-copy request generation untested end-to-end (translation math, groupObjects, nested recursion) — contract test from golden fixture.
-### T-G3 [HIGH] _order_deletes_for_safe_removal untested + nondeterministic (== B-H1/H2 — fix + tests).
-### T-G4 [HIGH] Conflict guard: remote-slide-deleted branch and group-copy childrenObjectIds collection never executed by tests.
+### [x] T-G1 [HIGH] Zero coverage of _handle_http_error branches; NO retry/backoff for 429/5xx anywhere; push-succeeds-refresh-fails scenario untested (== B-EXTRA — fix + tests together).
+### [x] T-G2 [HIGH] Group/deep-copy request generation untested end-to-end (translation math, groupObjects, nested recursion) — contract test from golden fixture.
+### [x] T-G3 [HIGH] _order_deletes_for_safe_removal untested + nondeterministic (== B-H1/H2 — fix + tests).
+### [x] T-G4 [HIGH] Conflict guard: remote-slide-deleted branch and group-copy childrenObjectIds collection never executed by tests.
 ### T-G5 [MEDIUM] Layout: all ten error branches, distribute, auto-row-height, empty-container-vanishes untested (parametrized tests; compile_layout is pure).
-### T-G6 [MEDIUM] UTF-16: combining-char edit test; old_text=None fallback; styling-removed path (== B-L3).
+### [x] T-G6 [MEDIUM] UTF-16: combining-char edit test; old_text=None fallback; styling-removed path (== B-L3).
 ### T-G7 [MEDIUM] QA lint on Lines (divider-crossing-box false positive — decide+pin: likely exempt LINE from OVERLAP) and nested Groups; zero-area skip; box.w<=0 branch.
 ### T-G8 [MEDIUM] Auth store modes: invalid SLIDESMITH_TOKEN_STORE, keyring-forced-unavailable, corrupt session.json silent loss, both-stores-fail, legacy format.
-### T-G9 [MEDIUM] Copy/child ID minting bypasses reserved_object_ids until after build — route through allocator + collision test.
+### [x] T-G9 [MEDIUM] Copy/child ID minting bypasses reserved_object_ids until after build — route through allocator + collision test.
 ### T-G10 [LOW] CLI contracts: ConflictError→exit 2, top-level error→exit 1, _warn_if_stale corrupt-metadata silence, _read_qa_baseline invalid branch.
 
 ---

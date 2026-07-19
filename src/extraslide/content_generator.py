@@ -298,21 +298,25 @@ def _generate_text_content(
 
     element_classes = set(extract_sml_element_classes(node))
 
-    # Group each paragraph marker with its following text runs.
+    # Group each paragraph marker with its following text and auto-text runs.
     paragraphs: list[tuple[dict[str, Any], list[dict[str, Any]]]] = []
     current_marker: dict[str, Any] = {}
     current_para: list[dict[str, Any]] = []
 
+    have_marker = False
     for te in text_elements:
         if "paragraphMarker" in te:
-            if current_para:
+            if have_marker:
                 paragraphs.append((current_marker, current_para))
             current_marker = te["paragraphMarker"]
             current_para = []
+            have_marker = True
         elif "textRun" in te:
-            current_para.append(te["textRun"])
+            current_para.append({"kind": "text", **te["textRun"]})
+        elif "autoText" in te:
+            current_para.append({"kind": "auto", **te["autoText"]})
 
-    if current_para:
+    if have_marker:
         paragraphs.append((current_marker, current_para))
 
     # Generate paragraph elements. Character styles stay on their source runs;
@@ -323,7 +327,7 @@ def _generate_text_content(
         run_class_sets = [
             extract_sml_text_classes(run.get("style"))
             for run in para_runs
-            if _sanitize_text(run.get("content", "")).rstrip("\n")
+            if _sanitize_text(run.get("content", "")).removesuffix("\n")
         ]
         if run_class_sets:
             paragraph_classes.extend(
@@ -337,49 +341,57 @@ def _generate_text_content(
         paragraph_defaults = element_classes | set(paragraph_classes)
 
         segments: list[tuple[str, tuple[str, ...]]] = []
-        for run in para_runs:
-            content = _sanitize_text(run.get("content", "").rstrip("\n"))
-            if not content:
-                continue
+        for run_index, run in enumerate(para_runs):
+            content = _sanitize_text(run.get("content", ""))
+            if run_index == len(para_runs) - 1:
+                content = content.removesuffix("\n")
             run_classes = tuple(
                 cls
                 for cls in extract_sml_text_classes(run.get("style"))
                 if cls not in paragraph_defaults
             )
-            if segments and segments[-1][1] == run_classes:
+            auto_text_type = run.get("type") if run.get("kind") == "auto" else None
+            segment_key = run_classes + (
+                (f"auto:{auto_text_type}",) if auto_text_type else ()
+            )
+            if segments and segments[-1][1] == segment_key:
                 previous, previous_classes = segments[-1]
                 segments[-1] = (previous + content, previous_classes)
             else:
-                segments.append((content, run_classes))
+                segments.append((content, segment_key))
 
         if not segments:
-            continue
-
-        # Preserve the donor generator's outer-whitespace normalization while
-        # retaining style boundaries inside the paragraph.
-        first_text, first_classes = segments[0]
-        segments[0] = (first_text.lstrip(), first_classes)
-        last_text, last_classes = segments[-1]
-        segments[-1] = (last_text.rstrip(), last_classes)
-        segments = [(text, classes) for text, classes in segments if text]
-        if not segments:
-            continue
+            segments.append(("", ()))
 
         content_parts: list[str] = []
-        for text, run_classes in segments:
+        for text, segment_key in segments:
+            auto_text = next(
+                (item[5:] for item in segment_key if item.startswith("auto:")),
+                None,
+            )
+            run_classes = tuple(
+                item for item in segment_key if not item.startswith("auto:")
+            )
             escaped_text = escape(text)
-            if run_classes:
+            if run_classes or auto_text:
+                attributes: list[str] = []
                 class_value = escape(" ".join(run_classes), {'"': "&quot;"})
-                content_parts.append(
-                    f'<T class="{class_value}">{escaped_text}</T>'
-                )
+                if run_classes:
+                    attributes.append(f'class="{class_value}"')
+                if auto_text:
+                    attributes.append(f'auto-text="{escape(auto_text)}"')
+                content_parts.append(f'<T {" ".join(attributes)}>{escaped_text}</T>')
             else:
                 content_parts.append(escaped_text)
         paragraph_attr = ""
         if paragraph_classes:
             class_value = escape(" ".join(paragraph_classes), {'"': "&quot;"})
             paragraph_attr = f' class="{class_value}"'
-        lines.append(f"{prefix}<P{paragraph_attr}>{''.join(content_parts)}</P>")
+        content = "".join(content_parts)
+        if content:
+            lines.append(f"{prefix}<P{paragraph_attr}>{content}</P>")
+        else:
+            lines.append(f"{prefix}<P{paragraph_attr} />")
 
 
 def generate_presentation_content(

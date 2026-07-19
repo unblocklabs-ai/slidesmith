@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import contextlib
 import re
+import urllib.parse
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any
@@ -572,9 +573,16 @@ class TextStyle:
 
         # Font family
         if self.font_family:
-            # Normalize font family name for class
+            # Keep the familiar legacy spelling when it is exactly reversible;
+            # otherwise percent-encode the original name so capitalization and
+            # punctuation survive a pull/push round trip.
             font_name = self.font_family.lower().replace(" ", "-")
-            classes.append(f"font-family-{font_name}")
+            if font_name.replace("-", " ").title() == self.font_family:
+                classes.append(f"font-family-{font_name}")
+            else:
+                classes.append(
+                    f"font-family-{urllib.parse.quote(self.font_family, safe='')}"
+                )
 
         # Font size
         if self.font_size_pt:
@@ -1014,7 +1022,12 @@ def parse_text_style_classes(classes: list[str]) -> TextStyle:
 
         # Font family
         elif match := re.match(r"^font-family-(.+)$", cls):
-            font_name = match.group(1).replace("-", " ").title()
+            encoded_name = match.group(1)
+            font_name = (
+                urllib.parse.unquote(encoded_name)
+                if "%" in encoded_name
+                else encoded_name.replace("-", " ").title()
+            )
             ts.font_family = font_name
 
         # Font size

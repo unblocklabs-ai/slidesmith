@@ -24,6 +24,7 @@ from extraslide.units import pt_to_emu
 _id_counter = 0
 
 _GOOGLE_OBJECT_ID_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_-]{4,49}$")
+_MIN_EMU = 1
 
 
 def _get_unique_suffix() -> str:
@@ -60,6 +61,7 @@ def generate_batch_requests(
     id_mapping: dict[str, str],
     slide_id_mapping: dict[str, str],
     _pristine_element_types: dict[str, str] | None = None,
+    _pristine_element_parents: dict[str, str | None] | None = None,
 ) -> list[dict[str, Any]]:
     """Generate batchUpdate requests from diff result.
 
@@ -67,8 +69,10 @@ def generate_batch_requests(
         diff_result: Result from diff_presentation()
         id_mapping: clean_id -> google_object_id mapping
         slide_id_mapping: slide_index (e.g., "01") -> google_slide_id mapping
-        pristine_element_types: Optional mapping of google_id -> element_type
-            Used to skip deleting groups (which auto-delete when empty)
+        _pristine_element_types: Optional mapping of google_id -> element_type.
+        _pristine_element_parents: Optional mapping of google_id -> parent group id.
+            Together these identify deleted ancestor groups without relying on
+            object-id spelling conventions.
 
     Returns:
         List of Google Slides API batchUpdate request objects
@@ -119,7 +123,11 @@ def generate_batch_requests(
     delete_ids = {
         id_mapping.get(c.target_id) for c in deletes if id_mapping.get(c.target_id)
     }
-    ordered_delete_ids = _order_deletes_for_safe_removal(delete_ids)
+    ordered_delete_ids = _order_deletes_for_safe_removal(
+        delete_ids,
+        _pristine_element_types,
+        _pristine_element_parents,
+    )
 
     for google_id in ordered_delete_ids:
         requests.append(
@@ -134,7 +142,13 @@ def generate_batch_requests(
     for change in moves:
         move_google_id = id_mapping.get(change.target_id)
         if move_google_id and change.new_position:
-            requests.append(_create_move_request(move_google_id, change.new_position))
+            requests.append(
+                _create_move_request(
+                    move_google_id,
+                    change.new_position,
+                    diff_result.pristine_styles.get(change.target_id),
+                )
+            )
 
     # Generate text update requests
     for change in text_updates:
@@ -225,14 +239,9 @@ def generate_batch_requests(
                     source_style,
                     slide_google_id,
                     diff_result.pristine_styles,
+                    reserved_object_ids,
                 )
                 requests.extend(copy_requests)
-                for request in copy_requests:
-                    for body in request.values():
-                        if isinstance(body, dict) and isinstance(
-                            body.get("objectId"), str
-                        ):
-                            reserved_object_ids.add(body["objectId"])
 
     # Generate create requests (new elements)
     for change in creates:
@@ -251,20 +260,16 @@ def generate_batch_requests(
     return requests
 
 
-def _order_deletes_for_safe_removal(delete_ids: set[str | None]) -> list[str]:
-    """Order deletes to safely remove all elements.
+def _order_deletes_for_safe_removal(
+    delete_ids: set[str | None],
+    pristine_element_types: dict[str, str] | None = None,
+    pristine_element_parents: dict[str, str | None] | None = None,
+) -> list[str]:
+    """Return deterministic deletes with descendants of deleted groups omitted.
 
-    Google Slides behavior:
-    - Deleting a group UNGROUPS its children (doesn't delete them)
-    - A group auto-deletes when all its children are deleted
-
-    Strategy:
-    1. Delete leaf elements first (deepest children)
-    2. Parent groups auto-delete as they become empty
-    3. Delete root-level shapes last (they don't auto-delete)
-
-    We skip deleting parent groups explicitly since they'll auto-delete.
-    But we DO delete root shapes (depth 0) which don't auto-delete.
+    Deleting a group removes its subtree. Emitting child deletes afterward can
+    make the atomic Google batch fail because those object IDs no longer exist.
+    Hierarchy comes exclusively from the pristine API tree; IDs are opaque.
 
     Args:
         delete_ids: Set of Google object IDs to delete
@@ -272,38 +277,25 @@ def _order_deletes_for_safe_removal(delete_ids: set[str | None]) -> list[str]:
     Returns:
         Ordered list: deepest leaves first, then root shapes
     """
-    valid_ids = {id for id in delete_ids if id is not None}
+    valid_ids = {object_id for object_id in delete_ids if object_id is not None}
+    types = pristine_element_types or {}
+    parents = pristine_element_parents or {}
 
-    def get_depth(id: str) -> int:
-        return id.count("_c")
+    def has_deleted_group_ancestor(object_id: str) -> bool:
+        seen: set[str] = set()
+        parent_id = parents.get(object_id)
+        while parent_id and parent_id not in seen:
+            if parent_id in valid_ids and types.get(parent_id) == "GROUP":
+                return True
+            seen.add(parent_id)
+            parent_id = parents.get(parent_id)
+        return False
 
-    # Separate into:
-    # 1. Leaf elements (no children) - will be deleted
-    # 2. Parent elements (have children) - will auto-delete when empty
-    # 3. Root shapes (depth 0, no children) - must delete explicitly
-
-    leaf_ids: list[str] = []
-    root_shapes: list[str] = []
-
-    for id in valid_ids:
-        is_parent = False
-        for other_id in valid_ids:
-            if other_id != id and other_id.startswith(id + "_c"):
-                is_parent = True
-                break
-
-        depth = get_depth(id)
-        if not is_parent:
-            if depth == 0:
-                # Root-level shape - delete last
-                root_shapes.append(id)
-            else:
-                # Leaf child - delete first
-                leaf_ids.append(id)
-
-    # Sort leaves by depth descending, then add root shapes at the end
-    sorted_leaves = sorted(leaf_ids, key=get_depth, reverse=True)
-    return sorted_leaves + root_shapes
+    return sorted(
+        object_id
+        for object_id in valid_ids
+        if not has_deleted_group_ancestor(object_id)
+    )
 
 
 def _create_slide_request(slide_id: str) -> dict[str, Any]:
@@ -316,21 +308,111 @@ def _create_slide_request(slide_id: str) -> dict[str, Any]:
     }
 
 
-def _create_move_request(google_id: str, position: dict[str, float]) -> dict[str, Any]:
-    """Create updatePageElementTransform request."""
+def _create_move_request(
+    google_id: str,
+    position: dict[str, float],
+    pristine_style: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Create a transform update that preserves native scale, shear, and flips."""
+    pristine_style = pristine_style or {}
+    old_position = pristine_style.get("position", {})
+    native_size = pristine_style.get("nativeSize", {})
+    native_transform = pristine_style.get("nativeTransform", {})
+
+    old_w = float(old_position.get("w", position["w"]))
+    old_h = float(old_position.get("h", position["h"]))
+    target_w = float(position["w"])
+    target_h = float(position["h"])
+    has_native_geometry = bool(native_size and native_transform)
+    size_unchanged = abs(target_w - old_w) <= 0.005 and abs(target_h - old_h) <= 0.005
+
+    if has_native_geometry and size_unchanged:
+        return {
+            "updatePageElementTransform": {
+                "objectId": google_id,
+                "transform": {
+                    "scaleX": 1,
+                    "scaleY": 1,
+                    "translateX": pt_to_emu(position["x"] - old_position.get("x", 0)),
+                    "translateY": pt_to_emu(position["y"] - old_position.get("y", 0)),
+                    "unit": "EMU",
+                },
+                "applyMode": "RELATIVE",
+            }
+        }
+
+    if has_native_geometry:
+        width_emu = max(abs(float(native_size.get("w", 0))), _MIN_EMU)
+        height_emu = max(abs(float(native_size.get("h", 0))), _MIN_EMU)
+        sx = float(native_transform.get("scaleX", 1))
+        sy = float(native_transform.get("scaleY", 1))
+        shx = float(native_transform.get("shearX", 0))
+        shy = float(native_transform.get("shearY", 0))
+        old_visual_w = max(abs(sx) * width_emu + abs(shx) * height_emu, _MIN_EMU)
+        old_visual_h = max(abs(shy) * width_emu + abs(sy) * height_emu, _MIN_EMU)
+        # Recompute only authored dimensions. SML is rounded to two decimals,
+        # so replaying an unchanged axis through that rounded value would
+        # introduce a tiny scale drift on every one-axis resize.
+        ratio_x = (
+            1.0
+            if abs(target_w - old_w) <= 0.005
+            else max(abs(pt_to_emu(target_w)), _MIN_EMU) / old_visual_w
+        )
+        ratio_y = (
+            1.0
+            if abs(target_h - old_h) <= 0.005
+            else max(abs(pt_to_emu(target_h)), _MIN_EMU) / old_visual_h
+        )
+        sx *= ratio_x
+        shx *= ratio_x
+        shy *= ratio_y
+        sy *= ratio_y
+        x_offsets = (
+            0.0,
+            sx * width_emu,
+            shx * height_emu,
+            sx * width_emu + shx * height_emu,
+        )
+        y_offsets = (
+            0.0,
+            shy * width_emu,
+            sy * height_emu,
+            shy * width_emu + sy * height_emu,
+        )
+        transform = {
+            "scaleX": sx,
+            "scaleY": sy,
+            "shearX": shx,
+            "shearY": shy,
+            "translateX": pt_to_emu(position["x"]) - min(x_offsets),
+            "translateY": pt_to_emu(position["y"]) - min(y_offsets),
+            "unit": "EMU",
+        }
+    else:
+        base_size_emu = 3000024
+        transform = {
+            "scaleX": _nonzero_scale(pt_to_emu(target_w) / base_size_emu),
+            "scaleY": _nonzero_scale(pt_to_emu(target_h) / base_size_emu),
+            "translateX": pt_to_emu(position["x"]),
+            "translateY": pt_to_emu(position["y"]),
+            "unit": "EMU",
+        }
+
     return {
         "updatePageElementTransform": {
             "objectId": google_id,
-            "transform": {
-                "scaleX": 1,
-                "scaleY": 1,
-                "translateX": pt_to_emu(position["x"]),
-                "translateY": pt_to_emu(position["y"]),
-                "unit": "EMU",
-            },
+            "transform": transform,
             "applyMode": "ABSOLUTE",
         }
     }
+
+
+def _nonzero_scale(value: float) -> float:
+    """Floor a scale away from the singular zero transform."""
+    minimum = _MIN_EMU / 3000024
+    if abs(value) >= minimum:
+        return value
+    return -minimum if value < 0 else minimum
 
 
 def _utf16_len(text: str) -> int:
@@ -459,10 +541,15 @@ def _create_text_update_requests(
     requests: list[dict[str, Any]] = []
 
     if old_mid == new_mid:
-        # Only run styling changed; the styled ranges are updated below.
-        # TODO: runs whose styling was *removed* (styled in pristine, plain
-        # now) are not reset here -- pristine SML never emits <T> runs yet.
-        pass
+        # Only run styling changed. Emit field-level deltas so removing a
+        # <T> class resets that property instead of leaving stale formatting.
+        return _create_run_style_delta_requests(
+            google_id,
+            old_paras,
+            old_para_runs,
+            new_para_runs,
+            paragraph_range=(prefix, n - suffix),
+        )
     elif not old_mid:
         # Pure paragraph insertion: add a separator toward the changed side.
         if prefix < m:
@@ -556,6 +643,7 @@ def _create_copy_requests(
     source_style: dict[str, Any],
     slide_google_id: str,
     all_styles: dict[str, dict[str, Any]],
+    reserved_ids: set[str],
 ) -> list[dict[str, Any]]:
     """Create requests to copy an element.
 
@@ -568,7 +656,15 @@ def _create_copy_requests(
     requests: list[dict[str, Any]] = []
 
     # Determine element type from source style
-    elem_type = source_style.get("type", "RECTANGLE")
+    if not source_style:
+        raise ValueError(
+            f"Cannot copy '{change.source_id}': pristine style data is missing"
+        )
+    elem_type = source_style.get("type")
+    if not isinstance(elem_type, str):
+        raise ValueError(
+            f"Cannot copy '{change.source_id}': pristine element type is missing"
+        )
 
     # Use the new position if provided, otherwise use source position
     position = change.new_position
@@ -587,7 +683,10 @@ def _create_copy_requests(
     # Generate a unique object ID for the new element
     # Include slide index and unique suffix to avoid collisions with existing IDs
     suffix = _get_unique_suffix()
-    new_object_id = f"copy_{change.slide_index}_{suffix}"
+    new_object_id = _allocate_create_object_id(
+        f"copy_{change.slide_index}_{suffix}", reserved_ids
+    )
+    reserved_ids.add(new_object_id)
 
     # Create element based on type
     # Special types: LINE, IMAGE, GROUP need special handling
@@ -609,22 +708,24 @@ def _create_copy_requests(
     elif elem_type == "IMAGE":
         # Images need special handling - need the source URL
         content_url = source_style.get("contentUrl", "")
-        if content_url:
-            requests.append(
-                _create_image_request(
-                    new_object_id,
-                    slide_google_id,
-                    position,
-                    content_url,
-                    native_size=source_style.get("nativeSize"),
-                    native_scale=source_style.get("nativeScale"),
-                )
+        if not content_url:
+            raise ValueError(
+                f"Cannot copy image '{change.source_id}': contentUrl is missing"
             )
-            # Apply image properties like transparency
-            image_style_requests = _apply_image_style_requests(
-                new_object_id, source_style
+        requests.append(
+            _create_image_request(
+                new_object_id,
+                slide_google_id,
+                position,
+                content_url,
+                native_size=source_style.get("nativeSize"),
+                native_scale=source_style.get("nativeScale"),
             )
-            requests.extend(image_style_requests)
+        )
+        image_style_requests = _apply_image_style_requests(
+            new_object_id, source_style
+        )
+        requests.extend(image_style_requests)
 
         # Handle visual children for images (e.g., cropped images)
         if change.children:
@@ -635,29 +736,36 @@ def _create_copy_requests(
                 all_styles,
                 requests,
                 new_object_id,
+                reserved_ids=reserved_ids,
             )
 
     elif elem_type == "GROUP":
         # Create children first, then group them
-        if change.children:
-            child_ids = _create_children_from_data(
-                change.children,
-                translation,
-                slide_google_id,
-                all_styles,
-                requests,
-                new_object_id,
+        if not change.children:
+            raise ValueError(
+                f"Cannot copy group '{change.source_id}': child data is missing"
             )
-            # Group the children together
-            if child_ids:
-                requests.append(
-                    {
-                        "groupObjects": {
-                            "groupObjectId": new_object_id,
-                            "childrenObjectIds": child_ids,
-                        }
-                    }
-                )
+        child_ids = _create_children_from_data(
+            change.children,
+            translation,
+            slide_google_id,
+            all_styles,
+            requests,
+            new_object_id,
+            reserved_ids=reserved_ids,
+        )
+        if not child_ids:
+            raise ValueError(
+                f"Cannot copy group '{change.source_id}': no children were created"
+            )
+        requests.append(
+            {
+                "groupObjects": {
+                    "groupObjectId": new_object_id,
+                    "childrenObjectIds": child_ids,
+                }
+            }
+        )
 
     else:
         # All other types are shapes (RECTANGLE, TEXT_BOX, ROUND_RECTANGLE, etc.)
@@ -695,6 +803,7 @@ def _create_copy_requests(
                 all_styles,
                 requests,
                 new_object_id,
+                reserved_ids=reserved_ids,
             )
 
     return requests
@@ -708,6 +817,8 @@ def _create_children_from_data(
     requests: list[dict[str, Any]],
     id_prefix: str,
     depth: int = 0,
+    *,
+    reserved_ids: set[str],
 ) -> list[str]:
     """Create child elements from serialized children data.
 
@@ -732,7 +843,10 @@ def _create_children_from_data(
     dy = translation.get("dy", 0)
 
     for i, child_data in enumerate(children):
-        child_obj_id = f"{id_prefix}_c{depth}_{i}"
+        child_obj_id = _allocate_create_object_id(
+            f"{id_prefix}_c{depth}_{i}", reserved_ids
+        )
+        reserved_ids.add(child_obj_id)
         child_tag = child_data.get("tag", "Rect")
         child_text = child_data.get("text", [])
         nested_children = child_data.get("children", [])
@@ -740,15 +854,31 @@ def _create_children_from_data(
         # Get style for this child from all_styles
         source_id = child_data.get("id", "")
         child_style = all_styles.get(source_id, {})
+        if not child_style:
+            raise ValueError(
+                f"Cannot copy child '{source_id}': pristine style data is missing"
+            )
 
         # Calculate new position using translation
         # Children have absolute positions in child_data["position"]
         # New position = original position + translation
         child_orig_pos = child_data.get("position", {})
+        source_position = child_data.get("sourcePosition", {})
+        child_dx = dx
+        child_dy = dy
+        if child_orig_pos and source_position:
+            expected_final_x = source_position.get("x", 0) + dx
+            expected_final_y = source_position.get("y", 0) + dy
+            if (
+                abs(child_orig_pos.get("x", 0) - expected_final_x) <= 0.01
+                and abs(child_orig_pos.get("y", 0) - expected_final_y) <= 0.01
+            ):
+                child_dx = 0
+                child_dy = 0
         if child_orig_pos:
             abs_position = {
-                "x": child_orig_pos.get("x", 0) + dx,
-                "y": child_orig_pos.get("y", 0) + dy,
+                "x": child_orig_pos.get("x", 0) + child_dx,
+                "y": child_orig_pos.get("y", 0) + child_dy,
                 "w": child_orig_pos.get("w", 50),
                 "h": child_orig_pos.get("h", 50),
             }
@@ -776,6 +906,7 @@ def _create_children_from_data(
                 requests,
                 child_obj_id,
                 depth + 1,
+                reserved_ids=reserved_ids,
             )
             # Group the nested children together
             if nested_child_ids:
@@ -805,26 +936,29 @@ def _create_children_from_data(
                     requests,
                     child_obj_id,
                     depth + 1,
+                    reserved_ids=reserved_ids,
                 )
         elif elem_type == "IMAGE":
             content_url = child_style.get("contentUrl", "")
-            if content_url:
-                requests.append(
-                    _create_image_request(
-                        child_obj_id,
-                        slide_google_id,
-                        abs_position,
-                        content_url,
-                        native_size=child_style.get("nativeSize"),
-                        native_scale=child_style.get("nativeScale"),
-                    )
+            if not content_url:
+                raise ValueError(
+                    f"Cannot copy image child '{source_id}': contentUrl is missing"
                 )
-                # Apply image properties like transparency
-                image_style_reqs = _apply_image_style_requests(
-                    child_obj_id, child_style
+            requests.append(
+                _create_image_request(
+                    child_obj_id,
+                    slide_google_id,
+                    abs_position,
+                    content_url,
+                    native_size=child_style.get("nativeSize"),
+                    native_scale=child_style.get("nativeScale"),
                 )
-                requests.extend(image_style_reqs)
-                child_ids.append(child_obj_id)
+            )
+            image_style_reqs = _apply_image_style_requests(
+                child_obj_id, child_style
+            )
+            requests.extend(image_style_reqs)
+            child_ids.append(child_obj_id)
             # Process nested children for images too (e.g. cropped images)
             if nested_children:
                 _create_children_from_data(
@@ -835,6 +969,7 @@ def _create_children_from_data(
                     requests,
                     child_obj_id,
                     depth + 1,
+                    reserved_ids=reserved_ids,
                 )
         else:
             # Shape types (RECTANGLE, TEXT_BOX, ROUND_RECTANGLE, etc.)
@@ -867,6 +1002,7 @@ def _create_children_from_data(
                     requests,
                     child_obj_id,
                     depth + 1,
+                    reserved_ids=reserved_ids,
                 )
 
     return child_ids
@@ -1023,7 +1159,10 @@ def _tag_to_type(tag: str) -> str:
         "Custom": "CUSTOM",
         "Shape": "SHAPE",
     }
-    return tag_map.get(tag, "RECTANGLE")
+    try:
+        return tag_map[tag]
+    except KeyError as exc:
+        raise ValueError(f"Unsupported SML element tag '{tag}'") from exc
 
 
 def _create_shape_request(
@@ -1167,7 +1306,9 @@ def _create_shape_request(
         "SHAPE",
     }
 
-    google_shape_type = shape_type if shape_type in valid_google_types else "RECTANGLE"
+    if shape_type not in valid_google_types:
+        raise ValueError(f"Unsupported Google shape type '{shape_type}'")
+    google_shape_type = shape_type
 
     # Google Slides uses a base size of 3000024 EMU (236.2 pt) and applies
     # scale factors to get the visual size
@@ -1176,8 +1317,8 @@ def _create_shape_request(
     target_h_emu = pt_to_emu(position["h"])
 
     # Calculate scale factors
-    scale_x = target_w_emu / base_size_emu if base_size_emu > 0 else 1
-    scale_y = target_h_emu / base_size_emu if base_size_emu > 0 else 1
+    scale_x = _nonzero_scale(target_w_emu / base_size_emu)
+    scale_y = _nonzero_scale(target_h_emu / base_size_emu)
 
     return {
         "createShape": {
@@ -1214,8 +1355,14 @@ def _create_line_request(
             "elementProperties": {
                 "pageObjectId": slide_id,
                 "size": {
-                    "width": {"magnitude": pt_to_emu(position["w"]), "unit": "EMU"},
-                    "height": {"magnitude": pt_to_emu(position["h"]), "unit": "EMU"},
+                    "width": {
+                        "magnitude": max(abs(pt_to_emu(position["w"])), _MIN_EMU),
+                        "unit": "EMU",
+                    },
+                    "height": {
+                        "magnitude": max(abs(pt_to_emu(position["h"])), _MIN_EMU),
+                        "unit": "EMU",
+                    },
                 },
                 "transform": {
                     "scaleX": 1,
@@ -1457,96 +1604,113 @@ def _apply_image_style_requests(
 
 def _apply_text_style_requests(
     object_id: str,
-    _text_lines: list[str],
+    text_lines: list[str],
     text_style_info: dict[str, Any],
 ) -> list[dict[str, Any]]:
-    """Generate requests to apply text styling.
-
-    Applies font, color, bold, etc. to inserted text.
-
-    Args:
-        object_id: The shape containing the text
-        _text_lines: The text that was inserted (reserved for future range calculation)
-        text_style_info: The source text styling from styles.json
-    """
+    """Apply each copied paragraph/run style to its original text range."""
     requests: list[dict[str, Any]] = []
 
     paragraphs = text_style_info.get("paragraphs", [])
     if not paragraphs:
         return requests
 
-    # Apply styling from the first paragraph's first run to all text
-    # This is a simplification - ideally we'd match run ranges
-    first_para = paragraphs[0]
-    runs = first_para.get("runs", [])
+    paragraph_start = 0
+    for paragraph_index, paragraph in enumerate(paragraphs):
+        authored_text = (
+            text_lines[paragraph_index]
+            if paragraph_index < len(text_lines)
+            else ""
+        )
+        source_runs = paragraph.get("runs", [])
+        run_offset = 0
+        for run_index, run in enumerate(source_runs):
+            run_text = str(run.get("content", ""))
+            if run_index == len(source_runs) - 1:
+                run_text = run_text.removesuffix("\n")
+            run_length = _utf16_len(run_text)
+            text_style, fields = _copied_text_style_to_api(run.get("style", {}))
+            if fields and run_length:
+                start = paragraph_start + run_offset
+                requests.append(
+                    {
+                        "updateTextStyle": {
+                            "objectId": object_id,
+                            "textRange": {
+                                "type": "FIXED_RANGE",
+                                "startIndex": start,
+                                "endIndex": start + run_length,
+                            },
+                            "style": text_style,
+                            "fields": ",".join(fields),
+                        }
+                    }
+                )
+            run_offset += run_length
 
-    if runs:
-        first_run = runs[0]
-        run_style = first_run.get("style", {})
-
-        # Build the text style
-        text_style: dict[str, Any] = {}
-        fields: list[str] = []
-
-        # Font family
-        font_family = run_style.get("fontFamily")
-        if font_family:
-            text_style["fontFamily"] = font_family
-            fields.append("fontFamily")
-
-        # Font size (if non-zero)
-        font_size = run_style.get("fontSize")
-        if font_size and font_size > 0:
-            text_style["fontSize"] = {"magnitude": font_size, "unit": "PT"}
-            fields.append("fontSize")
-
-        # Bold
-        bold = run_style.get("bold")
-        if bold is not None:
-            text_style["bold"] = bold
-            fields.append("bold")
-
-        # Foreground color
-        color = run_style.get("color")
-        if color:
-            text_style["foregroundColor"] = {"opaqueColor": _parse_color(color)}
-            fields.append("foregroundColor")
-
-        # Only create request if we have styles to apply
-        if fields:
+        alignment = paragraph.get("style", {}).get("alignment")
+        if alignment and authored_text:
             requests.append(
                 {
-                    "updateTextStyle": {
+                    "updateParagraphStyle": {
                         "objectId": object_id,
                         "textRange": {
-                            "type": "ALL",
+                            "type": "FIXED_RANGE",
+                            "startIndex": paragraph_start,
+                            "endIndex": paragraph_start + _utf16_len(authored_text),
                         },
-                        "style": text_style,
-                        "fields": ",".join(fields),
+                        "style": {"alignment": alignment},
+                        "fields": "alignment",
                     }
                 }
             )
-
-    # Apply paragraph styling if needed
-    para_style = first_para.get("style", {})
-    alignment = para_style.get("alignment")
-    if alignment and alignment != "START":
-        requests.append(
-            {
-                "updateParagraphStyle": {
-                    "objectId": object_id,
-                    "textRange": {
-                        "type": "ALL",
-                    },
-                    "style": {
-                        "alignment": alignment,
-                    },
-                    "fields": "alignment",
-                }
-            }
-        )
+        paragraph_start += _utf16_len(authored_text)
+        if paragraph_index < len(text_lines) - 1:
+            paragraph_start += 1
 
     return requests
+
+
+def _copied_text_style_to_api(
+    run_style: dict[str, Any],
+) -> tuple[dict[str, Any], list[str]]:
+    """Convert one styles.json run to an API TextStyle and field mask."""
+    text_style: dict[str, Any] = {}
+    fields: list[str] = []
+    font_family = run_style.get("fontFamily")
+    font_weight = run_style.get("fontWeight")
+    if font_family and font_weight is not None:
+        text_style["weightedFontFamily"] = {
+            "fontFamily": font_family,
+            "weight": font_weight,
+        }
+        fields.append("weightedFontFamily")
+    elif font_family:
+        text_style["fontFamily"] = font_family
+        fields.append("fontFamily")
+    font_size = run_style.get("fontSize")
+    if font_size is not None:
+        text_style["fontSize"] = {"magnitude": font_size, "unit": "PT"}
+        fields.append("fontSize")
+    for source, target in (
+        ("bold", "bold"),
+        ("italic", "italic"),
+        ("underline", "underline"),
+        ("strikethrough", "strikethrough"),
+        ("smallCaps", "smallCaps"),
+        ("baselineOffset", "baselineOffset"),
+    ):
+        if source in run_style:
+            text_style[target] = run_style[source]
+            fields.append(target)
+    color = run_style.get("color")
+    if color:
+        text_style["foregroundColor"] = {"opaqueColor": _parse_color(color)}
+        fields.append("foregroundColor")
+    background = run_style.get("backgroundColor")
+    if background:
+        text_style["backgroundColor"] = {"opaqueColor": _parse_color(background)}
+        fields.append("backgroundColor")
+    return text_style, fields
 
 
 def _create_fill_request(
@@ -2018,6 +2182,78 @@ def _create_run_style_requests(
     return requests
 
 
+def _create_run_style_delta_requests(
+    object_id: str,
+    paragraphs: list[str],
+    old_runs: list[list[ParsedRun]],
+    new_runs: list[list[ParsedRun]],
+    paragraph_range: tuple[int, int],
+) -> list[dict[str, Any]]:
+    """Emit precise TextStyle changes, including resets to inherited values."""
+    requests: list[dict[str, Any]] = []
+
+    def spans(runs: list[ParsedRun]) -> list[tuple[int, int, TextStyle | None]]:
+        result: list[tuple[int, int, TextStyle | None]] = []
+        offset = 0
+        for run in runs:
+            end = offset + len(run.text)
+            if end > offset:
+                result.append((offset, end, run.text_style))
+            offset = end
+        return result
+
+    def style_at(
+        style_spans: list[tuple[int, int, TextStyle | None]], offset: int
+    ) -> TextStyle | None:
+        for start, end, style in style_spans:
+            if start <= offset < end:
+                return style
+        return None
+
+    for paragraph_index in range(*paragraph_range):
+        text = paragraphs[paragraph_index]
+        old_spans = spans(old_runs[paragraph_index])
+        new_spans = spans(new_runs[paragraph_index])
+        boundaries = sorted(
+            {0, len(text)}
+            | {value for start, end, _ in old_spans + new_spans for value in (start, end)}
+        )
+        paragraph_start = sum(
+            _utf16_len(value) + 1 for value in paragraphs[:paragraph_index]
+        )
+        for start, end in zip(boundaries, boundaries[1:], strict=False):
+            if end <= start:
+                continue
+            old_style = style_at(old_spans, start) or TextStyle()
+            new_style = style_at(new_spans, start) or TextStyle()
+            fields = _changed_style_fields(
+                old_style, new_style, _TEXT_STYLE_FIELD_NAMES
+            )
+            if not fields:
+                continue
+            api_style, _ = _class_text_style_to_api(new_style)
+            requests.append(
+                {
+                    "updateTextStyle": {
+                        "objectId": object_id,
+                        "textRange": {
+                            "type": "FIXED_RANGE",
+                            "startIndex": paragraph_start
+                            + _utf16_len(text[:start]),
+                            "endIndex": paragraph_start + _utf16_len(text[:end]),
+                        },
+                        "style": {
+                            key: value
+                            for key, value in api_style.items()
+                            if key in fields
+                        },
+                        "fields": ",".join(fields),
+                    }
+                }
+            )
+    return requests
+
+
 _TEXT_STYLE_FIELD_NAMES = {
     "bold": "bold",
     "italic": "italic",
@@ -2180,19 +2416,14 @@ def _create_element_requests(
     tag = change.metadata.get("tag", "Rect")
     position = change.new_position or {"x": 0, "y": 0, "w": 100, "h": 100}
 
-    # Map tags to shape types
-    tag_to_shape = {
-        "Rect": "RECTANGLE",
-        "TextBox": "TEXT_BOX",
-        "RoundRect": "ROUND_RECTANGLE",
-        "Ellipse": "ELLIPSE",
-        "Line": "LINE",
-    }
-
-    shape_type = tag_to_shape.get(tag, "RECTANGLE")
+    shape_type = _tag_to_type(tag)
 
     if shape_type == "LINE":
         requests.append(_create_line_request(new_object_id, slide_google_id, position))
+    elif shape_type in {"IMAGE", "GROUP", "TABLE", "VIDEO", "SHEETS_CHART"}:
+        raise ValueError(
+            f"Creating <{tag}> requires source-specific data and is not supported"
+        )
     else:
         requests.append(
             _create_shape_request(

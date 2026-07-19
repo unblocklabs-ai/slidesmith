@@ -304,7 +304,7 @@ def diff_presentation(
     # First pass: identify which elements are being copied as groups
     # We need to skip children of copied groups to avoid duplicates
     copied_group_ids: set[str] = set()
-    copied_group_descendant_ids: set[str] = set()
+    copied_descendant_instances: set[int] = set()
 
     for elem_id, instances in edited_elements.items():
         if elem_id in known_ids and len(instances) > 1:
@@ -324,13 +324,21 @@ def diff_presentation(
                 # This is a copy
                 if edited_elem.children:
                     copied_group_ids.add(elem_id)
-                    # Collect all descendant IDs
-                    _collect_descendant_ids(edited_elem, copied_group_descendant_ids)
+                    # Suppress only descendants belonging to this copy. The
+                    # original child instance must still be compared for
+                    # same-diff edits to text, geometry, and styles.
+                    _collect_descendant_instances(
+                        edited_elem, copied_descendant_instances
+                    )
 
     # Detect changes
     for elem_id, instances in edited_elements.items():
-        # Skip elements that are descendants of a copied group
-        if elem_id in copied_group_descendant_ids:
+        instances = [
+            instance
+            for instance in instances
+            if id(instance[1]) not in copied_descendant_instances
+        ]
+        if not instances:
             continue
 
         if elem_id in known_ids:
@@ -347,7 +355,9 @@ def diff_presentation(
                     translation = _calculate_translation(pristine_elem, edited_elem)
                     children_data = None
                     if edited_elem.children:
-                        children_data = _serialize_children(edited_elem.children)
+                        children_data = _serialize_children(
+                            edited_elem.children, pristine_elem.children
+                        )
 
                     result.changes.append(
                         Change(
@@ -423,7 +433,9 @@ def diff_presentation(
                     # Include children for groups
                     children_data = None
                     if edited_elem.children:
-                        children_data = _serialize_children(edited_elem.children)
+                        children_data = _serialize_children(
+                            edited_elem.children, pristine_elem.children
+                        )
 
                     result.changes.append(
                         Change(
@@ -597,7 +609,10 @@ def _compare_elements(
     return changes
 
 
-def _serialize_children(children: list[ParsedElement]) -> list[dict[str, Any]]:
+def _serialize_children(
+    children: list[ParsedElement],
+    pristine_children: list[ParsedElement] | None = None,
+) -> list[dict[str, Any]]:
     """Serialize children elements for inclusion in a Change.
 
     This captures all the information needed to recreate the children
@@ -605,7 +620,12 @@ def _serialize_children(children: list[ParsedElement]) -> list[dict[str, Any]]:
     """
     result: list[dict[str, Any]] = []
 
+    pristine_by_id = {
+        child.clean_id: child for child in (pristine_children or [])
+    }
+
     for child in children:
+        pristine_child = pristine_by_id.get(child.clean_id)
         child_data: dict[str, Any] = {
             "id": child.clean_id,
             "tag": child.tag,
@@ -619,6 +639,13 @@ def _serialize_children(children: list[ParsedElement]) -> list[dict[str, Any]]:
                 "w": child.w,
                 "h": child.h,
             }
+        if pristine_child is not None and pristine_child.has_position:
+            child_data["sourcePosition"] = {
+                "x": pristine_child.x,
+                "y": pristine_child.y,
+                "w": pristine_child.w,
+                "h": pristine_child.h,
+            }
 
         # Include text if available
         if child.paragraphs:
@@ -626,7 +653,10 @@ def _serialize_children(children: list[ParsedElement]) -> list[dict[str, Any]]:
 
         # Recursively include nested children
         if child.children:
-            child_data["children"] = _serialize_children(child.children)
+            child_data["children"] = _serialize_children(
+                child.children,
+                pristine_child.children if pristine_child is not None else None,
+            )
 
         result.append(child_data)
 
@@ -652,16 +682,11 @@ def _collect_all_elements(roots: list[ParsedElement]) -> list[ParsedElement]:
     return result
 
 
-def _collect_descendant_ids(elem: ParsedElement, result: set[str]) -> None:
-    """Recursively collect IDs of all descendants of an element.
-
-    This is used to identify children of copied groups so we don't
-    create duplicate copies of them as top-level elements.
-    """
+def _collect_descendant_instances(elem: ParsedElement, result: set[int]) -> None:
+    """Collect object identities for descendants belonging to one copy."""
     for child in elem.children:
-        if child.clean_id:
-            result.add(child.clean_id)
-        _collect_descendant_ids(child, result)
+        result.add(id(child))
+        _collect_descendant_instances(child, result)
 
 
 def _get_position(elem: ParsedElement) -> dict[str, float] | None:

@@ -167,20 +167,3 @@ def write_new_format(
         written_files.append(content_path)
 
     return written_files
-
-
-def process_and_write(
-    presentation_data: dict[str, Any],
-    output_dir: Path,
-) -> list[Path]:
-    """Convenience function to process and write in one step.
-
-    Args:
-        presentation_data: Full presentation data from Google Slides API
-        output_dir: Directory to write files to
-
-    Returns:
-        List of paths to written files
-    """
-    result = process_presentation(presentation_data)
-    return write_new_format(result, output_dir)

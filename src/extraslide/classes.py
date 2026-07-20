@@ -91,37 +91,6 @@ class TextAlignment(Enum):
     JUSTIFIED = "JUSTIFIED"
 
 
-class AutofitType(Enum):
-    """Autofit types for text."""
-
-    NONE = "NONE"
-    TEXT_AUTOFIT = "TEXT_AUTOFIT"
-    SHAPE_AUTOFIT = "SHAPE_AUTOFIT"
-
-
-class ArrowStyle(Enum):
-    """Arrow styles for lines."""
-
-    NONE = "NONE"
-    FILL_ARROW = "FILL_ARROW"
-    STEALTH_ARROW = "STEALTH_ARROW"
-    OPEN_ARROW = "OPEN_ARROW"
-    FILL_CIRCLE = "FILL_CIRCLE"
-    OPEN_CIRCLE = "OPEN_CIRCLE"
-    FILL_SQUARE = "FILL_SQUARE"
-    OPEN_SQUARE = "OPEN_SQUARE"
-    FILL_DIAMOND = "FILL_DIAMOND"
-    OPEN_DIAMOND = "OPEN_DIAMOND"
-
-
-class LineCategory(Enum):
-    """Line categories."""
-
-    STRAIGHT = "STRAIGHT"
-    BENT = "BENT"
-    CURVED = "CURVED"
-
-
 def _api_dimension_to_pt(dimension: dict[str, Any]) -> float:
     """Convert an explicitly-present Slides dimension to points.
 
@@ -211,18 +180,18 @@ class Fill:
 
         return None
 
-    def to_class(self, prefix: str = "fill") -> str:
+    def to_class(self) -> str:
         """Convert to SML class string."""
         if self.state == PropertyState.NOT_RENDERED:
-            return f"{prefix}-none"
+            return "fill-none"
         if self.state == PropertyState.INHERIT:
             return ""
 
         if self.color:
             if self.color.theme:
-                base = f"{prefix}-theme-{self.color.theme}"
+                base = f"fill-theme-{self.color.theme}"
             elif self.color.hex:
-                base = f"{prefix}-{self.color.hex}"
+                base = f"fill-{self.color.hex}"
             else:
                 return ""
 
@@ -323,6 +292,8 @@ class Stroke:
         return classes
 
 
+# Compatibility models retained because the untouched donor vendor suite directly
+# covers Shadow, Transform, and parse_position_classes as public conversion helpers.
 @dataclass
 class Shadow:
     """Shadow styling."""
@@ -745,62 +716,83 @@ def parse_class_string(class_str: str) -> list[str]:
     return class_str.split() if class_str else []
 
 
-_MUTUALLY_EXCLUSIVE_CLASS_FAMILIES: tuple[tuple[str, re.Pattern[str]], ...] = (
-    ("content alignment", re.compile(r"^content-align-(?:top|middle|bottom)$")),
-    (
-        "fill",
-        re.compile(
-            r"^fill-(?:none|inherit|theme-[a-z0-9-]+(?:/\d+)?|"
-            r"#[0-9a-fA-F]{6}(?:/\d+)?)$"
-        ),
-    ),
-    (
-        "stroke color or state",
-        re.compile(
-            r"^stroke-(?:none|inherit|theme-[a-z0-9-]+(?:/\d+)?|"
-            r"#[0-9a-fA-F]{6}(?:/\d+)?)$"
-        ),
-    ),
-    ("stroke weight", re.compile(r"^stroke-w-\d+(?:\.\d+)?$")),
-    (
-        "stroke dash style",
-        re.compile(
-            r"^stroke-(?:solid|dot|dash|dash-dot|long-dash|long-dash-dot)$"
-        ),
-    ),
-    (
-        "text alignment",
-        re.compile(r"^text-align-(?:left|center|right|justify)$"),
-    ),
-    ("line spacing", re.compile(r"^leading-\d+$")),
-    ("space above", re.compile(r"^space-above-\d+(?:\.\d+)?$")),
-    ("space below", re.compile(r"^space-below-\d+(?:\.\d+)?$")),
-    ("start indent", re.compile(r"^indent-start-\d+(?:\.\d+)?$")),
-    ("first-line indent", re.compile(r"^indent-first-\d+(?:\.\d+)?$")),
-    (
-        "paragraph spacing mode",
-        re.compile(r"^spacing-(?:never-collapse|collapse-lists)$"),
-    ),
-    ("baseline offset", re.compile(r"^(?:superscript|subscript)$")),
-    ("font family", re.compile(r"^font-family-.+$")),
-    ("font size", re.compile(r"^text-size-\d+(?:\.\d+)?$")),
-    ("font weight", re.compile(r"^font-weight-\d+$")),
-    (
-        "text color",
-        re.compile(
-            r"^text-color-(?:theme-[a-z0-9-]+|"
-            r"#[0-9a-fA-F]{6}(?:/\d+)?)$"
-        ),
-    ),
-    ("text background color", re.compile(r"^bg-#[0-9a-fA-F]{6}$")),
-)
+def common_classes(class_sets: list[list[str]]) -> list[str]:
+    """Return classes present in every set, preserving first-set order."""
+    if not class_sets:
+        return []
+    return [
+        cls
+        for cls in class_sets[0]
+        if all(cls in candidate for candidate in class_sets[1:])
+    ]
+
+
+class ClassKind(Enum):
+    """The single parser family that owns an SML class."""
+
+    CONTENT_ALIGNMENT = "content_alignment"
+    FILL = "fill"
+    STROKE = "stroke"
+    TEXT = "text"
+    PARAGRAPH = "paragraph"
+
+
+def classify_class(cls: str) -> tuple[ClassKind, Any] | None:
+    """Classify one class using the same parsers that construct typed styles."""
+    if alignment := parse_content_alignment_class(cls):
+        return ClassKind.CONTENT_ALIGNMENT, alignment
+    if fill := parse_fill_class(cls):
+        return ClassKind.FILL, fill
+    if stroke := parse_stroke_classes([cls]):
+        return ClassKind.STROKE, stroke
+    text = parse_text_style_classes([cls])
+    if text != TextStyle():
+        return ClassKind.TEXT, text
+    if paragraph := parse_paragraph_style_classes([cls]):
+        return ClassKind.PARAGRAPH, paragraph
+    return None
 
 
 def mutually_exclusive_class_family(cls: str) -> str | None:
-    """Return the single-value property family for a recognized class."""
-    for family, pattern in _MUTUALLY_EXCLUSIVE_CLASS_FAMILIES:
-        if pattern.fullmatch(cls):
-            return family
+    """Return a single-value family using the canonical typed class parser."""
+    classified = classify_class(cls)
+    if classified is None:
+        return None
+    kind, value = classified
+    if kind == ClassKind.CONTENT_ALIGNMENT:
+        return "content alignment"
+    if kind == ClassKind.FILL:
+        return "fill"
+    if kind == ClassKind.STROKE:
+        if value.state is not None or value.color is not None:
+            return "stroke color or state"
+        if value.weight_pt is not None:
+            return "stroke weight"
+        if value.dash_style is not None:
+            return "stroke dash style"
+    if kind == ClassKind.PARAGRAPH:
+        for attribute, family in (
+            ("alignment", "text alignment"),
+            ("line_spacing", "line spacing"),
+            ("space_above_pt", "space above"),
+            ("space_below_pt", "space below"),
+            ("indent_start_pt", "start indent"),
+            ("indent_first_line_pt", "first-line indent"),
+            ("spacing_mode", "paragraph spacing mode"),
+        ):
+            if getattr(value, attribute) is not None:
+                return family
+    if kind == ClassKind.TEXT:
+        for attribute, family in (
+            ("baseline_offset", "baseline offset"),
+            ("font_family", "font family"),
+            ("font_size_pt", "font size"),
+            ("font_weight", "font weight"),
+            ("foreground_color", "text color"),
+            ("background_color", "text background color"),
+        ):
+            if getattr(value, attribute) is not None:
+                return family
     return None
 
 

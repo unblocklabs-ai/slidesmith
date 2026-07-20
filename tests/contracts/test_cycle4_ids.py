@@ -104,14 +104,14 @@ def test_create_id_collision_and_invalid_id_use_safe_suffixes() -> None:
             "mission_swarm",
             slide_index="01",
             new_position={"x": 0, "y": 0, "w": 100, "h": 50},
-            metadata={"tag": "TextBox"},
+            tag="TextBox",
         ),
         Change(
             ChangeType.CREATE,
             "bad:id",
             slide_index="01",
             new_position={"x": 0, "y": 60, "w": 100, "h": 50},
-            metadata={"tag": "Rect"},
+            tag="Rect",
         ),
     ]
 

@@ -110,9 +110,6 @@ class Change:
     # Element tag (for creates/copies)
     tag: str | None = None
 
-    # Additional metadata
-    metadata: dict[str, Any] = field(default_factory=dict)
-
 
 @dataclass
 class DiffResult:
@@ -172,7 +169,7 @@ def _slide_sort_key(slide_index: str) -> tuple[int, int | str]:
 
 def _format_summary_change(change: Change) -> str:
     if change.change_type == ChangeType.CREATE:
-        tag = str(change.metadata.get("tag") or change.tag or "Element")
+        tag = change.tag or "Element"
         details = f" ({tag}{_format_frame(change.new_position)})"
         additions: list[str] = []
         if change.new_styles is not None:
@@ -352,29 +349,9 @@ def diff_presentation(
                 # NEW CONVENTION: Missing w/h indicates a copy
                 if _is_copy_by_missing_dimensions(edited_elem):
                     # This is a copy - element has x,y but no w,h
-                    translation = _calculate_translation(pristine_elem, edited_elem)
-                    children_data = None
-                    if edited_elem.children:
-                        children_data = _serialize_children(
-                            edited_elem.children, pristine_elem.children
-                        )
-
                     result.changes.append(
-                        Change(
-                            change_type=ChangeType.COPY,
-                            target_id=f"{elem_id}_copy0",
-                            source_id=elem_id,
-                            slide_index=slide_idx,
-                            parent_id=edited_elem.parent_id,
-                            new_position=_get_position_with_pristine_size(
-                                edited_elem, pristine_elem
-                            ),
-                            translation=translation,
-                            new_text=edited_elem.paragraphs
-                            if edited_elem.paragraphs
-                            else None,
-                            children=children_data,
-                            tag=edited_elem.tag,
+                        _make_copy_change(
+                            elem_id, 0, slide_idx, edited_elem, pristine_elem
                         )
                     )
                 else:
@@ -427,32 +404,9 @@ def diff_presentation(
 
                 # Handle copies
                 for i, (slide_idx, edited_elem) in enumerate(copy_instances):
-                    # Calculate translation from original position
-                    translation = _calculate_translation(pristine_elem, edited_elem)
-
-                    # Include children for groups
-                    children_data = None
-                    if edited_elem.children:
-                        children_data = _serialize_children(
-                            edited_elem.children, pristine_elem.children
-                        )
-
                     result.changes.append(
-                        Change(
-                            change_type=ChangeType.COPY,
-                            target_id=f"{elem_id}_copy{i}",
-                            source_id=elem_id,
-                            slide_index=slide_idx,
-                            parent_id=edited_elem.parent_id,
-                            new_position=_get_position_with_pristine_size(
-                                edited_elem, pristine_elem
-                            ),
-                            translation=translation,
-                            new_text=edited_elem.paragraphs
-                            if edited_elem.paragraphs
-                            else None,
-                            children=children_data,
-                            tag=edited_elem.tag,
+                        _make_copy_change(
+                            elem_id, i, slide_idx, edited_elem, pristine_elem
                         )
                     )
         else:
@@ -476,7 +430,7 @@ def diff_presentation(
                         new_paragraph_styles=edited_elem.paragraph_styles
                         if edited_elem.paragraph_styles
                         else None,
-                        metadata={"tag": edited_elem.tag},
+                        tag=edited_elem.tag,
                     )
                 )
 
@@ -602,11 +556,38 @@ def _compare_elements(
                 new_paragraph_styles=edited.paragraph_styles
                 if edited.paragraph_styles
                 else None,
-                metadata={"tag": edited.tag},
+                tag=edited.tag,
             )
         )
 
     return changes
+
+
+def _make_copy_change(
+    source_id: str,
+    copy_index: int,
+    slide_index: str,
+    edited: ParsedElement,
+    pristine: ParsedElement,
+) -> Change:
+    """Build the canonical COPY change for either copy-detection branch."""
+    children = (
+        _serialize_children(edited.children, pristine.children)
+        if edited.children
+        else None
+    )
+    return Change(
+        change_type=ChangeType.COPY,
+        target_id=f"{source_id}_copy{copy_index}",
+        source_id=source_id,
+        slide_index=slide_index,
+        parent_id=edited.parent_id,
+        new_position=_get_position_with_pristine_size(edited, pristine),
+        translation=_calculate_translation(pristine, edited),
+        new_text=edited.paragraphs if edited.paragraphs else None,
+        children=children,
+        tag=edited.tag,
+    )
 
 
 def _serialize_children(

@@ -297,14 +297,14 @@ def test_full_create_tag_map_and_unknown_tag_fail_loudly() -> None:
         "triangle",
         slide_index="01",
         new_position={"x": 0, "y": 0, "w": 20, "h": 20},
-        metadata={"tag": "Triangle"},
+        tag="Triangle",
     )
     requests = generate_batch_requests(
         DiffResult(changes=[triangle]), {}, {"01": "slide"}
     )
     assert requests[0]["createShape"]["shapeType"] == "TRIANGLE"
 
-    triangle.metadata["tag"] = "TypoShape"
+    triangle.tag = "TypoShape"
     with pytest.raises(ValueError, match="Unsupported SML element tag 'TypoShape'"):
         generate_batch_requests(DiffResult(changes=[triangle]), {}, {"01": "slide"})
 

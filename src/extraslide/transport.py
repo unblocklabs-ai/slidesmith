@@ -1,25 +1,19 @@
 """Transport layer for fetching presentation data.
 
-Defines the Transport protocol and implementations:
-- GoogleSlidesTransport: Production transport using Google Slides API
-- LocalFileTransport: Test transport reading from local golden files
+Defines the Transport protocol and the production Google Slides implementation.
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
 import ssl
 import urllib.parse
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import certifi
 import httpx
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 # API constants
 API_BASE = "https://slides.googleapis.com/v1/presentations"
@@ -275,61 +269,3 @@ class GoogleSlidesTransport(Transport):
         """Close the authenticated API and bare thumbnail HTTP clients."""
         await self._client.aclose()
         await self._thumbnail_client.aclose()
-
-
-class LocalFileTransport(Transport):
-    """Test transport that reads from local golden files.
-
-    Expected directory structure:
-        golden_dir/
-            <presentation_id>/
-                presentation.json
-    """
-
-    def __init__(self, golden_dir: Path) -> None:
-        """Initialize the transport.
-
-        Args:
-            golden_dir: Directory containing golden test files
-        """
-        self._golden_dir = golden_dir
-        self._batch_updates: list[dict[str, Any]] = []
-
-    async def get_presentation(self, presentation_id: str) -> PresentationData:
-        """Read presentation from local file."""
-        path = self._golden_dir / presentation_id / "presentation.json"
-        if not path.exists():
-            raise NotFoundError(f"Golden file not found: {path}")
-
-        response = json.loads(path.read_text())
-
-        return PresentationData(
-            presentation_id=response.get("presentationId", presentation_id),
-            data=response,
-        )
-
-    async def batch_update(
-        self,
-        presentation_id: str,
-        requests: list[dict[str, Any]],
-        required_revision_id: str | None = None,
-    ) -> dict[str, Any]:
-        """Record batch update requests (for testing)."""
-        self._batch_updates.append(
-            {
-                "presentation_id": presentation_id,
-                "requests": requests,
-                "required_revision_id": required_revision_id,
-            }
-        )
-        # Return a mock response
-        return {"replies": [{}] * len(requests)}
-
-    async def close(self) -> None:
-        """No-op for local file transport."""
-        pass
-
-    @property
-    def batch_updates(self) -> list[dict[str, Any]]:
-        """Get recorded batch updates (for test assertions)."""
-        return self._batch_updates

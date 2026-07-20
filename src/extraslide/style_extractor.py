@@ -8,7 +8,14 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from extraslide.classes import ContentAlignment, Fill, ParagraphStyle, Stroke, TextStyle
+from extraslide.classes import (
+    ContentAlignment,
+    Fill,
+    ParagraphStyle,
+    Stroke,
+    TextStyle,
+    common_classes,
+)
 from extraslide.units import emu_to_pt, rgb_to_hex
 
 if TYPE_CHECKING:
@@ -66,18 +73,9 @@ def extract_sml_element_classes(node: RenderNode) -> list[str]:
             continue
 
     if paragraph_class_sets:
-        classes.extend(_common_classes(paragraph_class_sets))
+        classes.extend(common_classes(paragraph_class_sets))
 
     return classes
-
-
-def _common_classes(class_sets: list[list[str]]) -> list[str]:
-    """Return classes explicitly present in every set, preserving order."""
-    return [
-        cls
-        for cls in class_sets[0]
-        if all(cls in candidate for candidate in class_sets[1:])
-    ]
 
 
 def extract_sml_text_classes(run_style: dict[str, Any] | None) -> list[str]:

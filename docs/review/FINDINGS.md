@@ -134,16 +134,103 @@ Google host (e.g. *.googleusercontent.com) before requesting.
 
 ## PART 3 — DEAD CODE / OVER-ENGINEERING / DUPLICATION (reviewer 3; all grep-verified)
 
-### D-H1 [HIGH] `pyfpgrowth` dependency has zero imports — delete from pyproject (with RenderNode.pattern_id vestige).
-### D-H2 [HIGH] ~180 lines dead donor auth surface in credentials.py: logout/activate/status/auth_mode, Credential.is_valid/expires_in_seconds/to_dict/from_dict/service_account_email, get_credential(force_refresh) no-op; `_NO_AUTH_MESSAGE` advertises nonexistent flags.
-### D-D1 [HIGH] Tag/type mapping exists 4× and diverges (content_generator `_get_tag_name`, content_requests `_tag_to_type`, inline `valid_google_types`, 5-entry `tag_to_shape`). Fix: one `shape_types.py` with TAG_TO_TYPE + derived inverse + valid set. (Fixes B-M2.)
-### D-D2 [HIGH] Two complete style representations (classes.py typed vs styles.json dicts) with divergent color conversion (truncate vs round; hand-rolled `_parse_color` maps malformed → black silently). Fix: single pipeline through classes.py types; `_parse_color` calls units helpers.
-### D-D3 [HIGH] Copy-request generation duplicated between `_create_copy_requests` and `_create_children_from_data` (LINE/IMAGE/shape branches line-for-line). Fix: `_create_one_copied_element` helper.
-### D-M1..M11 [MEDIUM] Dead: `pull_presentation`, `process_and_write`, `generate_presentation_content`, RenderNode donor members (+unreachable branch), classes.py dead enums (AutofitType/ArrowStyle/LineCategory) + donor-test-only trio (Transform/Shadow/parse_position_classes), `_pristine_element_types` param (NOTE: B-H1/H2 fix may RESURRECT this param for real group-ness — coordinate), `_create_full_text_replace_requests` unreachable (B-C1 fix may change this — coordinate), LocalFileTransport shipped+exported, ParsedElement.to_dict/has_full_position, `_apply_image_style_requests` permanent no-op, bounds.py Transform.identity/absolute_from.
-### D-O1..O4 [MEDIUM/LOW] DummyTransport forced by required transport (make diff module-level or transport optional); profile machinery with no --profile flag; never-varying params (containment_threshold, Fill.to_class prefix, preserve_authored); dead defensive checks (base_size_emu>0 guards, `if attrs` unreachable).
-### D-D4..D13 [MEDIUM/LOW] `_serialize_children` vs to_dict; COPY Change block ×2 in diff_presentation; class parsing probe-dispatch ×3 scopes (+ 4th classification in `_MUTUALLY_EXCLUSIVE_CLASS_FAMILIES`); class grammar encoded 3×; secure-JSON-write ×3 (one atomic, two not); pristine-zip creation ×2 (workspace.py vs client); paragraph common-class intersection ×2; `_read_json` ×2 with divergent semantics + inline copies; token-endpoint POST ×2; object-ID grammars split across modules.
-### D-L1 [LOW] Root-wrap back-compat branch in parser — label deliberate or delete.
-### D-L2 [LOW] `Change.tag` vs metadata["tag"] dual representation (also T-consistency).
+### [x] D-H1 [HIGH] Remove `pyfpgrowth` and pattern-mining vestiges
+Disposition: **fixed**. Removed the unused dependency, `RenderNode.pattern_id`, and the stale pattern-hints module description.
+
+### [x] D-H2 [HIGH] Remove the dead donor authentication surface
+Disposition: **fixed**. Grep-confirmed and removed `logout`, `activate`, `status`, the public `auth_mode` property, dead `Credential` helpers, the no-op `force_refresh` argument, unused profile-selection machinery, and the obsolete free-port probe. The nonexistent `_NO_AUTH_MESSAGE` flags and donor command names were **already-resolved-by-b7e668a** and were not reintroduced.
+
+### [x] D-D1 [HIGH] Canonicalize tag/type mappings
+Disposition: **fixed**. Added `shape_types.py` with one 129-entry `TAG_TO_TYPE`, a derived `TYPE_TO_TAG`, and a derived 123-entry `VALID_GOOGLE_TYPES`; generator, parser/request, and validation paths now import them.
+
+Reconciliation notes: the current generator and `_tag_to_type` tables were exact 129-entry inverses, so the generator spelling won without any key/value changes. The former inline valid set matched the same 123 creatable shape values; the derived set explicitly excludes the six source-specific non-shapes `GROUP`, `IMAGE`, `LINE`, `SHEETS_CHART`, `TABLE`, and `VIDEO`. No generator entry was dropped. The divergent five-entry `Rect`/`TextBox`/`RoundRect`/`Ellipse`/`Line` create table and its silent `RECTANGLE` fallback were **already-resolved-by-80075bc**; Batch C removes the remaining duplicated tables.
+
+### [x] D-D2 [HIGH] Unify styles.json conversion with typed style models
+Disposition: **fixed**. Persisted styles.json stays byte/schema compatible, while fill, stroke, line, and text-run replay now constructs `Color`/`Fill`/`Stroke`/`TextStyle` values and uses the class-derived request builders. `_parse_color` calls `units.hex_to_rgb`; malformed hex now raises `ValueError` instead of becoming black.
+
+### [x] D-D3 [HIGH] Deduplicate copied-element request generation
+Disposition: **fixed**. Extracted `_create_one_copied_element` from the current post-Batch-A root and descendant paths, including current translation, native-image geometry, text-run styling, recursive visual children, reserved IDs, and missing-group-data failures.
+
+### [x] D-M1 [MEDIUM] Dead `pull_presentation`
+Disposition: **fixed**. Removed the unused convenience function and package export.
+
+### [x] D-M2 [MEDIUM] Dead `process_and_write`
+Disposition: **fixed**. Removed after grep-confirming no callers.
+
+### [x] D-M3 [MEDIUM] Dead `generate_presentation_content`
+Disposition: **fixed**. Removed after grep-confirming no callers.
+
+### [x] D-M4 [MEDIUM] Dead RenderNode donor surface
+Disposition: **fixed**. Removed unused donor properties/methods, `flatten_tree`, and the unreachable empty-node branch; retained only members used by production or vendor contracts.
+
+### [x] D-M5 [MEDIUM] Dead classes.py donor types
+Disposition: **fixed** for `AutofitType`, `ArrowStyle`, and `LineCategory`. `Transform`, `Shadow`, and `parse_position_classes` are **kept-deliberately-with-reason**: the untouched vendor suite directly covers that compatibility surface, now documented in code.
+
+### [x] D-M6 [MEDIUM] `_pristine_element_types`
+Disposition: **kept-deliberately-with-reason**. Commit `80075bc` genuinely resurrected it: current delete ordering and line-style recovery use pristine type metadata to identify groups/lines without object-ID naming heuristics.
+
+### [x] D-M7 [MEDIUM] `_create_full_text_replace_requests`
+Disposition: **kept-deliberately-with-reason**. Commit `80075bc` made it the live `old_text is None` compatibility path for B-C1's minimal text-edit algorithm.
+
+### [x] D-M8 [MEDIUM] Shipped `LocalFileTransport`
+Disposition: **fixed**. Vendor tests still require it, so the class moved to `tests/vendor/helpers.py` with test-only injection; it is absent from the shipped package and `extraslide.__all__`. Vendor test files themselves are unchanged.
+
+### [x] D-M9 [MEDIUM] Dead `ParsedElement.to_dict` / `has_full_position`
+Disposition: **fixed**. Removed after current-tree grep verification.
+
+### [x] D-M10 [MEDIUM] Permanent no-op image-style requests
+Disposition: **fixed**. Removed `_apply_image_style_requests` and both calls; image creation retains native size/scale and recursive-child behavior.
+
+### [x] D-M11 [MEDIUM] Dead bounds helpers
+Disposition: **fixed** for `Transform.identity`. `BoundingBox.absolute_from` is **kept-deliberately-with-reason** because the untouched vendor suite directly verifies it as the public inverse of `relative_to`.
+
+### [x] D-O1 [MEDIUM] Dummy transport required for local diff
+Disposition: **fixed**. `SlidesClient` transport is optional for local diffing and explicitly required only by pull/push; `DummyTransport` is gone.
+
+### [x] D-O2 [MEDIUM] Profile machinery without a CLI profile surface
+Disposition: **fixed**. Removed public multi-profile selection/status/activation metadata and active-profile file handling. Internal session-store keys remain only to separate ExtraSuite, gws, and gogcli credentials.
+
+### [x] D-O3 [LOW] Never-varying parameters
+Disposition: **fixed** for `containment_threshold` and `Fill.to_class(prefix)`. `preserve_authored` is **kept-deliberately-with-reason** because direct `IDManager` callers and untouched vendor contracts require generated clean IDs by default, while presentation import deliberately opts into authored-ID reuse.
+
+### [x] D-O4 [LOW] Dead defensive branches
+Disposition: **fixed**. Removed constant-positive `base_size_emu` guards and the unreachable empty-attributes branch.
+
+### [x] D-D4 [MEDIUM] `_serialize_children` versus `ParsedElement.to_dict`
+Disposition: **fixed**. Removed dead `to_dict`; `_serialize_children` remains the sole copy serializer because it also carries pristine `sourcePosition` data.
+
+### [x] D-D5 [MEDIUM] Duplicate COPY Change construction
+Disposition: **fixed**. Both detection branches now call `_make_copy_change`.
+
+### [x] D-D6 [MEDIUM] Repeated class probe-dispatch
+Disposition: **fixed**. Added one typed `classify_class` dispatcher used by element, paragraph, run, and mutually-exclusive-family paths.
+
+### [x] D-D7 [MEDIUM] Class grammar encoded three times
+Disposition: **fixed**. Conflict-family classification now inspects the canonical typed parser result; the duplicate `_MUTUALLY_EXCLUSIVE_CLASS_FAMILIES` regex grammar is gone.
+
+### [x] D-D8 [MEDIUM] Secure JSON writes duplicated and non-atomic
+Disposition: **fixed**. One `_write_secure_json` creates a unique 0600 temp file and atomically replaces the target; both remaining session-file write paths use it. The third profiles.json writer disappeared with D-O2 instead of preserving a dead call site.
+
+### [x] D-D9 [MEDIUM] Pristine zip creation duplicated
+Disposition: **fixed**. Online pull/refresh and offline materialization share `create_pristine_zip`.
+
+### [x] D-D10 [LOW] Paragraph common-class intersection duplicated
+Disposition: **fixed**. Generator and style extraction share `common_classes`.
+
+### [x] D-D11 [MEDIUM] Divergent `_read_json` helpers and inline copies
+Disposition: **fixed**. Added one `read_json(path, missing_ok=...)` object loader and migrated all source-tree JSON-file reads; callers must state missing-file behavior explicitly.
+
+### [x] D-D12 [LOW] Token-endpoint form POST duplicated
+Disposition: **fixed**. Authorization-code and refresh-token exchanges share `_post_form_json` and `_GOOGLE_TOKEN_URL`.
+
+### [x] D-D13 [LOW] Object-ID grammars split across modules
+Disposition: **fixed**. Google create-ID validation now lives with authored/generated ID grammars in `id_manager.py`; request allocation imports the shared validator.
+
+### [x] D-L1 [LOW] Root-wrap backward compatibility
+Disposition: **kept-deliberately-with-reason**. Pre-`<Slide>` workspaces remain loadable for migration and are normalized by the next pull/materialization; the branch is labeled accordingly in code.
+
+### [x] D-L2 [LOW] `Change.tag` versus `metadata["tag"]`
+Disposition: **fixed**. `Change.tag` is now the single representation in diff construction, summaries, style routing, and create requests; the tag-only metadata field was removed.
 
 ---
 

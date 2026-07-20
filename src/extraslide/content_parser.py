@@ -9,19 +9,19 @@ from __future__ import annotations
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
 from defusedxml import ElementTree as DefusedET
 from defusedxml.common import DefusedXmlException
 
 from extraslide.classes import (
+    ClassKind,
     ContentAlignment,
     Fill,
     ParagraphStyle,
     Stroke,
     TextStyle,
+    classify_class,
     parse_class_string,
-    parse_content_alignment_class,
     parse_fill_class,
     parse_paragraph_style_classes,
     parse_stroke_classes,
@@ -109,33 +109,6 @@ class ParsedElement:
         """
         return self.x is not None
 
-    @property
-    def has_full_position(self) -> bool:
-        """Check if element has complete position (x, y, w, h).
-
-        Copies only have x, y on root - missing w/h indicates a copy.
-        """
-        return self.x is not None and self.w is not None
-
-    def to_dict(self) -> dict[str, Any]:
-        """Convert to dictionary for JSON serialization."""
-        result: dict[str, Any] = {
-            "id": self.clean_id,
-            "tag": self.tag,
-        }
-        if self.has_position:
-            result["position"] = {
-                "x": self.x,
-                "y": self.y,
-                "w": self.w,
-                "h": self.h,
-            }
-        if self.paragraphs:
-            result["text"] = self.paragraphs
-        if self.children:
-            result["children"] = [c.to_dict() for c in self.children]
-        return result
-
 
 def parse_slide_content(content: str) -> list[ParsedElement]:
     """Parse a slide's content.sml into structured elements.
@@ -156,7 +129,8 @@ def parse_slide_content(content: str) -> list[ParsedElement]:
     except DefusedXmlException as e:
         raise ValueError(f"Invalid content.sml XML: {e}") from e
     except ET.ParseError:
-        # Try wrapping in Root for backwards compatibility with old format
+        # Deliberately retained migration path: pre-Slide-root workspaces remain
+        # editable and can be normalized by the next pull/materialization.
         try:
             wrapped = f"<Root>{content}</Root>"
             root = DefusedET.fromstring(wrapped)
@@ -287,26 +261,28 @@ def parse_element_classes(
     content_alignment: ContentAlignment | None = None
 
     for cls in classes:
-        if parsed_alignment := parse_content_alignment_class(cls):
-            content_alignment = parsed_alignment
-        elif parse_fill_class(cls) is not None:
+        classified = classify_class(cls)
+        if classified is None:
+            raise ValueError(
+                f"Unrecognized class '{cls}' on element '{element_id}': "
+                "not a known shape, fill, stroke, text, or paragraph class"
+            )
+        kind, parsed = classified
+        if kind == ClassKind.CONTENT_ALIGNMENT:
+            content_alignment = parsed
+        elif kind == ClassKind.FILL:
             if element_tag == "Line":
                 raise ValueError(
                     f"Invalid class '{cls}' on Line element '{element_id}': "
                     "fill classes are not supported on Line elements"
                 )
             fill_classes.append(cls)
-        elif parse_stroke_classes([cls]) is not None:
+        elif kind == ClassKind.STROKE:
             stroke_classes.append(cls)
-        elif parse_text_style_classes([cls]) != TextStyle():
+        elif kind == ClassKind.TEXT:
             text_classes.append(cls)
-        elif parse_paragraph_style_classes([cls]) is not None:
+        elif kind == ClassKind.PARAGRAPH:
             para_classes.append(cls)
-        else:
-            raise ValueError(
-                f"Unrecognized class '{cls}' on element '{element_id}': "
-                f"not a known shape, fill, stroke, text, or paragraph class"
-            )
 
     return ElementStyles(
         fill=parse_fill_class(fill_classes[-1]) if fill_classes else None,
@@ -330,7 +306,8 @@ def _parse_run_classes(class_str: str | None, element_id: str) -> TextStyle | No
     classes = parse_class_string(class_str)
     validate_mutually_exclusive_classes(classes, element_id, scope="<T> run")
     for cls in classes:
-        if parse_text_style_classes([cls]) == TextStyle():
+        classified = classify_class(cls)
+        if classified is None or classified[0] != ClassKind.TEXT:
             raise ValueError(
                 f"Unrecognized class '{cls}' on <T> run in element "
                 f"'{element_id}': only text-style classes are allowed on runs"
@@ -353,9 +330,10 @@ def _parse_paragraph_classes(
     text_classes: list[str] = []
     paragraph_classes: list[str] = []
     for cls in classes:
-        if parse_text_style_classes([cls]) != TextStyle():
+        classified = classify_class(cls)
+        if classified is not None and classified[0] == ClassKind.TEXT:
             text_classes.append(cls)
-        elif parse_paragraph_style_classes([cls]) is not None:
+        elif classified is not None and classified[0] == ClassKind.PARAGRAPH:
             paragraph_classes.append(cls)
         else:
             raise ValueError(

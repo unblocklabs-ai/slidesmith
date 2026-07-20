@@ -13,6 +13,8 @@ from typing import Any
 
 from defusedxml import ElementTree as DefusedET
 
+from extraslide.json_utils import read_json
+
 
 def _presentation_id(url_or_id: str) -> str:
     m = re.search(r"/presentation/d/([a-zA-Z0-9_-]+)", url_or_id)
@@ -40,14 +42,14 @@ def _warn_if_stale(folder: str | Path, *, now: datetime | None = None) -> None:
     """Warn when a workspace's pull timestamp is more than 24 hours old."""
     metadata_path = Path(folder) / "presentation.json"
     try:
-        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        metadata = read_json(metadata_path, missing_ok=True)
         pulled_at_raw = metadata.get("pulledAt")
         if not isinstance(pulled_at_raw, str):
             return
         pulled_at = datetime.fromisoformat(pulled_at_raw.replace("Z", "+00:00"))
         if pulled_at.tzinfo is None:
             pulled_at = pulled_at.replace(tzinfo=timezone.utc)
-    except (OSError, json.JSONDecodeError, ValueError, AttributeError):
+    except (OSError, ValueError, AttributeError):
         return
 
     current = now or datetime.now(timezone.utc)
@@ -100,9 +102,7 @@ def cmd_diff(args: Any) -> None:
         print(format_diff_summary(diff_result, len(requests)))
     else:
         print(json.dumps(requests, indent=2))
-        mapping = json.loads(
-            (Path(args.folder) / "id_mapping.json").read_text(encoding="utf-8")
-        )
+        mapping = read_json(Path(args.folder) / "id_mapping.json", missing_ok=False)
         legend = _request_id_legend(requests, mapping)
         if legend:
             print(f"Object IDs: {legend}", file=sys.stderr)
@@ -166,12 +166,8 @@ def cmd_check(args: Any) -> None:
     if not args.no_thumbnails:
         from extraslide.transport import GoogleSlidesTransport
 
-        metadata = json.loads(
-            (folder / "presentation.json").read_text(encoding="utf-8")
-        )
-        id_mapping = json.loads(
-            (folder / "id_mapping.json").read_text(encoding="utf-8")
-        )
+        metadata = read_json(folder / "presentation.json", missing_ok=False)
+        id_mapping = read_json(folder / "id_mapping.json", missing_ok=False)
         presentation_id = metadata["presentationId"]
         token = _token("slide.pull", presentation_id)
         qa_dir = folder / ".qa"

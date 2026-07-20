@@ -4,13 +4,11 @@ from extraslide.client import (
     ConflictError,
     SlidesClient,
     diff_folder,
-    pull_presentation,
 )
 from extraslide.transport import (
     APIError,
     AuthenticationError,
     GoogleSlidesTransport,
-    LocalFileTransport,
     NotFoundError,
     PresentationData,
     Transport,
@@ -22,14 +20,12 @@ __all__ = [
     "AuthenticationError",
     "ConflictError",
     "GoogleSlidesTransport",
-    "LocalFileTransport",
     "NotFoundError",
     "PresentationData",
     "SlidesClient",
     "Transport",
     "TransportError",
     "diff_folder",
-    "pull_presentation",
 ]
 
 __version__ = "0.1.0"

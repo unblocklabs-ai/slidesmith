@@ -31,7 +31,7 @@ def _summary_result() -> DiffResult:
                 new_position={"x": 153.4, "y": 395, "w": 154.4, "h": 80},
                 new_text=["First", "Second"],
                 new_styles=ElementStyles(fill=object(), stroke=object()),
-                metadata={"tag": "TextBox"},
+                tag="TextBox",
             ),
             Change(
                 ChangeType.MOVE,

@@ -10,6 +10,7 @@ from typing import Any, Callable
 
 from extraslide.bounds import BoundingBox
 from extraslide.content_parser import ParsedElement, ParsedRun, parse_all_slides
+from extraslide.json_utils import read_json
 from extraslide.layout import ApproximateTextMeasurer, TextMeasurer
 
 OVERLAP_THRESHOLD = 0.15
@@ -78,7 +79,7 @@ def _read_qa_baseline(folder: Path) -> list[Finding] | None:
     baseline_path = folder / ".pristine" / QA_BASELINE_FILE
     if not baseline_path.exists():
         return None
-    data = _read_json(baseline_path)
+    data = read_json(baseline_path, missing_ok=False)
     raw_findings = data.get("findings", [])
     if not isinstance(raw_findings, list):
         raise ValueError(f"Expected a findings list in {baseline_path}")
@@ -92,7 +93,7 @@ def lint_folder(
 ) -> list[Finding]:
     """Analyze the current SML projection without making network calls."""
     folder_path = Path(folder)
-    metadata = _read_json(folder_path / "presentation.json")
+    metadata = read_json(folder_path / "presentation.json", missing_ok=False)
     page_size = metadata.get("pageSize", {})
     try:
         page_width = float(page_size["width"])
@@ -105,7 +106,7 @@ def lint_folder(
         raise ValueError("Presentation pageSize width and height must be positive")
 
     styles_path = folder_path / "styles.json"
-    styles = _read_json(styles_path) if styles_path.exists() else {}
+    styles = read_json(styles_path, missing_ok=True)
     slides = parse_all_slides(str(folder_path / "slides"))
     measurer = text_measurer or ApproximateTextMeasurer()
 
@@ -395,15 +396,3 @@ def _add_metrics(
         sizes.append(float(size))
     if isinstance(weight, int) and weight > 0:
         weights.append(weight)
-
-
-def _read_json(path: Path) -> dict[str, Any]:
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError as exc:
-        raise ValueError(f"Missing Slidesmith workspace file: {path}") from exc
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"Invalid JSON in {path}: {exc}") from exc
-    if not isinstance(data, dict):
-        raise ValueError(f"Expected a JSON object in {path}")
-    return data

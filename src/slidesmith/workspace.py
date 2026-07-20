@@ -7,11 +7,10 @@ and so contract tests can run against golden fixtures without API access.
 from __future__ import annotations
 
 import json
-import zipfile
 from pathlib import Path
 from typing import Any
 
-from extraslide.client import PRISTINE_DIR, PRISTINE_ZIP, RAW_DIR
+from extraslide.client import RAW_DIR, create_pristine_zip
 from extraslide.slide_processor import process_presentation, write_new_format
 
 
@@ -40,13 +39,6 @@ def materialize(
             encoding="utf-8",
         )
 
-    pristine_dir = presentation_dir / PRISTINE_DIR
-    pristine_dir.mkdir(parents=True, exist_ok=True)
-    zip_path = pristine_dir / PRISTINE_ZIP
-    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-        for fp in written:
-            if any(d in fp.parts for d in (RAW_DIR, PRISTINE_DIR)):
-                continue
-            zf.write(fp, fp.relative_to(presentation_dir))
+    create_pristine_zip(presentation_dir, written)
 
     return presentation_dir

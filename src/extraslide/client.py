@@ -3,7 +3,7 @@
 Provides the `pull`, `diff`, and `push` methods for the presentation workflow:
 - id_mapping.json: clean_id -> google_object_id
 - styles.json: clean_id -> styles (relative positions for children)
-- slides/NN/content.sml: minimal XML with IDs, positions, text, pattern hints
+- slides/NN/content.sml: minimal XML with IDs, positions, and text
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ from typing import Any
 from extraslide.content_diff import DiffResult, diff_presentation
 from extraslide.content_parser import parse_slide_content
 from extraslide.content_requests import generate_batch_requests
+from extraslide.json_utils import read_json
 from extraslide.slide_processor import process_presentation, write_new_format
 from extraslide.transport import APIError, Transport
 
@@ -37,6 +38,21 @@ PRISTINE_BASE_FILE = "base.json"
 
 def _pull_timestamp() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def create_pristine_zip(
+    presentation_dir: Path, written_files: list[Path]
+) -> Path:
+    """Archive generated workspace files for local diff/push comparison."""
+    pristine_dir = presentation_dir / PRISTINE_DIR
+    pristine_dir.mkdir(parents=True, exist_ok=True)
+    zip_path = pristine_dir / PRISTINE_ZIP
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as archive:
+        for file_path in written_files:
+            if any(part in file_path.parts for part in (RAW_DIR, PRISTINE_DIR)):
+                continue
+            archive.write(file_path, file_path.relative_to(presentation_dir))
+    return zip_path
 
 
 class ConflictError(Exception):
@@ -250,13 +266,18 @@ class SlidesClient:
         >>> await client.push(Path("./output/1abc..."))
     """
 
-    def __init__(self, transport: Transport) -> None:
+    def __init__(self, transport: Transport | None = None) -> None:
         """Initialize the client.
 
         Args:
-            transport: Transport implementation for fetching/updating presentations
+            transport: Transport for network operations; local diffing needs none.
         """
         self._transport = transport
+
+    def _require_transport(self) -> Transport:
+        if self._transport is None:
+            raise RuntimeError("A transport is required for pull and push operations")
+        return self._transport
 
     async def pull(
         self,
@@ -284,7 +305,9 @@ class SlidesClient:
             List of paths to written files
         """
         # Fetch presentation data
-        presentation_data = await self._transport.get_presentation(presentation_id)
+        presentation_data = await self._require_transport().get_presentation(
+            presentation_id
+        )
 
         # Create output directory
         output_path = Path(output_path)
@@ -323,7 +346,7 @@ class SlidesClient:
             written_files.append(raw_path)
 
         # Create pristine copy
-        pristine_path = self._create_pristine_copy(presentation_dir, written_files)
+        pristine_path = create_pristine_zip(presentation_dir, written_files)
         written_files.append(pristine_path)
 
         # Always persist the raw API tree as the pristine base snapshot:
@@ -364,7 +387,7 @@ class SlidesClient:
 
         # Read current state
         current_slides = self._read_current_slides(folder_path)
-        id_mapping = self._read_json(folder_path / ID_MAPPING_FILE)
+        id_mapping = read_json(folder_path / ID_MAPPING_FILE, missing_ok=True)
 
         # Read pristine state
         pristine_slides, pristine_styles = self._read_pristine(folder_path)
@@ -380,7 +403,7 @@ class SlidesClient:
         )
 
         # Build slide ID mapping (slide_index -> google_slide_id)
-        metadata = self._read_json(folder_path / PRESENTATION_FILE)
+        metadata = read_json(folder_path / PRESENTATION_FILE, missing_ok=True)
         slide_id_mapping = self._build_slide_id_mapping(
             id_mapping, metadata.get("slideOrder")
         )
@@ -429,7 +452,7 @@ class SlidesClient:
         folder_path = Path(folder_path)
 
         # Get presentation ID from metadata
-        metadata = self._read_json(folder_path / PRESENTATION_FILE)
+        metadata = read_json(folder_path / PRESENTATION_FILE, missing_ok=True)
         presentation_id = metadata.get("presentationId")
         if not presentation_id:
             raise ValueError("Presentation ID not found in presentation.json")
@@ -440,6 +463,8 @@ class SlidesClient:
         if not requests:
             return {"replies": [], "message": "No changes detected"}
 
+        transport = self._require_transport()
+
         if force:
             print(
                 "warning: push --force: conflict guard and revision lock "
@@ -447,14 +472,14 @@ class SlidesClient:
                 "will be overwritten",
                 file=sys.stderr,
             )
-            response = await self._transport.batch_update(presentation_id, requests)
+            response = await transport.batch_update(presentation_id, requests)
             await self._refresh_after_success(
                 folder_path, presentation_id, response
             )
             return response
 
         # (a) Re-fetch the remote presentation and capture its revision.
-        remote = await self._transport.get_presentation(presentation_id)
+        remote = await transport.get_presentation(presentation_id)
         required_revision = remote.revision_id
 
         # (b)+(c) Compare remote vs pristine base for the touched objects.
@@ -472,7 +497,7 @@ class SlidesClient:
                 base_raw,
                 remote.data,
                 requests,
-                self._read_json(folder_path / ID_MAPPING_FILE),
+                read_json(folder_path / ID_MAPPING_FILE, missing_ok=True),
             )
             if conflicts:
                 lines = [
@@ -488,7 +513,7 @@ class SlidesClient:
 
         # (d) Guarded write: fail if the deck is revised between (a) and now.
         try:
-            response = await self._transport.batch_update(
+            response = await transport.batch_update(
                 presentation_id, requests, required_revision_id=required_revision
             )
         except APIError as e:
@@ -534,7 +559,7 @@ class SlidesClient:
         pull-time QA baseline is deliberately preserved: it is a ledger of
         findings introduced since the last explicit pull.
         """
-        refreshed = await self._transport.get_presentation(presentation_id)
+        refreshed = await self._require_transport().get_presentation(presentation_id)
         result = process_presentation(refreshed.data)
         if refreshed.revision_id:
             result["presentation_info"]["revisionId"] = refreshed.revision_id
@@ -587,7 +612,7 @@ class SlidesClient:
                     folder_path,
                     {slide["slide_index"] for slide in result["slides"]},
                 )
-                self._create_pristine_copy(folder_path, refreshed_files)
+                create_pristine_zip(folder_path, refreshed_files)
                 base_path = folder_path / PRISTINE_DIR / PRISTINE_BASE_FILE
                 base_path.write_text(
                     json.dumps(refreshed.data, indent=2, ensure_ascii=False),
@@ -621,10 +646,7 @@ class SlidesClient:
         )
         for candidate in candidates:
             if candidate.exists():
-                data: dict[str, Any] = json.loads(
-                    candidate.read_text(encoding="utf-8")
-                )
-                return data
+                return read_json(candidate, missing_ok=False)
         return None
 
     def _detect_conflicts(
@@ -715,13 +737,6 @@ class SlidesClient:
 
         return slides, styles
 
-    def _read_json(self, path: Path) -> dict[str, Any]:
-        """Read a JSON file."""
-        if not path.exists():
-            return {}
-        data: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
-        return data
-
     def _build_slide_id_mapping(
         self,
         id_mapping: dict[str, str],
@@ -791,56 +806,8 @@ class SlidesClient:
                 suffix += 1
             shutil.move(str(slide_folder), destination)
 
-    def _create_pristine_copy(
-        self,
-        presentation_dir: Path,
-        written_files: list[Path],
-    ) -> Path:
-        """Create a pristine copy of the pulled files for diff/push workflow."""
-        pristine_dir = presentation_dir / PRISTINE_DIR
-        pristine_dir.mkdir(parents=True, exist_ok=True)
-
-        zip_path = pristine_dir / PRISTINE_ZIP
-
-        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-            for file_path in written_files:
-                # Skip raw and pristine directories
-                if any(d in file_path.parts for d in [RAW_DIR, PRISTINE_DIR]):
-                    continue
-
-                # Store with path relative to presentation directory
-                arcname = file_path.relative_to(presentation_dir)
-                zf.write(file_path, arcname)
-
-        return zip_path
-
-
-async def pull_presentation(
-    transport: Transport,
-    presentation_id: str,
-    output_path: str | Path,
-    *,
-    save_raw: bool = True,
-) -> list[Path]:
-    """Convenience function to pull a presentation.
-
-    Args:
-        transport: Transport implementation
-        presentation_id: The ID of the presentation
-        output_path: Directory to write files to
-        save_raw: If True, saves raw API response
-
-    Returns:
-        List of paths to written files
-    """
-    client = SlidesClient(transport)
-    return await client.pull(presentation_id, output_path, save_raw=save_raw)
-
-
 def diff_folder(folder_path: str | Path) -> list[dict[str, Any]]:
     """Convenience function to diff a presentation folder.
-
-    Note: This creates a client with a dummy transport since diff doesn't need it.
 
     Args:
         folder_path: Path to the presentation folder
@@ -856,18 +823,5 @@ def diff_folder_with_result(
     folder_path: str | Path,
 ) -> tuple[DiffResult, list[dict[str, Any]]]:
     """Return semantic changes and batchUpdate requests for a local folder."""
-    # Create a minimal transport for diff (not used)
-    class DummyTransport(Transport):
-        async def get_presentation(self, _: str) -> Any:
-            raise NotImplementedError("Diff doesn't need transport")
-
-        async def batch_update(
-            self, _id: str, _reqs: list[Any], _required_revision_id: str | None = None
-        ) -> Any:
-            raise NotImplementedError("Diff doesn't need transport")
-
-        async def close(self) -> None:
-            pass
-
-    client = SlidesClient(DummyTransport())
+    client = SlidesClient()
     return client.diff_with_result(Path(folder_path))

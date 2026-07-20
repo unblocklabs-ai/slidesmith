@@ -11,6 +11,10 @@ import time
 from typing import Any
 
 from extraslide.classes import (
+    Color,
+    ContentAlignment,
+    DashStyle,
+    Fill,
     ParagraphStyle,
     PropertyState,
     Stroke,
@@ -18,12 +22,13 @@ from extraslide.classes import (
 )
 from extraslide.content_diff import Change, ChangeType, DiffResult, ParagraphClassUpdate
 from extraslide.content_parser import ElementStyles, ParagraphStyles, ParsedRun
-from extraslide.units import pt_to_emu
+from extraslide.id_manager import is_valid_google_object_id
+from extraslide.shape_types import TAG_TO_TYPE, VALID_GOOGLE_TYPES
+from extraslide.units import hex_to_rgb, pt_to_emu
 
 # Global counter for unique ID generation within a session
 _id_counter = 0
 
-_GOOGLE_OBJECT_ID_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_-]{4,49}$")
 _MIN_EMU = 1
 
 
@@ -38,7 +43,7 @@ def _get_unique_suffix() -> str:
 
 def _allocate_create_object_id(authored_id: str, reserved_ids: set[str]) -> str:
     """Choose a valid, unoccupied Google object ID for an authored element."""
-    if _GOOGLE_OBJECT_ID_RE.fullmatch(authored_id) and authored_id not in reserved_ids:
+    if is_valid_google_object_id(authored_id) and authored_id not in reserved_ids:
         return authored_id
 
     stem = re.sub(r"[^a-zA-Z0-9_-]", "_", authored_id)
@@ -51,7 +56,7 @@ def _allocate_create_object_id(authored_id: str, reserved_ids: set[str]) -> str:
     while True:
         suffix = f"_{suffix_number}"
         candidate = f"{stem[: 50 - len(suffix)]}{suffix}"
-        if _GOOGLE_OBJECT_ID_RE.fullmatch(candidate) and candidate not in reserved_ids:
+        if is_valid_google_object_id(candidate) and candidate not in reserved_ids:
             return candidate
         suffix_number += 1
 
@@ -168,7 +173,7 @@ def generate_batch_requests(
         style_google_id = id_mapping.get(change.target_id)
         if style_google_id and change.new_styles:
             edited_element = diff_result.edited_elements.get(change.target_id)
-            element_tag = change.metadata.get("tag")
+            element_tag = change.tag
             if element_tag is None and edited_element is not None:
                 element_tag = edited_element.tag
             if element_tag is None and _pristine_element_types is not None:
@@ -688,125 +693,110 @@ def _create_copy_requests(
     )
     reserved_ids.add(new_object_id)
 
-    # Create element based on type
-    # Special types: LINE, IMAGE, GROUP need special handling
-    # Everything else is a shape that can be created with createShape
+    _create_one_copied_element(
+        object_id=new_object_id,
+        elem_type=elem_type,
+        source_id=change.source_id or change.target_id,
+        position=position,
+        text=change.new_text or [],
+        children=change.children or [],
+        translation=translation,
+        slide_google_id=slide_google_id,
+        all_styles=all_styles,
+        style=source_style,
+        requests=requests,
+        child_depth=0,
+        reserved_ids=reserved_ids,
+    )
 
-    if elem_type == "LINE":
-        requests.append(
-            _create_line_request(
-                new_object_id,
-                slide_google_id,
-                position,
-            )
-        )
+    return requests
 
-        # Apply line styling
-        style_requests = _apply_line_style_requests(new_object_id, source_style)
-        requests.extend(style_requests)
 
-    elif elem_type == "IMAGE":
-        # Images need special handling - need the source URL
-        content_url = source_style.get("contentUrl", "")
-        if not content_url:
-            raise ValueError(
-                f"Cannot copy image '{change.source_id}': contentUrl is missing"
-            )
-        requests.append(
-            _create_image_request(
-                new_object_id,
-                slide_google_id,
-                position,
-                content_url,
-                native_size=source_style.get("nativeSize"),
-                native_scale=source_style.get("nativeScale"),
-            )
-        )
-        image_style_requests = _apply_image_style_requests(
-            new_object_id, source_style
-        )
-        requests.extend(image_style_requests)
-
-        # Handle visual children for images (e.g., cropped images)
-        if change.children:
-            _create_children_from_data(
-                change.children,
-                translation,
-                slide_google_id,
-                all_styles,
-                requests,
-                new_object_id,
-                reserved_ids=reserved_ids,
-            )
-
-    elif elem_type == "GROUP":
-        # Create children first, then group them
-        if not change.children:
-            raise ValueError(
-                f"Cannot copy group '{change.source_id}': child data is missing"
-            )
+def _create_one_copied_element(
+    *,
+    object_id: str,
+    elem_type: str,
+    source_id: str,
+    position: dict[str, float],
+    text: list[str],
+    children: list[dict[str, Any]],
+    translation: dict[str, float],
+    slide_google_id: str,
+    all_styles: dict[str, dict[str, Any]],
+    style: dict[str, Any],
+    requests: list[dict[str, Any]],
+    child_depth: int,
+    reserved_ids: set[str],
+) -> None:
+    """Recreate one copied element using the shared root/descendant pipeline."""
+    if elem_type == "GROUP":
+        if not children:
+            raise ValueError(f"Cannot copy group '{source_id}': child data is missing")
         child_ids = _create_children_from_data(
-            change.children,
+            children,
             translation,
             slide_google_id,
             all_styles,
             requests,
-            new_object_id,
+            object_id,
+            child_depth,
             reserved_ids=reserved_ids,
         )
         if not child_ids:
             raise ValueError(
-                f"Cannot copy group '{change.source_id}': no children were created"
+                f"Cannot copy group '{source_id}': no children were created"
             )
         requests.append(
             {
                 "groupObjects": {
-                    "groupObjectId": new_object_id,
+                    "groupObjectId": object_id,
                     "childrenObjectIds": child_ids,
                 }
             }
         )
+        return
 
-    else:
-        # All other types are shapes (RECTANGLE, TEXT_BOX, ROUND_RECTANGLE, etc.)
+    if elem_type == "LINE":
+        requests.append(_create_line_request(object_id, slide_google_id, position))
+        requests.extend(_apply_line_style_requests(object_id, style))
+    elif elem_type == "IMAGE":
+        content_url = style.get("contentUrl", "")
+        if not content_url:
+            raise ValueError(f"Cannot copy image '{source_id}': contentUrl is missing")
         requests.append(
-            _create_shape_request(
-                new_object_id,
+            _create_image_request(
+                object_id,
                 slide_google_id,
-                elem_type,
                 position,
+                content_url,
+                native_size=style.get("nativeSize"),
+                native_scale=style.get("nativeScale"),
             )
         )
-
-        # Apply styling from source
-        style_requests = _apply_style_requests(new_object_id, source_style)
-        requests.extend(style_requests)
-
-        # Add text if provided
-        if change.new_text:
-            text_requests = _create_text_insert_requests(new_object_id, change.new_text)
-            requests.extend(text_requests)
-            # Apply text styling from source
-            text_style_info = source_style.get("text", {})
+    else:
+        requests.append(
+            _create_shape_request(object_id, slide_google_id, elem_type, position)
+        )
+        requests.extend(_apply_style_requests(object_id, style))
+        if text:
+            requests.extend(_create_text_insert_requests(object_id, text))
+            text_style_info = style.get("text", {})
             if text_style_info:
-                text_style_reqs = _apply_text_style_requests(
-                    new_object_id, change.new_text, text_style_info
+                requests.extend(
+                    _apply_text_style_requests(object_id, text, text_style_info)
                 )
-                requests.extend(text_style_reqs)
 
-        # Handle visual children (any element can have children in our format)
-        if change.children:
-            _create_children_from_data(
-                change.children,
-                translation,
-                slide_google_id,
-                all_styles,
-                requests,
-                new_object_id,
-                reserved_ids=reserved_ids,
-            )
-
-    return requests
+    if children:
+        _create_children_from_data(
+            children,
+            translation,
+            slide_google_id,
+            all_styles,
+            requests,
+            object_id,
+            child_depth,
+            reserved_ids=reserved_ids,
+        )
 
 
 def _create_children_from_data(
@@ -895,275 +885,32 @@ def _create_children_from_data(
         # Map tag to element type
         elem_type = _tag_to_type(child_tag)
 
-        if elem_type == "GROUP" and nested_children:
-            # Create children first, then group them
-            # Pass the same translation - children already have absolute positions
-            nested_child_ids = _create_children_from_data(
-                nested_children,
-                translation,
-                slide_google_id,
-                all_styles,
-                requests,
-                child_obj_id,
-                depth + 1,
-                reserved_ids=reserved_ids,
-            )
-            # Group the nested children together
-            if nested_child_ids:
-                requests.append(
-                    {
-                        "groupObjects": {
-                            "groupObjectId": child_obj_id,
-                            "childrenObjectIds": nested_child_ids,
-                        }
-                    }
-                )
-                child_ids.append(child_obj_id)
-        elif elem_type == "LINE":
-            requests.append(
-                _create_line_request(child_obj_id, slide_google_id, abs_position)
-            )
-            style_reqs = _apply_line_style_requests(child_obj_id, child_style)
-            requests.extend(style_reqs)
-            child_ids.append(child_obj_id)
-            # Process nested children for lines too
-            if nested_children:
-                _create_children_from_data(
-                    nested_children,
-                    translation,
-                    slide_google_id,
-                    all_styles,
-                    requests,
-                    child_obj_id,
-                    depth + 1,
-                    reserved_ids=reserved_ids,
-                )
-        elif elem_type == "IMAGE":
-            content_url = child_style.get("contentUrl", "")
-            if not content_url:
-                raise ValueError(
-                    f"Cannot copy image child '{source_id}': contentUrl is missing"
-                )
-            requests.append(
-                _create_image_request(
-                    child_obj_id,
-                    slide_google_id,
-                    abs_position,
-                    content_url,
-                    native_size=child_style.get("nativeSize"),
-                    native_scale=child_style.get("nativeScale"),
-                )
-            )
-            image_style_reqs = _apply_image_style_requests(
-                child_obj_id, child_style
-            )
-            requests.extend(image_style_reqs)
-            child_ids.append(child_obj_id)
-            # Process nested children for images too (e.g. cropped images)
-            if nested_children:
-                _create_children_from_data(
-                    nested_children,
-                    translation,
-                    slide_google_id,
-                    all_styles,
-                    requests,
-                    child_obj_id,
-                    depth + 1,
-                    reserved_ids=reserved_ids,
-                )
-        else:
-            # Shape types (RECTANGLE, TEXT_BOX, ROUND_RECTANGLE, etc.)
-            requests.append(
-                _create_shape_request(
-                    child_obj_id, slide_google_id, elem_type, abs_position
-                )
-            )
-            style_reqs = _apply_style_requests(child_obj_id, child_style)
-            requests.extend(style_reqs)
-            # Add text if any
-            if child_text:
-                text_reqs = _create_text_insert_requests(child_obj_id, child_text)
-                requests.extend(text_reqs)
-                # Apply text styling from source
-                text_style_info = child_style.get("text", {})
-                if text_style_info:
-                    text_style_reqs = _apply_text_style_requests(
-                        child_obj_id, child_text, text_style_info
-                    )
-                    requests.extend(text_style_reqs)
-            child_ids.append(child_obj_id)
-            # Process nested children for shapes (visual containment)
-            if nested_children:
-                _create_children_from_data(
-                    nested_children,
-                    translation,
-                    slide_google_id,
-                    all_styles,
-                    requests,
-                    child_obj_id,
-                    depth + 1,
-                    reserved_ids=reserved_ids,
-                )
+        _create_one_copied_element(
+            object_id=child_obj_id,
+            elem_type=elem_type,
+            source_id=source_id,
+            position=abs_position,
+            text=child_text,
+            children=nested_children,
+            translation=translation,
+            slide_google_id=slide_google_id,
+            all_styles=all_styles,
+            style=child_style,
+            requests=requests,
+            child_depth=depth + 1,
+            reserved_ids=reserved_ids,
+        )
+        child_ids.append(child_obj_id)
 
     return child_ids
 
 
 def _tag_to_type(tag: str) -> str:
-    """Convert content.sml tag to Google Slides element type.
-
-    Reverse mapping of content_generator._get_tag_name().
-    Supports the full spectrum of Google Slides shape types.
-    """
-    tag_map = {
-        # Basic shapes
-        "Rect": "RECTANGLE",
-        "Ellipse": "ELLIPSE",
-        "RoundRect": "ROUND_RECTANGLE",
-        "TextBox": "TEXT_BOX",
-        "Image": "IMAGE",
-        "Line": "LINE",
-        "Group": "GROUP",
-        "Table": "TABLE",
-        "Video": "VIDEO",
-        "Chart": "SHEETS_CHART",
-        # Triangles
-        "Triangle": "TRIANGLE",
-        "RightTriangle": "RIGHT_TRIANGLE",
-        # Parallelograms
-        "Parallelogram": "PARALLELOGRAM",
-        "Trapezoid": "TRAPEZOID",
-        # Polygons
-        "Pentagon": "PENTAGON",
-        "Hexagon": "HEXAGON",
-        "Heptagon": "HEPTAGON",
-        "Octagon": "OCTAGON",
-        "Decagon": "DECAGON",
-        "Dodecagon": "DODECAGON",
-        # Stars
-        "Star4": "STAR_4",
-        "Star5": "STAR_5",
-        "Star6": "STAR_6",
-        "Star8": "STAR_8",
-        "Star10": "STAR_10",
-        "Star12": "STAR_12",
-        "Star16": "STAR_16",
-        "Star24": "STAR_24",
-        "Star32": "STAR_32",
-        # Other shapes
-        "Diamond": "DIAMOND",
-        "Chevron": "CHEVRON",
-        "HomePlate": "HOME_PLATE",
-        "Plus": "PLUS",
-        "Donut": "DONUT",
-        "Pie": "PIE",
-        "Arc": "ARC",
-        "Chord": "CHORD",
-        "BlockArc": "BLOCK_ARC",
-        "Frame": "FRAME",
-        "HalfFrame": "HALF_FRAME",
-        "Corner": "CORNER",
-        "DiagonalStripe": "DIAGONAL_STRIPE",
-        "LShape": "L_SHAPE",
-        "Can": "CAN",
-        "Cube": "CUBE",
-        "Bevel": "BEVEL",
-        "FoldedCorner": "FOLDED_CORNER",
-        "SmileyFace": "SMILEY_FACE",
-        "Heart": "HEART",
-        "LightningBolt": "LIGHTNING_BOLT",
-        "Sun": "SUN",
-        "Moon": "MOON",
-        "Cloud": "CLOUD",
-        "Plaque": "PLAQUE",
-        # Arrows
-        "Arrow": "ARROW",
-        "ArrowLeft": "LEFT_ARROW",
-        "ArrowRight": "RIGHT_ARROW",
-        "ArrowUp": "UP_ARROW",
-        "ArrowDown": "DOWN_ARROW",
-        "ArrowLeftRight": "LEFT_RIGHT_ARROW",
-        "ArrowUpDown": "UP_DOWN_ARROW",
-        "ArrowQuad": "QUAD_ARROW",
-        "ArrowLeftRightUp": "LEFT_RIGHT_UP_ARROW",
-        "ArrowBent": "BENT_ARROW",
-        "ArrowUTurn": "U_TURN_ARROW",
-        "ArrowCurvedLeft": "CURVED_LEFT_ARROW",
-        "ArrowCurvedRight": "CURVED_RIGHT_ARROW",
-        "ArrowCurvedUp": "CURVED_UP_ARROW",
-        "ArrowCurvedDown": "CURVED_DOWN_ARROW",
-        "ArrowStripedRight": "STRIPED_RIGHT_ARROW",
-        "ArrowNotchedRight": "NOTCHED_RIGHT_ARROW",
-        "ArrowPentagon": "PENTAGON_ARROW",
-        "ArrowChevron": "CHEVRON_ARROW",
-        "ArrowCircular": "CIRCULAR_ARROW",
-        # Callouts
-        "CalloutRect": "WEDGE_RECTANGLE_CALLOUT",
-        "CalloutRoundRect": "WEDGE_ROUND_RECTANGLE_CALLOUT",
-        "CalloutEllipse": "WEDGE_ELLIPSE_CALLOUT",
-        "CalloutCloud": "CLOUD_CALLOUT",
-        # Flowchart shapes
-        "FlowProcess": "FLOW_CHART_PROCESS",
-        "FlowDecision": "FLOW_CHART_DECISION",
-        "FlowInputOutput": "FLOW_CHART_INPUT_OUTPUT",
-        "FlowPredefinedProcess": "FLOW_CHART_PREDEFINED_PROCESS",
-        "FlowInternalStorage": "FLOW_CHART_INTERNAL_STORAGE",
-        "FlowDocument": "FLOW_CHART_DOCUMENT",
-        "FlowMultidocument": "FLOW_CHART_MULTIDOCUMENT",
-        "FlowTerminator": "FLOW_CHART_TERMINATOR",
-        "FlowPreparation": "FLOW_CHART_PREPARATION",
-        "FlowManualInput": "FLOW_CHART_MANUAL_INPUT",
-        "FlowManualOperation": "FLOW_CHART_MANUAL_OPERATION",
-        "FlowConnector": "FLOW_CHART_CONNECTOR",
-        "FlowPunchedCard": "FLOW_CHART_PUNCHED_CARD",
-        "FlowPunchedTape": "FLOW_CHART_PUNCHED_TAPE",
-        "FlowSummingJunction": "FLOW_CHART_SUMMING_JUNCTION",
-        "FlowOr": "FLOW_CHART_OR",
-        "FlowCollate": "FLOW_CHART_COLLATE",
-        "FlowSort": "FLOW_CHART_SORT",
-        "FlowExtract": "FLOW_CHART_EXTRACT",
-        "FlowMerge": "FLOW_CHART_MERGE",
-        "FlowOnlineStorage": "FLOW_CHART_ONLINE_STORAGE",
-        "FlowMagneticTape": "FLOW_CHART_MAGNETIC_TAPE",
-        "FlowMagneticDisk": "FLOW_CHART_MAGNETIC_DISK",
-        "FlowMagneticDrum": "FLOW_CHART_MAGNETIC_DRUM",
-        "FlowDisplay": "FLOW_CHART_DISPLAY",
-        "FlowDelay": "FLOW_CHART_DELAY",
-        "FlowAlternateProcess": "FLOW_CHART_ALTERNATE_PROCESS",
-        "FlowOffpageConnector": "FLOW_CHART_OFFPAGE_CONNECTOR",
-        "FlowData": "FLOW_CHART_DATA",
-        # Equation shapes
-        "MathPlus": "MATH_PLUS",
-        "MathMinus": "MATH_MINUS",
-        "MathMultiply": "MATH_MULTIPLY",
-        "MathDivide": "MATH_DIVIDE",
-        "MathEqual": "MATH_EQUAL",
-        "MathNotEqual": "MATH_NOT_EQUAL",
-        # Brackets
-        "BracketLeft": "LEFT_BRACKET",
-        "BracketRight": "RIGHT_BRACKET",
-        "BraceLeft": "LEFT_BRACE",
-        "BraceRight": "RIGHT_BRACE",
-        "BracketPair": "BRACKET_PAIR",
-        "BracePair": "BRACE_PAIR",
-        # Ribbons and banners
-        "Ribbon": "RIBBON",
-        "Ribbon2": "RIBBON_2",
-        # Rounded rectangles variants
-        "SnipRoundRect": "SNIP_ROUND_RECTANGLE",
-        "Snip2SameRect": "SNIP_2_SAME_RECTANGLE",
-        "Snip2DiagRect": "SNIP_2_DIAGONAL_RECTANGLE",
-        "Round1Rect": "ROUND_1_RECTANGLE",
-        "Round2SameRect": "ROUND_2_SAME_RECTANGLE",
-        "Round2DiagRect": "ROUND_2_DIAGONAL_RECTANGLE",
-        # Custom/unknown
-        "Custom": "CUSTOM",
-        "Shape": "SHAPE",
-    }
+    """Convert an SML tag to its canonical Google Slides element type."""
     try:
-        return tag_map[tag]
+        return TAG_TO_TYPE[tag]
     except KeyError as exc:
         raise ValueError(f"Unsupported SML element tag '{tag}'") from exc
-
 
 def _create_shape_request(
     object_id: str,
@@ -1180,133 +927,7 @@ def _create_shape_request(
     # If shape_type is already a valid Google shape type (uppercase with underscores),
     # use it directly. Otherwise, fall back to RECTANGLE.
     # Valid Google shape types are uppercase like RECTANGLE, ROUND_RECTANGLE, etc.
-    valid_google_types = {
-        "RECTANGLE",
-        "ELLIPSE",
-        "ROUND_RECTANGLE",
-        "TEXT_BOX",
-        "TRIANGLE",
-        "RIGHT_TRIANGLE",
-        "PARALLELOGRAM",
-        "TRAPEZOID",
-        "PENTAGON",
-        "HEXAGON",
-        "HEPTAGON",
-        "OCTAGON",
-        "DECAGON",
-        "DODECAGON",
-        "STAR_4",
-        "STAR_5",
-        "STAR_6",
-        "STAR_8",
-        "STAR_10",
-        "STAR_12",
-        "STAR_16",
-        "STAR_24",
-        "STAR_32",
-        "DIAMOND",
-        "CHEVRON",
-        "HOME_PLATE",
-        "PLUS",
-        "DONUT",
-        "PIE",
-        "ARC",
-        "CHORD",
-        "BLOCK_ARC",
-        "FRAME",
-        "HALF_FRAME",
-        "CORNER",
-        "DIAGONAL_STRIPE",
-        "L_SHAPE",
-        "CAN",
-        "CUBE",
-        "BEVEL",
-        "FOLDED_CORNER",
-        "SMILEY_FACE",
-        "HEART",
-        "LIGHTNING_BOLT",
-        "SUN",
-        "MOON",
-        "CLOUD",
-        "PLAQUE",
-        "ARROW",
-        "LEFT_ARROW",
-        "RIGHT_ARROW",
-        "UP_ARROW",
-        "DOWN_ARROW",
-        "LEFT_RIGHT_ARROW",
-        "UP_DOWN_ARROW",
-        "QUAD_ARROW",
-        "LEFT_RIGHT_UP_ARROW",
-        "BENT_ARROW",
-        "U_TURN_ARROW",
-        "CURVED_LEFT_ARROW",
-        "CURVED_RIGHT_ARROW",
-        "CURVED_UP_ARROW",
-        "CURVED_DOWN_ARROW",
-        "STRIPED_RIGHT_ARROW",
-        "NOTCHED_RIGHT_ARROW",
-        "PENTAGON_ARROW",
-        "CHEVRON_ARROW",
-        "CIRCULAR_ARROW",
-        "WEDGE_RECTANGLE_CALLOUT",
-        "WEDGE_ROUND_RECTANGLE_CALLOUT",
-        "WEDGE_ELLIPSE_CALLOUT",
-        "CLOUD_CALLOUT",
-        "FLOW_CHART_PROCESS",
-        "FLOW_CHART_DECISION",
-        "FLOW_CHART_INPUT_OUTPUT",
-        "FLOW_CHART_PREDEFINED_PROCESS",
-        "FLOW_CHART_INTERNAL_STORAGE",
-        "FLOW_CHART_DOCUMENT",
-        "FLOW_CHART_MULTIDOCUMENT",
-        "FLOW_CHART_TERMINATOR",
-        "FLOW_CHART_PREPARATION",
-        "FLOW_CHART_MANUAL_INPUT",
-        "FLOW_CHART_MANUAL_OPERATION",
-        "FLOW_CHART_CONNECTOR",
-        "FLOW_CHART_PUNCHED_CARD",
-        "FLOW_CHART_PUNCHED_TAPE",
-        "FLOW_CHART_SUMMING_JUNCTION",
-        "FLOW_CHART_OR",
-        "FLOW_CHART_COLLATE",
-        "FLOW_CHART_SORT",
-        "FLOW_CHART_EXTRACT",
-        "FLOW_CHART_MERGE",
-        "FLOW_CHART_ONLINE_STORAGE",
-        "FLOW_CHART_MAGNETIC_TAPE",
-        "FLOW_CHART_MAGNETIC_DISK",
-        "FLOW_CHART_MAGNETIC_DRUM",
-        "FLOW_CHART_DISPLAY",
-        "FLOW_CHART_DELAY",
-        "FLOW_CHART_ALTERNATE_PROCESS",
-        "FLOW_CHART_OFFPAGE_CONNECTOR",
-        "FLOW_CHART_DATA",
-        "MATH_PLUS",
-        "MATH_MINUS",
-        "MATH_MULTIPLY",
-        "MATH_DIVIDE",
-        "MATH_EQUAL",
-        "MATH_NOT_EQUAL",
-        "LEFT_BRACKET",
-        "RIGHT_BRACKET",
-        "LEFT_BRACE",
-        "RIGHT_BRACE",
-        "BRACKET_PAIR",
-        "BRACE_PAIR",
-        "RIBBON",
-        "RIBBON_2",
-        "SNIP_ROUND_RECTANGLE",
-        "SNIP_2_SAME_RECTANGLE",
-        "SNIP_2_DIAGONAL_RECTANGLE",
-        "ROUND_1_RECTANGLE",
-        "ROUND_2_SAME_RECTANGLE",
-        "ROUND_2_DIAGONAL_RECTANGLE",
-        "CUSTOM",
-        "SHAPE",
-    }
-
-    if shape_type not in valid_google_types:
+    if shape_type not in VALID_GOOGLE_TYPES:
         raise ValueError(f"Unsupported Google shape type '{shape_type}'")
     google_shape_type = shape_type
 
@@ -1434,8 +1055,8 @@ def _create_image_request(
 
     # Fallback: use standard base size approach (less accurate)
     base_size_emu = 3000024
-    scale_x = target_w_emu / base_size_emu if base_size_emu > 0 else 1
-    scale_y = target_h_emu / base_size_emu if base_size_emu > 0 else 1
+    scale_x = target_w_emu / base_size_emu
+    scale_y = target_h_emu / base_size_emu
 
     return {
         "createImage": {
@@ -1459,147 +1080,75 @@ def _create_image_request(
     }
 
 
+def _color_from_styles_json(value: str, *, alpha: float = 1.0) -> Color:
+    """Convert a persisted styles.json color without changing its disk format."""
+    _parse_color(value)  # Validate through the shared unit conversion path.
+    if value.startswith("@"):
+        return Color(theme=value[1:].lower().replace("_", "-"), alpha=alpha)
+    return Color(hex=value.lower(), alpha=alpha)
+
+
+def _fill_from_styles_json(data: dict[str, Any] | None) -> Fill | None:
+    if not data:
+        return None
+    fill_type = data.get("type")
+    if fill_type == "none":
+        return Fill(state=PropertyState.NOT_RENDERED)
+    if fill_type == "solid":
+        return Fill(
+            color=_color_from_styles_json(
+                str(data.get("color", "#000000")),
+                alpha=float(data.get("alpha", 1.0)),
+            )
+        )
+    raise ValueError(f"Unsupported styles.json fill type {fill_type!r}")
+
+
+def _stroke_from_styles_json(data: dict[str, Any] | None) -> Stroke | None:
+    if not data:
+        return None
+    if data.get("type") == "none":
+        return Stroke(state=PropertyState.NOT_RENDERED)
+    color_value = data.get("color")
+    dash_value = data.get("dashStyle")
+    return Stroke(
+        color=(
+            _color_from_styles_json(
+                str(color_value), alpha=float(data.get("alpha", 1.0))
+            )
+            if color_value
+            else None
+        ),
+        weight_pt=float(data["weight"]) if "weight" in data else None,
+        dash_style=DashStyle(str(dash_value)) if dash_value else None,
+    )
+
+
 def _apply_style_requests(
     object_id: str,
     style: dict[str, Any],
 ) -> list[dict[str, Any]]:
-    """Generate requests to apply styling to a shape."""
-    requests: list[dict[str, Any]] = []
-
-    # Apply fill
-    fill = style.get("fill")
-    if fill:
-        if fill.get("type") == "solid":
-            color = fill.get("color", "#000000")
-            alpha = fill.get("alpha", 1.0)
-            requests.append(_create_fill_request(object_id, color, alpha))
-        elif fill.get("type") == "none":
-            # Explicitly remove fill
-            requests.append(
-                {
-                    "updateShapeProperties": {
-                        "objectId": object_id,
-                        "shapeProperties": {
-                            "shapeBackgroundFill": {
-                                "propertyState": "NOT_RENDERED",
-                            },
-                        },
-                        "fields": "shapeBackgroundFill",
-                    }
-                }
-            )
-
-    # Apply stroke/outline
-    stroke = style.get("stroke")
-    if stroke:
-        if stroke.get("type") == "none":
-            # Explicitly remove outline
-            requests.append(
-                {
-                    "updateShapeProperties": {
-                        "objectId": object_id,
-                        "shapeProperties": {
-                            "outline": {
-                                "propertyState": "NOT_RENDERED",
-                            },
-                        },
-                        "fields": "outline",
-                    }
-                }
-            )
-        elif stroke.get("type") == "solid" or stroke.get("color"):
-            requests.append(_create_outline_request(object_id, stroke))
-
-    # Apply autofit and contentAlignment settings
-    shape_props: dict[str, Any] = {}
-    fields: list[str] = []
-
-    # Note: autofit is read-only in Google Slides API (cannot be updated via API)
-    # We only extract it for informational purposes but don't try to set it
-
-    # Content alignment (vertical text alignment) - this IS writable
+    """Apply persisted shape styles through the typed classes.py pipeline."""
     content_alignment = style.get("contentAlignment")
-    if content_alignment:
-        shape_props["contentAlignment"] = content_alignment
-        fields.append("contentAlignment")
-
-    # Apply shape properties if any
-    if fields:
-        requests.append(
-            {
-                "updateShapeProperties": {
-                    "objectId": object_id,
-                    "shapeProperties": shape_props,
-                    "fields": ",".join(fields),
-                }
-            }
-        )
-
-    return requests
+    typed_styles = ElementStyles(
+        fill=_fill_from_styles_json(style.get("fill")),
+        stroke=_stroke_from_styles_json(style.get("stroke")),
+        content_alignment=(
+            ContentAlignment(str(content_alignment)) if content_alignment else None
+        ),
+    )
+    return _create_class_shape_style_requests(object_id, typed_styles)
 
 
 def _apply_line_style_requests(
     object_id: str,
     style: dict[str, Any],
 ) -> list[dict[str, Any]]:
-    """Generate requests to apply styling to a line."""
-    requests: list[dict[str, Any]] = []
-
-    stroke = style.get("stroke")
-    if stroke:
-        line_properties: dict[str, Any] = {}
-        fields: list[str] = []
-        if stroke.get("type") == "none":
-            line_properties["lineFill"] = {
-                "solidFill": {"color": {"rgbColor": {}}, "alpha": 0.0}
-            }
-            fields.append("lineFill.solidFill")
-        elif "color" in stroke:
-            line_properties["lineFill"] = {
-                "solidFill": {
-                    "color": _parse_color(stroke["color"]),
-                    "alpha": stroke.get("alpha", 1.0),
-                }
-            }
-            fields.append("lineFill.solidFill")
-        if "weight" in stroke:
-            line_properties["weight"] = {
-                "magnitude": pt_to_emu(stroke["weight"]),
-                "unit": "EMU",
-            }
-            fields.append("weight")
-        if "dashStyle" in stroke:
-            line_properties["dashStyle"] = stroke["dashStyle"]
-            fields.append("dashStyle")
-        if fields:
-            requests.append(
-                {
-                    "updateLineProperties": {
-                        "objectId": object_id,
-                        "lineProperties": line_properties,
-                        "fields": ",".join(fields),
-                    }
-                }
-            )
-
-    return requests
-
-
-def _apply_image_style_requests(
-    _object_id: str,
-    _style: dict[str, Any],
-) -> list[dict[str, Any]]:
-    """Generate requests to apply styling to an image.
-
-    Note: Google Slides API has limited support for image properties.
-    Most properties (transparency, brightness, contrast) are read-only
-    and can only be set through the UI, not the API.
-
-    Only outline properties can be updated via UpdateImagePropertiesRequest.
-    """
-    # Currently no image properties can be updated via API
-    # Transparency, brightness, contrast are all read-only
-    return []
+    """Apply persisted line styles through the typed classes.py pipeline."""
+    request = _create_class_line_style_request(
+        object_id, _stroke_from_styles_json(style.get("stroke"))
+    )
+    return [request] if request is not None else []
 
 
 def _apply_text_style_requests(
@@ -1673,94 +1222,28 @@ def _apply_text_style_requests(
 def _copied_text_style_to_api(
     run_style: dict[str, Any],
 ) -> tuple[dict[str, Any], list[str]]:
-    """Convert one styles.json run to an API TextStyle and field mask."""
-    text_style: dict[str, Any] = {}
-    fields: list[str] = []
-    font_family = run_style.get("fontFamily")
-    font_weight = run_style.get("fontWeight")
-    if font_family and font_weight is not None:
-        text_style["weightedFontFamily"] = {
-            "fontFamily": font_family,
-            "weight": font_weight,
-        }
-        fields.append("weightedFontFamily")
-    elif font_family:
-        text_style["fontFamily"] = font_family
-        fields.append("fontFamily")
-    font_size = run_style.get("fontSize")
-    if font_size is not None:
-        text_style["fontSize"] = {"magnitude": font_size, "unit": "PT"}
-        fields.append("fontSize")
-    for source, target in (
-        ("bold", "bold"),
-        ("italic", "italic"),
-        ("underline", "underline"),
-        ("strikethrough", "strikethrough"),
-        ("smallCaps", "smallCaps"),
-        ("baselineOffset", "baselineOffset"),
-    ):
-        if source in run_style:
-            text_style[target] = run_style[source]
-            fields.append(target)
+    """Convert one styles.json run through the typed TextStyle pipeline."""
     color = run_style.get("color")
-    if color:
-        text_style["foregroundColor"] = {"opaqueColor": _parse_color(color)}
-        fields.append("foregroundColor")
     background = run_style.get("backgroundColor")
-    if background:
-        text_style["backgroundColor"] = {"opaqueColor": _parse_color(background)}
-        fields.append("backgroundColor")
-    return text_style, fields
-
-
-def _create_fill_request(
-    object_id: str,
-    color: str,
-    alpha: float,
-) -> dict[str, Any]:
-    """Create updateShapeProperties request for fill."""
-    return {
-        "updateShapeProperties": {
-            "objectId": object_id,
-            "shapeProperties": {
-                "shapeBackgroundFill": {
-                    "solidFill": {
-                        "color": _parse_color(color),
-                        "alpha": alpha,
-                    },
-                },
-            },
-            "fields": "shapeBackgroundFill",
-        }
-    }
-
-
-def _create_outline_request(
-    object_id: str,
-    stroke: dict[str, Any],
-) -> dict[str, Any]:
-    """Create updateShapeProperties request for outline."""
-    color = stroke.get("color", "#000000")
-    weight = stroke.get("weight", 1)
-    dash_style = stroke.get("dashStyle", "SOLID")
-
-    return {
-        "updateShapeProperties": {
-            "objectId": object_id,
-            "shapeProperties": {
-                "outline": {
-                    "outlineFill": {
-                        "solidFill": {
-                            "color": _parse_color(color),
-                        },
-                    },
-                    "weight": {"magnitude": pt_to_emu(weight), "unit": "EMU"},
-                    "dashStyle": dash_style,
-                },
-            },
-            "fields": "outline",
-        }
-    }
+    typed = TextStyle(
+        bold=run_style.get("bold"),
+        italic=run_style.get("italic"),
+        underline=run_style.get("underline"),
+        strikethrough=run_style.get("strikethrough"),
+        small_caps=run_style.get("smallCaps"),
+        font_family=run_style.get("fontFamily"),
+        font_size_pt=run_style.get("fontSize"),
+        font_weight=run_style.get("fontWeight"),
+        foreground_color=(
+            _color_from_styles_json(str(color)) if color else None
+        ),
+        background_color=(
+            _color_from_styles_json(str(background)) if background else None
+        ),
+        link=run_style.get("link"),
+        baseline_offset=run_style.get("baselineOffset"),
+    )
+    return _class_text_style_to_api(typed)
 
 
 def _create_class_style_requests(
@@ -1994,20 +1477,19 @@ def _class_text_style_to_api(
         style["baselineOffset"] = text_style.baseline_offset
         fields.append("baselineOffset")
 
-    if text_style.font_family:
-        style["fontFamily"] = text_style.font_family
-        fields.append("fontFamily")
-
-    if text_style.font_size_pt:
+    if text_style.font_size_pt is not None:
         style["fontSize"] = {"magnitude": text_style.font_size_pt, "unit": "PT"}
         fields.append("fontSize")
 
-    if text_style.font_weight:
+    if text_style.font_weight is not None:
         weighted: dict[str, Any] = {"weight": text_style.font_weight}
         if text_style.font_family:
             weighted["fontFamily"] = text_style.font_family
         style["weightedFontFamily"] = weighted
         fields.append("weightedFontFamily")
+    elif text_style.font_family:
+        style["fontFamily"] = text_style.font_family
+        fields.append("fontFamily")
 
     if text_style.foreground_color:
         style["foregroundColor"] = {
@@ -2412,8 +1894,7 @@ def _create_element_requests(
     """Create requests for a new element."""
     requests: list[dict[str, Any]] = []
 
-    # Determine shape type from metadata
-    tag = change.metadata.get("tag", "Rect")
+    tag = change.tag or "Rect"
     position = change.new_position or {"x": 0, "y": 0, "w": 100, "h": 100}
 
     shape_type = _tag_to_type(tag)
@@ -2488,22 +1969,11 @@ def _create_element_requests(
 
 
 def _parse_color(color: str) -> dict[str, Any]:
-    """Parse color string to Google Slides API format.
-
-    For updateShapeProperties, the color format is:
-    - For theme colors: {"themeColor": "DARK1"}
-    - For RGB colors: {"rgbColor": {"red": 0.5, "green": 0.5, "blue": 0.5}}
-    """
+    """Parse a styles.json color through Color and units.hex_to_rgb."""
     if color.startswith("@"):
-        # Theme color reference
-        return {"themeColor": color[1:]}
+        return Color(theme=color[1:].lower().replace("_", "-")).to_api()
 
-    # Hex color
-    hex_color = color.lstrip("#")
-    if len(hex_color) == 6:
-        r = int(hex_color[0:2], 16) / 255
-        g = int(hex_color[2:4], 16) / 255
-        b = int(hex_color[4:6], 16) / 255
-        return {"rgbColor": {"red": r, "green": g, "blue": b}}
-
-    return {"rgbColor": {"red": 0, "green": 0, "blue": 0}}
+    # Call the unit helper here so malformed input raises ValueError instead of
+    # being silently converted to black. Color.to_api uses the same helper.
+    hex_to_rgb(color)
+    return Color(hex=color.lower()).to_api()

@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 
+GOOGLE_OBJECT_ID_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_-]{4,49}$")
 _AUTHORED_ID_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_-]*$")
 _GOOGLE_GENERATED_ID_RES = (
     re.compile(r"^[segml]\d+$"),
@@ -32,6 +33,11 @@ def authored_clean_id(google_id: str) -> str | None:
     if any(pattern.match(candidate) for pattern in _GOOGLE_GENERATED_ID_RES):
         return None
     return candidate
+
+
+def is_valid_google_object_id(value: str) -> bool:
+    """Return whether a value satisfies the Google Slides create-ID grammar."""
+    return GOOGLE_OBJECT_ID_RE.fullmatch(value) is not None
 
 
 @dataclass

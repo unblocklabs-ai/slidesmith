@@ -31,6 +31,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Protocol
 
+from extraslide.json_utils import read_json
+
 # Try to use certifi for SSL certificates (common on macOS)
 try:
     import certifi
@@ -50,6 +52,7 @@ except ImportError:
 _KEYRING_SERVICE = "extrasuite"
 _DEFAULT_PROFILE = "default"
 _GOOGLE_SCOPE_PREFIX = "https://www.googleapis.com/auth/"
+_GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 
 # Client-side caps on returned token lifetimes
 _SA_TOKEN_CAP_SECONDS = 3600  # 60 min for service account tokens
@@ -96,6 +99,33 @@ Quick start options:
   Already use gogcli? Run: gog auth credentials <path/to/client_secret.json>
   Team deployment?    Run: slidesmith auth login   (requires gateway server)\
 """
+
+
+def _write_secure_json(path: Path, data: dict[str, Any]) -> None:
+    """Atomically replace a JSON file with mode 0600 from creation onward."""
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    path.parent.chmod(stat.S_IRWXU)
+    temp_path = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    content = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
+    fd = os.open(
+        temp_path,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+        stat.S_IRUSR | stat.S_IWUSR,
+    )
+    try:
+        try:
+            handle = os.fdopen(fd, "w", encoding="utf-8")
+        except Exception:
+            with contextlib.suppress(OSError):
+                os.close(fd)
+            raise
+        with handle:
+            handle.write(content)
+        os.replace(temp_path, path)
+    except Exception:
+        with contextlib.suppress(OSError):
+            temp_path.unlink()
+        raise
 
 
 @dataclass
@@ -161,8 +191,8 @@ def _find_gws_client_credentials() -> OAuthClientCredentials | None:
 
     for path in candidates:
         try:
-            data = json.loads(path.read_text())
-        except (OSError, json.JSONDecodeError):
+            data = read_json(path, missing_ok=False)
+        except (OSError, ValueError):
             continue
         parsed = _parse_oauth_client_json(data)
         if parsed:
@@ -193,8 +223,8 @@ def _find_gogcli_client_credentials() -> OAuthClientCredentials | None:
 
     path = base / "gogcli" / "credentials.json"
     try:
-        data = json.loads(path.read_text())
-    except (OSError, json.JSONDecodeError):
+        data = read_json(path, missing_ok=False)
+    except (OSError, ValueError):
         return None
 
     parsed = _parse_oauth_client_json(data)
@@ -208,6 +238,20 @@ def _find_gogcli_client_credentials() -> OAuthClientCredentials | None:
     return None
 
 
+def _post_form_json(url: str, fields: dict[str, str]) -> dict[str, Any]:
+    """POST URL-encoded form fields and decode one JSON object response."""
+    body = urllib.parse.urlencode(fields).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=body,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=30, context=SSL_CONTEXT) as response:
+        result: dict[str, Any] = json.loads(response.read().decode("utf-8"))
+        return result
+
+
 def _exchange_refresh_token(
     client_id: str, client_secret: str, refresh_token: str
 ) -> tuple[str, float]:
@@ -216,22 +260,15 @@ def _exchange_refresh_token(
     Returns (access_token, expires_at_unix_timestamp).
     Raises on HTTP error (e.g. 400 if the refresh token has been revoked).
     """
-    body = urllib.parse.urlencode(
+    result = _post_form_json(
+        _GOOGLE_TOKEN_URL,
         {
             "client_id": client_id,
             "client_secret": client_secret,
             "refresh_token": refresh_token,
             "grant_type": "refresh_token",
-        }
-    ).encode("utf-8")
-    req = urllib.request.Request(
-        "https://oauth2.googleapis.com/token",
-        data=body,
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
-        method="POST",
+        },
     )
-    with urllib.request.urlopen(req, timeout=30, context=SSL_CONTEXT) as response:
-        result = json.loads(response.read().decode("utf-8"))
     expires_at = time.time() + int(result.get("expires_in", 3600))
     return result["access_token"], expires_at
 
@@ -252,44 +289,6 @@ class Credential:
     expires_at: float  # Unix timestamp; 0 if non-expiring
     scopes: list[str]  # granted OAuth scope URLs (empty for SA tokens)
     metadata: dict[str, str]  # provider-specific extras
-
-    @property
-    def service_account_email(self) -> str:
-        return self.metadata.get("service_account_email", "")
-
-    def is_valid(self, buffer_seconds: int = 60) -> bool:
-        """Check if credential is still valid with a safety buffer."""
-        if self.expires_at == 0:
-            return True
-        return time.time() < self.expires_at - buffer_seconds
-
-    def expires_in_seconds(self) -> int:
-        """Return seconds until credential expires (0 if non-expiring)."""
-        if self.expires_at == 0:
-            return 0
-        return max(0, int(self.expires_at - time.time()))
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "provider": self.provider,
-            "kind": self.kind,
-            "token": self.token,
-            "expires_at": self.expires_at,
-            "scopes": self.scopes,
-            "metadata": self.metadata,
-        }
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> Credential:
-        return cls(
-            provider=data["provider"],
-            kind=data["kind"],
-            token=data["token"],
-            expires_at=data["expires_at"],
-            scopes=data.get("scopes", []),
-            metadata=data.get("metadata", {}),
-        )
-
 
 def _parse_first_google_credential(
     response: dict[str, Any], cmd_type: str
@@ -423,10 +422,8 @@ class FileSessionStore:
 
     def _load_profiles(self) -> dict[str, dict[str, Any]]:
         try:
-            data = json.loads(self.path.read_text(encoding="utf-8"))
-        except FileNotFoundError:
-            return {}
-        except (OSError, json.JSONDecodeError):
+            data = read_json(self.path, missing_ok=True)
+        except (OSError, ValueError):
             return {}
         if not isinstance(data, dict):
             return {}
@@ -456,19 +453,7 @@ class FileSessionStore:
     def save(self, profile_name: str, token: SessionToken) -> None:
         profiles = self._load_profiles()
         profiles[profile_name] = token.to_dict()
-        self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        payload = json.dumps({"profiles": profiles}, indent=2, ensure_ascii=False)
-        fd = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        try:
-            handle = os.fdopen(fd, "w", encoding="utf-8")
-        except Exception:
-            with contextlib.suppress(OSError):
-                os.close(fd)
-            raise
-        with handle:
-            handle.write(payload)
-            handle.write("\n")
-        os.chmod(self.path, stat.S_IRUSR | stat.S_IWUSR)
+        _write_secure_json(self.path, {"profiles": profiles})
 
     def delete(self, profile_name: str) -> None:
         profiles = self._load_profiles()
@@ -476,21 +461,7 @@ class FileSessionStore:
             return
         profiles.pop(profile_name)
         if profiles:
-            self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-            payload = json.dumps(
-                {"profiles": profiles}, indent=2, ensure_ascii=False
-            )
-            fd = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-            try:
-                handle = os.fdopen(fd, "w", encoding="utf-8")
-            except Exception:
-                with contextlib.suppress(OSError):
-                    os.close(fd)
-                raise
-            with handle:
-                handle.write(payload)
-                handle.write("\n")
-            os.chmod(self.path, stat.S_IRUSR | stat.S_IWUSR)
+            _write_secure_json(self.path, {"profiles": profiles})
         else:
             self.path.unlink(missing_ok=True)
 
@@ -610,23 +581,17 @@ def auth_doctor_lines() -> list[str]:
     else:
         credential_line = "OAuth client credentials: ABSENT"
         profile_name = _DEFAULT_PROFILE
-        profiles_path = Path.home() / ".config" / "extrasuite" / "profiles.json"
-        try:
-            profiles = json.loads(profiles_path.read_text(encoding="utf-8"))
-            profile_name = profiles.get("active") or profile_name
-        except (OSError, json.JSONDecodeError, AttributeError):
-            pass
 
     gateway_source = "environment variable EXTRASUITE_SERVER_URL"
     if not server_url:
         gateway_path = Path.home() / ".config" / "extrasuite" / "gateway.json"
         try:
-            gateway_data = json.loads(gateway_path.read_text(encoding="utf-8"))
+            gateway_data = read_json(gateway_path, missing_ok=True)
             candidate = gateway_data.get("EXTRASUITE_SERVER_URL", "")
             if isinstance(candidate, str):
                 server_url = candidate.strip()
                 gateway_source = str(gateway_path)
-        except (OSError, json.JSONDecodeError, AttributeError):
+        except (OSError, ValueError, AttributeError):
             pass
 
     lines = [credential_line]
@@ -663,8 +628,8 @@ def auth_doctor_lines() -> list[str]:
         lines.append(f"File store: ABSENT ({file_store.path})")
     else:
         try:
-            data = json.loads(file_store.path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
+            data = read_json(file_store.path, missing_ok=False)
+        except (OSError, ValueError) as exc:
             file_status = "invalid"
             lines.append(f"File store: INVALID ({file_store.path}); error: {exc!r}")
         else:
@@ -726,9 +691,6 @@ class CredentialsManager:
     SecretService, Windows Credential Locker) and a 0600 Slidesmith file.
     Access tokens and OAuth client secrets are never written there.
 
-    Profile metadata (name → email, active pointer) is kept in
-    ``~/.config/extrasuite/profiles.json`` (0600). No tokens in that file.
-
     Precedence order for configuration:
     1. Constructor parameters
     2. Environment variables (EXTRASUITE_SERVER_URL)
@@ -742,8 +704,6 @@ class CredentialsManager:
         gateway_config_path: Path to gateway.json. Defaults to
             ~/.config/extrasuite/gateway.json.  If explicitly set and file
             doesn't exist, raises FileNotFoundError.
-        profile: Profile name to use.  Defaults to the active profile in
-            profiles.json, or "default" if no active profile is set.
     """
 
     GATEWAY_CONFIG_PATH = Path.home() / ".config" / "extrasuite" / "gateway.json"
@@ -755,16 +715,12 @@ class CredentialsManager:
         service_account_path: str | Path | None = None,
         gateway_config_path: str | Path | None = None,
         headless: bool | None = None,
-        profile: str | None = None,
         session_store: SessionStore | None = None,
     ) -> None:
         # Store explicit gateway path (used by _load_gateway_config)
         self._gateway_config_path = (
             Path(gateway_config_path) if gateway_config_path else None
         )
-
-        # Profile name override (None = use active from profiles.json)
-        self._profile_name = profile
 
         # Headless mode: no browser, print URL and prompt for code on stderr
         # Precedence: constructor param > EXTRASUITE_HEADLESS env var
@@ -847,20 +803,11 @@ class CredentialsManager:
         # Migrate legacy plain-text files from pre-keyring versions
         self._migrate_legacy_files()
 
-    @property
-    def auth_mode(self) -> str:
-        """Return the active authentication mode.
-
-        One of: "extrasuite", "service_account", "bare_token", "oauth_client".
-        """
-        return self._auth_mode
-
     def get_credential(
         self,
         *,
         command: dict[str, Any],
         reason: str,
-        force_refresh: bool = False,
     ) -> Credential:
         """Exchange a session token for the credential(s) required by *command*.
 
@@ -882,11 +829,8 @@ class CredentialsManager:
         Args:
             command: Dict representation of a typed Command (must include ``type``).
             reason: Agent-supplied user intent (logged for auditing).
-            force_refresh: Accepted for API compatibility; has no effect since
-                access tokens are no longer cached.
-
         Returns:
-            A Credential object with ``token``, ``kind``, ``service_account_email``, etc.
+            A Credential object with the issued token, kind, scopes, and metadata.
         """
         cmd_type = command.get("type", "")
 
@@ -914,35 +858,6 @@ class CredentialsManager:
             raise RuntimeError(f"Unknown auth mode: {self._auth_mode!r}")
 
     # =========================================================================
-    # Profile helpers
-    # =========================================================================
-
-    def _profiles_path(self) -> Path:
-        return Path.home() / ".config" / "extrasuite" / "profiles.json"
-
-    def _load_profiles(self) -> dict[str, Any]:
-        """Read profiles.json; return empty structure if absent or invalid."""
-        path = self._profiles_path()
-        if not path.exists():
-            return {"profiles": {}, "active": None}
-        try:
-            return json.loads(path.read_text())
-        except (json.JSONDecodeError, OSError):
-            return {"profiles": {}, "active": None}
-
-    def _save_profiles(self, data: dict[str, Any]) -> None:
-        """Write profiles.json with 0600 permissions."""
-        self._write_secure_json(self._profiles_path(), data)
-
-    def _resolve_profile(self) -> str:
-        """Return the profile name to use for this operation."""
-        if self._profile_name:
-            return self._profile_name
-        data = self._load_profiles()
-        active = data.get("active")
-        return active if active else _DEFAULT_PROFILE
-
-    # =========================================================================
     # Session Token Methods
     # =========================================================================
 
@@ -950,7 +865,7 @@ class CredentialsManager:
         self, profile_name: str | None = None
     ) -> SessionToken | None:
         """Load a session token and best-effort mirror it across stores."""
-        name = profile_name if profile_name is not None else self._resolve_profile()
+        name = profile_name or _DEFAULT_PROFILE
         token = self._session_store.load(name)
         if token is not None:
             self._mirror_loaded_session_token(name, token)
@@ -1006,9 +921,6 @@ class CredentialsManager:
                 )
             )
             mirror.save(profile_name, token)
-        data = self._load_profiles()
-        data.setdefault("profiles", {})[profile_name] = token.email
-        self._save_profiles(data)
 
     def _revoke_server_side(self, raw_token: str) -> None:
         """Revoke a session token on the server.  Best-effort; logs warning on failure."""
@@ -1063,7 +975,7 @@ class CredentialsManager:
     # Public auth commands
     # =========================================================================
 
-    def login(self, *, force: bool = False, profile: str | None = None) -> SessionToken:
+    def login(self, *, force: bool = False) -> SessionToken:
         """Log in and obtain a 30-day session token.
 
         If a valid session already exists and force=False, returns it immediately.
@@ -1078,9 +990,6 @@ class CredentialsManager:
 
         Args:
             force: If True, always create a new session even if one exists.
-            profile: Profile name to log in to.  Defaults to the active profile,
-                or "default" if none is set.
-
         Returns:
             A valid SessionToken.
         """
@@ -1109,7 +1018,7 @@ class CredentialsManager:
                 f"browser login is not available for auth mode {self._auth_mode!r}"
             )
 
-        profile_name = profile if profile is not None else self._resolve_profile()
+        profile_name = _DEFAULT_PROFILE
         if force:
             existing = self._load_session_token(profile_name)
             if existing:
@@ -1118,91 +1027,7 @@ class CredentialsManager:
         session = self._get_or_create_session_token(
             force=force, profile_name=profile_name
         )
-        # Set this profile as active
-        data = self._load_profiles()
-        data["active"] = profile_name
-        self._save_profiles(data)
         return session
-
-    def logout(self, *, profile: str | None = None) -> None:
-        """Revoke the session server-side and remove it from the OS keyring.
-
-        In oauth_client mode, clears the cached refresh token for the active
-        gws/gogcli source (ignores the profile argument — there is only one
-        token per source).
-
-        Args:
-            profile: Profile to log out.  Defaults to the active profile.
-                     Ignored in oauth_client mode.
-        """
-        if self._auth_mode == "oauth_client":
-            assert self._oauth_client_creds is not None
-            self._delete_session_token(f"{self._oauth_client_creds.source}-default")
-            return
-
-        profile_name = profile if profile is not None else self._resolve_profile()
-        session = self._load_session_token(profile_name)
-        if session:
-            self._revoke_server_side(session.raw_token)
-        self._delete_session_token(profile_name)
-        data = self._load_profiles()
-        data.get("profiles", {}).pop(profile_name, None)
-        if data.get("active") == profile_name:
-            data["active"] = None
-        self._save_profiles(data)
-
-    def activate(self, profile_name: str) -> None:
-        """Set the active profile (no network call).
-
-        Args:
-            profile_name: Name of an existing profile to activate.
-
-        Raises:
-            ValueError: If the profile is not found in profiles.json.
-        """
-        data = self._load_profiles()
-        if profile_name not in data.get("profiles", {}):
-            raise ValueError(
-                f"Profile '{profile_name}' not found. "
-                "Run: slidesmith auth login"
-            )
-        data["active"] = profile_name
-        self._save_profiles(data)
-
-    def status(self) -> dict[str, Any]:
-        """Return current authentication status.
-
-        Returns:
-            Dict with keys:
-            - profiles: mapping of profile name → {email, active, expires_at,
-              days_remaining} or {email, active=False, expired=True}
-            - active: name of the active profile, or None
-        """
-        if self._auth_mode != "extrasuite":
-            return {"profiles": {}, "active": None, "auth_mode": self._auth_mode}
-
-        data = self._load_profiles()
-        profiles: dict[str, Any] = data.get("profiles", {})
-        active = data.get("active")
-
-        result: dict[str, Any] = {"profiles": {}, "active": active}
-        for name, email in profiles.items():
-            session = self._load_session_token(name)
-            if session:
-                remaining = int(session.expires_at - time.time())
-                result["profiles"][name] = {
-                    "email": email,
-                    "active": True,
-                    "expires_at": session.expires_at,
-                    "days_remaining": remaining // 86400,
-                }
-            else:
-                result["profiles"][name] = {
-                    "email": email,
-                    "active": False,
-                    "expired": True,
-                }
-        return result
 
     # =========================================================================
     # Credential exchange (no disk caching)
@@ -1302,25 +1127,18 @@ class CredentialsManager:
         )
         redirect_uri = f"http://127.0.0.1:{port}"
 
-        body = urllib.parse.urlencode(
-            {
+        try:
+            result = _post_form_json(
+                _GOOGLE_TOKEN_URL,
+                {
                 "client_id": client_id,
                 "client_secret": client_secret,
                 "code": code,
                 "code_verifier": code_verifier,
                 "grant_type": "authorization_code",
                 "redirect_uri": redirect_uri,
-            }
-        ).encode("utf-8")
-        req = urllib.request.Request(
-            "https://oauth2.googleapis.com/token",
-            data=body,
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=30, context=SSL_CONTEXT) as resp:
-                result = json.loads(resp.read().decode("utf-8"))
+                },
+            )
         except urllib.error.HTTPError as e:
             error_body = e.read().decode("utf-8") if e.fp else str(e)
             raise Exception(f"Google token exchange failed: {error_body}") from e
@@ -1371,7 +1189,7 @@ class CredentialsManager:
         self._save_session_token(
             SessionToken(
                 raw_token=refresh_token,
-                email="",  # not available from OAuth response; status() doesn't display oauth_client profiles
+                email="",  # Google token response does not include an email address.
                 expires_at=time.time() + 30 * 86400,
             ),
             profile,
@@ -1405,7 +1223,7 @@ class CredentialsManager:
         if not config_path.exists():
             return None
         try:
-            data = json.loads(config_path.read_text())
+            data = read_json(config_path, missing_ok=False)
 
             result: dict[str, str] = {}
 
@@ -1415,7 +1233,7 @@ class CredentialsManager:
                 result["server_base_url"] = server_url
 
             return result if result else None
-        except (json.JSONDecodeError, OSError):
+        except (ValueError, OSError):
             return None
 
     # =========================================================================
@@ -1443,10 +1261,9 @@ class CredentialsManager:
 
         Args:
             force: If True, always create a new session (skips cache check).
-            profile_name: Profile to load/store token for.  Defaults to
-                _resolve_profile().
+            profile_name: Internal session-store key; defaults to ``default``.
         """
-        name = profile_name if profile_name is not None else self._resolve_profile()
+        name = profile_name or _DEFAULT_PROFILE
         if not force:
             cached = self._load_session_token(name)
             if cached:
@@ -1708,15 +1525,6 @@ class CredentialsManager:
             raise Exception(f"Failed to connect to server: {e}") from e
 
     @staticmethod
-    def _find_free_port() -> int:
-        """Find an available port on 127.0.0.1."""
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.bind(("127.0.0.1", 0))
-            s.listen(1)
-            port: int = s.getsockname()[1]
-            return port
-
-    @staticmethod
     def _create_handler_class(
         result_holder: dict[str, Any],
         result_lock: threading.Lock,
@@ -1813,16 +1621,3 @@ class CredentialsManager:
                 self.wfile.write(content.encode())
 
         return CallbackHandler
-
-    def _write_secure_json(self, path: Path, data: dict[str, Any]) -> None:
-        """Write JSON atomically with 0600 permissions from the start (no chmod race)."""
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.parent.chmod(stat.S_IRWXU)
-        temp_path = path.with_suffix(".tmp")
-        content = json.dumps(data, indent=2).encode()
-        fd = os.open(str(temp_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        try:
-            os.write(fd, content)
-        finally:
-            os.close(fd)
-        temp_path.rename(path)

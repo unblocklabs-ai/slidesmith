@@ -34,15 +34,6 @@ class RenderNode:
     # Parent node (None for top-level elements)
     parent: RenderNode | None = None
 
-    # Pattern ID if this element matches a detected pattern
-    pattern_id: str | None = None
-
-    @property
-    def google_id(self) -> str:
-        """Get the Google object ID."""
-        object_id: str = self.element.get("objectId", "")
-        return object_id
-
     @property
     def element_type(self) -> str:
         """Get the element type (shape type, IMAGE, LINE, GROUP, etc.)."""
@@ -64,46 +55,11 @@ class RenderNode:
         return "UNKNOWN"
 
     @property
-    def is_group(self) -> bool:
-        """Check if this is a group element."""
-        return "elementGroup" in self.element
-
-    @property
     def has_text(self) -> bool:
         """Check if this element contains text."""
         if "shape" in self.element:
             return "text" in self.element["shape"]
         return False
-
-    def get_text_content(self) -> str | None:
-        """Extract text content from the element."""
-        if not self.has_text:
-            return None
-
-        shape = self.element.get("shape", {})
-        text = shape.get("text", {})
-        text_elements = text.get("textElements", [])
-
-        texts = []
-        for te in text_elements:
-            if "textRun" in te:
-                content = te["textRun"].get("content", "").strip()
-                if content:
-                    texts.append(content)
-
-        return " ".join(texts) if texts else None
-
-    @property
-    def depth(self) -> int:
-        """Compute depth of this subtree."""
-        if not self.children:
-            return 1
-        return 1 + max(child.depth for child in self.children)
-
-    @property
-    def node_count(self) -> int:
-        """Count total nodes in this subtree."""
-        return 1 + sum(child.node_count for child in self.children)
 
     def relative_bounds(self) -> BoundingBox:
         """Get bounds relative to parent.
@@ -118,7 +74,6 @@ class RenderNode:
 def build_render_tree(
     elements: list[dict[str, Any]],
     id_manager: Any | None = None,
-    containment_threshold: float = 0.7,
 ) -> list[RenderNode]:
     """Build render tree from flat element list.
 
@@ -128,8 +83,6 @@ def build_render_tree(
     Args:
         elements: List of pageElements from Google Slides API
         id_manager: Optional IDManager to look up clean IDs
-        containment_threshold: Fraction of area that must be inside for containment
-
     Returns:
         List of root nodes (top-level elements)
     """
@@ -138,9 +91,6 @@ def build_render_tree(
 
     # First, flatten any API groups and create nodes
     nodes = _create_nodes(elements, id_manager)
-
-    if not nodes:
-        return []
 
     # Sort by area descending (largest first = potential parents first)
     nodes.sort(key=lambda n: -n.bounds.area)
@@ -159,7 +109,7 @@ def build_render_tree(
             if potential_parent.bounds.area <= node.bounds.area:
                 continue
             if (
-                potential_parent.bounds.contains(node.bounds, containment_threshold)
+                potential_parent.bounds.contains(node.bounds, 0.7)
                 and potential_parent.bounds.area < best_area
             ):
                 best_parent = potential_parent
@@ -252,18 +202,3 @@ def _sort_children(nodes: list[RenderNode]) -> None:
         if node.children:
             node.children.sort(key=lambda n: (n.bounds.y, n.bounds.x))
             _sort_children(node.children)
-
-
-def flatten_tree(roots: list[RenderNode]) -> list[RenderNode]:
-    """Flatten render tree to list of all nodes (depth-first)."""
-    result: list[RenderNode] = []
-
-    def _collect(node: RenderNode) -> None:
-        result.append(node)
-        for child in node.children:
-            _collect(child)
-
-    for root in roots:
-        _collect(root)
-
-    return result

@@ -77,15 +77,10 @@ class BoundingBox:
             h=self.h,
         )
 
+    # Retained as a compatibility inverse for relative_to: the untouched donor
+    # vendor suite directly exercises this public geometry helper.
     def absolute_from(self, parent: BoundingBox) -> BoundingBox:
-        """Convert relative position to absolute given parent's position.
-
-        Args:
-            parent: The parent box to compute absolute position from
-
-        Returns:
-            New BoundingBox with absolute x, y
-        """
+        """Convert this relative box to absolute coordinates."""
         return BoundingBox(
             x=parent.x + self.x,
             y=parent.y + self.y,
@@ -147,11 +142,6 @@ class Transform:
                 + self.translate_y
             ),
         )
-
-    @classmethod
-    def identity(cls) -> Transform:
-        """Return the identity transform."""
-        return cls()
 
 
 def get_bounds(

@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import stat
+import sys
 import time
+import types
 import webbrowser
 from pathlib import Path
 from typing import Any
@@ -190,6 +192,81 @@ def test_keyring_failure_falls_back_once_to_file_store(
     stderr = capsys.readouterr().err
     assert stderr.count("using file session store") == 1
     assert "Unknown Error" in stderr
+
+
+def test_empty_keyring_falls_back_to_file_and_repairs_keyring(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    keyring = MemoryKeyring()
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("SLIDESMITH_TOKEN_STORE", raising=False)
+    monkeypatch.setattr(credentials, "_KEYRING_AVAILABLE", True)
+    monkeypatch.setattr(credentials, "_keyring", keyring)
+    manager = CredentialsManager(server_url="https://auth.example")
+    token = _token()
+    assert manager._file_session_store is not None
+    manager._file_session_store.save("default", token)
+
+    assert manager._load_session_token("default") == token
+    repaired = keyring.get_password("extrasuite", "default")
+    assert repaired is not None
+    assert SessionToken.from_dict(json.loads(repaired)) == token
+
+
+def test_service_account_requests_only_the_presentations_scope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, Any] = {}
+
+    class FakeCredentials:
+        token = "access-token"
+        expiry = None
+        service_account_email = "slides@example.com"
+
+        def refresh(self, _request: object) -> None:
+            pass
+
+    def fake_from_file(path: str, *, scopes: list[str]) -> FakeCredentials:
+        captured["path"] = path
+        captured["scopes"] = scopes
+        return FakeCredentials()
+
+    class FakeCredentialsFactory:
+        from_service_account_file = staticmethod(fake_from_file)
+
+    google = types.ModuleType("google")
+    auth = types.ModuleType("google.auth")
+    transport = types.ModuleType("google.auth.transport")
+    requests = types.ModuleType("google.auth.transport.requests")
+    requests.Request = object  # type: ignore[attr-defined]
+    oauth2 = types.ModuleType("google.oauth2")
+    service_account = types.ModuleType("google.oauth2.service_account")
+    service_account.Credentials = FakeCredentialsFactory  # type: ignore[attr-defined]
+    google.auth = auth  # type: ignore[attr-defined]
+    google.oauth2 = oauth2  # type: ignore[attr-defined]
+    auth.transport = transport  # type: ignore[attr-defined]
+    transport.requests = requests  # type: ignore[attr-defined]
+    oauth2.service_account = service_account  # type: ignore[attr-defined]
+    for name, module in {
+        "google": google,
+        "google.auth": auth,
+        "google.auth.transport": transport,
+        "google.auth.transport.requests": requests,
+        "google.oauth2": oauth2,
+        "google.oauth2.service_account": service_account,
+    }.items():
+        monkeypatch.setitem(sys.modules, name, module)
+
+    service_account_path = tmp_path / "service-account.json"
+    service_account_path.write_text("{}", encoding="utf-8")
+    manager = object.__new__(CredentialsManager)
+    manager._sa_path = service_account_path
+
+    manager._get_service_account_credential()
+
+    assert captured["scopes"] == [
+        "https://www.googleapis.com/auth/presentations"
+    ]
 
 
 def test_invalid_token_store_choice_is_rejected(

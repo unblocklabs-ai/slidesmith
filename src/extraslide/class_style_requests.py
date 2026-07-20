@@ -70,14 +70,14 @@ def _create_class_shape_style_requests(
 
     fill = styles.fill
     if fill:
-        if fill.state == PropertyState.NOT_RENDERED:
+        if fill.state in (PropertyState.INHERIT, PropertyState.NOT_RENDERED):
             requests.append(
                 {
                     "updateShapeProperties": {
                         "objectId": object_id,
                         "shapeProperties": {
                             "shapeBackgroundFill": {
-                                "propertyState": "NOT_RENDERED",
+                                "propertyState": fill.state.value,
                             },
                         },
                         "fields": "shapeBackgroundFill.propertyState",
@@ -129,7 +129,17 @@ def _create_class_outline_request(
             }
         }
     if stroke.state == PropertyState.INHERIT:
-        return None
+        return {
+            "updateShapeProperties": {
+                "objectId": object_id,
+                "shapeProperties": {
+                    "outline": {
+                        "propertyState": "INHERIT",
+                    },
+                },
+                "fields": "outline.propertyState",
+            }
+        }
 
     outline: dict[str, Any] = {}
     fields: list[str] = []

@@ -20,15 +20,22 @@ from extraslide.class_style_requests import (
     _create_class_shape_style_requests,
 )
 from extraslide.content_diff import Change
-from extraslide.content_parser import ElementStyles
+from extraslide.content_parser import ElementStyles, ParsedRun
 from extraslide.element_factories import (
     _create_image_request,
     _create_line_request,
+    _create_move_request,
     _create_shape_request,
     _parse_color,
     _tag_to_type,
 )
-from extraslide.text_requests import _create_text_insert_requests, _utf16_len
+from extraslide.text_requests import (
+    _create_run_style_requests,
+    _create_text_insert_requests,
+    _create_text_update_requests,
+    _utf16_len,
+)
+from extraslide.units import pt_to_emu
 
 
 def _create_copy_requests(
@@ -38,6 +45,7 @@ def _create_copy_requests(
     all_styles: dict[str, dict[str, Any]],
     reserved_ids: set[str],
     *,
+    source_google_id: str | None = None,
     allocate_object_id: Callable[[str, set[str]], str],
     unique_suffix: Callable[[], str],
 ) -> list[dict[str, Any]]:
@@ -84,12 +92,55 @@ def _create_copy_requests(
     )
     reserved_ids.add(new_object_id)
 
+    if _contains_auto_text(change.new_runs):
+        if source_google_id is None:
+            raise ValueError(
+                f"Cannot preserve autoText on copy '{change.source_id}': "
+                "source Google object ID is missing"
+            )
+        if (
+            change.source_slide_index is not None
+            and change.source_slide_index != change.slide_index
+        ):
+            raise ValueError(
+                f"Cannot preserve autoText on cross-slide copy '{change.source_id}': "
+                "the Slides API can only duplicate a page element on its source slide"
+            )
+        requests.append(
+            {
+                "duplicateObject": {
+                    "objectId": source_google_id,
+                    "objectIds": {source_google_id: new_object_id},
+                }
+            }
+        )
+        requests.append(
+            _create_move_request(
+                new_object_id,
+                position,
+                source_style,
+                change.old_position,
+            )
+        )
+        if change.new_text != change.old_text or change.new_runs != change.old_runs:
+            requests.extend(
+                _create_text_update_requests(
+                    new_object_id,
+                    change.new_text or [],
+                    change.new_runs,
+                    change.old_text,
+                    change.old_runs,
+                )
+            )
+        return requests
+
     _create_one_copied_element(
         object_id=new_object_id,
         elem_type=elem_type,
         source_id=change.source_id or change.target_id,
         position=position,
         text=change.new_text or [],
+        runs=change.new_runs or [],
         children=change.children or [],
         translation=translation,
         slide_google_id=slide_google_id,
@@ -111,6 +162,7 @@ def _create_one_copied_element(
     source_id: str,
     position: dict[str, float],
     text: list[str],
+    runs: list[list[ParsedRun]],
     children: list[dict[str, Any]],
     translation: dict[str, float],
     slide_google_id: str,
@@ -167,6 +219,11 @@ def _create_one_copied_element(
                 native_scale=style.get("nativeScale"),
             )
         )
+        image_properties_request = _create_image_properties_request(
+            object_id, style.get("imageProperties")
+        )
+        if image_properties_request:
+            requests.append(image_properties_request)
     else:
         requests.append(
             _create_shape_request(object_id, slide_google_id, elem_type, position)
@@ -174,10 +231,14 @@ def _create_one_copied_element(
         requests.extend(_apply_style_requests(object_id, style))
         if text:
             requests.extend(_create_text_insert_requests(object_id, text))
-            text_style_info = style.get("text", {})
-            if text_style_info:
+            if runs:
+                requests.extend(_create_run_style_requests(object_id, runs))
+            else:
+                text_style_info = style.get("text", {})
                 requests.extend(
                     _apply_text_style_requests(object_id, text, text_style_info)
+                    if text_style_info
+                    else []
                 )
 
     if children:
@@ -235,6 +296,7 @@ def _create_children_from_data(
         reserved_ids.add(child_obj_id)
         child_tag = child_data.get("tag", "Rect")
         child_text = child_data.get("text", [])
+        child_runs = child_data.get("runs", [])
         nested_children = child_data.get("children", [])
 
         # Get style for this child from all_styles
@@ -287,6 +349,7 @@ def _create_children_from_data(
             source_id=source_id,
             position=abs_position,
             text=child_text,
+            runs=child_runs,
             children=nested_children,
             translation=translation,
             slide_google_id=slide_google_id,
@@ -300,6 +363,75 @@ def _create_children_from_data(
         child_ids.append(child_obj_id)
 
     return child_ids
+
+
+def _contains_auto_text(runs: list[list[ParsedRun]] | None) -> bool:
+    """Return whether copied text contains a dynamic autoText run."""
+    return any(run.auto_text_type for paragraph in runs or [] for run in paragraph)
+
+
+def _create_image_properties_request(
+    object_id: str,
+    properties: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Replay persisted image properties after createImage."""
+    if not properties:
+        return None
+
+    image_properties: dict[str, Any] = {}
+    fields: list[str] = []
+    for name in ("transparency", "brightness", "contrast"):
+        if name in properties:
+            image_properties[name] = properties[name]
+            fields.append(name)
+
+    crop = properties.get("crop")
+    if crop is not None:
+        image_properties["cropProperties"] = {
+            "leftOffset": crop.get("left", 0),
+            "rightOffset": crop.get("right", 0),
+            "topOffset": crop.get("top", 0),
+            "bottomOffset": crop.get("bottom", 0),
+        }
+        fields.append("cropProperties")
+
+    recolor = properties.get("recolor")
+    if recolor:
+        image_properties["recolor"] = {"name": recolor}
+        fields.append("recolor")
+
+    shadow = properties.get("shadow")
+    if shadow:
+        if shadow.get("type") == "none":
+            image_properties["shadow"] = {"propertyState": "NOT_RENDERED"}
+            fields.append("shadow.propertyState")
+        else:
+            api_shadow: dict[str, Any] = {}
+            for name in ("type", "alignment", "alpha"):
+                if name in shadow:
+                    api_shadow[name] = shadow[name]
+            if shadow.get("color"):
+                api_shadow["color"] = _color_from_styles_json(
+                    str(shadow["color"])
+                ).to_api()
+            if "blurRadius" in shadow:
+                api_shadow["blurRadius"] = {
+                    "magnitude": pt_to_emu(float(shadow["blurRadius"])),
+                    "unit": "EMU",
+                }
+            if api_shadow:
+                image_properties["shadow"] = api_shadow
+                fields.append("shadow")
+
+    if not fields:
+        return None
+    return {
+        "updateImageProperties": {
+            "objectId": object_id,
+            "imageProperties": image_properties,
+            "fields": ",".join(fields),
+        }
+    }
 
 
 def _color_from_styles_json(value: str, *, alpha: float = 1.0) -> Color:

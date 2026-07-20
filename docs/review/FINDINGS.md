@@ -309,3 +309,26 @@ Disposition: **covered**. `tests/test_cli_staleness.py::test_push_conflict_exits
 - **Batch D — modularization + consistency** (Part 4 T-H2, T-M1..M5, T-C1..C8, T-L*). Structure-only, tests as safety net.
 - **Batch E — remaining test gaps** (T-G5, T-G7, T-G8, T-G10 + anything A-D missed).
 - **Re-review** after E: fresh review pass; iterate until zero findings.
+
+## ROUND 2 (re-review)
+
+### [x] R2-1 [CRITICAL] Nested MOVE/RESIZE mixed absolute SML and relative style coordinates
+Resolution: MOVE deltas now use the pristine absolute SML frame, while RESIZE preserves the element's native group-local transform anchor; top-level transform behavior remains covered.
+
+### [x] R2-2 [HIGH] Empty-paragraph text edits collapsed or raised `IndexError`
+Resolution: paragraph insertions/deletions are now distinguished by paragraph structure before joined-text comparison, including middle and trailing empty paragraphs.
+
+### [x] R2-3 [HIGH] Removing fill/outline classes emitted no reset
+Resolution: removed fill and outline class groups now produce field-masked `propertyState: INHERIT` shape-property updates.
+
+### [x] R2-4 [HIGH] COPY dropped edited runs and baked auto-text
+Resolution: COPY changes retain pristine/edited runs and paragraph data, apply edited run ranges to new text, and preserve same-slide auto-text through `duplicateObject` instead of static insertion.
+
+### [x] R2-5 [HIGH] Copied images lost `imageProperties`
+Resolution: image reconstruction now follows `createImage` with a field-masked `updateImageProperties` covering extracted crop, transparency, brightness, contrast, recolor, and shadow values.
+
+### [x] R2-6 [MEDIUM] Service-account credentials requested an unused Sheets scope
+Resolution: service-account credentials now request only the Google Slides presentations scope.
+
+### [x] R2-7 [MEDIUM] A healthy keyring miss hid a valid file-store token
+Resolution: fallback loading now checks the file store after a keyring miss, allowing the credential manager's existing mirror repair to repopulate keyring.

@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
+from extraslide.classes import Fill, PropertyState, Stroke
 from extraslide.content_parser import (
     ElementStyles,
     ParagraphStyles,
@@ -74,6 +75,10 @@ class Change:
     # For MOVE/COPY: new position (x, y, and optionally w, h)
     new_position: dict[str, float] | None = None
 
+    # For MOVE/COPY: pristine absolute SML position. styles.json positions may
+    # be relative to a visual parent and are not a valid delta basis.
+    old_position: dict[str, float] | None = None
+
     # For COPY: translation from original position (dx, dy)
     # Used to calculate child positions: child_new = child_orig + translation
     translation: dict[str, float] | None = None
@@ -99,6 +104,9 @@ class Change:
 
     # Slide index where this change occurs
     slide_index: str | None = None
+
+    # For COPY: slide containing the pristine source element.
+    source_slide_index: str | None = None
 
     # Parent element ID (for hierarchy reconstruction)
     parent_id: str | None = None
@@ -349,7 +357,12 @@ def diff_presentation(
                     # This is a copy - element has x,y but no w,h
                     result.changes.append(
                         _make_copy_change(
-                            elem_id, 0, slide_idx, edited_elem, pristine_elem
+                            elem_id,
+                            0,
+                            slide_idx,
+                            edited_elem,
+                            pristine_elem,
+                            pristine_slide_map[elem_id],
                         )
                     )
                 else:
@@ -374,7 +387,12 @@ def diff_presentation(
                 for i, (slide_idx, edited_elem) in enumerate(copy_instances):
                     result.changes.append(
                         _make_copy_change(
-                            elem_id, i, slide_idx, edited_elem, pristine_elem
+                            elem_id,
+                            i,
+                            slide_idx,
+                            edited_elem,
+                            pristine_elem,
+                            pristine_slide_map[elem_id],
                         )
                     )
         else:
@@ -442,6 +460,7 @@ def _compare_elements(
                 target_id=pristine.clean_id,
                 slide_index=slide_idx,
                 new_position=_get_position(edited),
+                old_position=_get_position(pristine),
             )
         )
 
@@ -491,26 +510,35 @@ def _compare_elements(
         )
 
     # Check class-derived style change
-    if edited.styles is not None and edited.styles != pristine.styles:
+    if edited.styles != pristine.styles:
         pristine_styles = pristine.styles or ElementStyles()
+        edited_styles = edited.styles or ElementStyles()
         # Carry only changed style groups. Once pulled SML contains multiple
         # explicit groups, replaying every edited group would let a fill-only
         # edit overwrite a concurrent human paragraph/stroke change.
         style_delta = ElementStyles(
-            fill=edited.styles.fill
-            if edited.styles.fill != pristine_styles.fill
+            fill=(
+                edited_styles.fill
+                if edited_styles.fill is not None
+                else Fill(state=PropertyState.INHERIT)
+            )
+            if edited_styles.fill != pristine_styles.fill
             else None,
-            stroke=edited.styles.stroke
-            if edited.styles.stroke != pristine_styles.stroke
+            stroke=(
+                edited_styles.stroke
+                if edited_styles.stroke is not None
+                else Stroke(state=PropertyState.INHERIT)
+            )
+            if edited_styles.stroke != pristine_styles.stroke
             else None,
-            text_style=edited.styles.text_style
-            if edited.styles.text_style != pristine_styles.text_style
+            text_style=edited_styles.text_style
+            if edited_styles.text_style != pristine_styles.text_style
             else None,
-            paragraph_style=edited.styles.paragraph_style
-            if edited.styles.paragraph_style != pristine_styles.paragraph_style
+            paragraph_style=edited_styles.paragraph_style
+            if edited_styles.paragraph_style != pristine_styles.paragraph_style
             else None,
-            content_alignment=edited.styles.content_alignment
-            if edited.styles.content_alignment != pristine_styles.content_alignment
+            content_alignment=edited_styles.content_alignment
+            if edited_styles.content_alignment != pristine_styles.content_alignment
             else None,
         )
         changes.append(
@@ -537,6 +565,7 @@ def _make_copy_change(
     slide_index: str,
     edited: ParsedElement,
     pristine: ParsedElement,
+    source_slide_index: str,
 ) -> Change:
     """Build the canonical COPY change for either copy-detection branch."""
     children = (
@@ -551,8 +580,16 @@ def _make_copy_change(
         slide_index=slide_index,
         parent_id=edited.parent_id,
         new_position=_get_position_with_pristine_size(edited, pristine),
+        old_position=_get_position(pristine),
         translation=_calculate_translation(pristine, edited),
         new_text=edited.paragraphs if edited.paragraphs else None,
+        old_text=pristine.paragraphs if pristine.paragraphs else None,
+        new_runs=edited.runs if edited.runs else None,
+        old_runs=pristine.runs if pristine.runs else None,
+        new_paragraph_styles=(
+            edited.paragraph_styles if edited.paragraph_styles else None
+        ),
+        source_slide_index=source_slide_index,
         children=children,
         tag=edited.tag,
     )
@@ -635,6 +672,7 @@ def _serialize_children(
         # Include text if available
         if child.paragraphs:
             child_data["text"] = child.paragraphs
+            child_data["runs"] = child.runs
 
         # Recursively include nested children
         if child.children:

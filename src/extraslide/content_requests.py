@@ -143,6 +143,7 @@ def _emit_move_requests(
                     move_google_id,
                     change.new_position,
                     diff_result.pristine_styles.get(change.target_id),
+                    change.old_position,
                 )
             )
 
@@ -269,6 +270,7 @@ def _emit_copy_requests(
                     slide_google_id,
                     diff_result.pristine_styles,
                     reserved_object_ids,
+                    source_google_id=source_google_id,
                     allocate_object_id=_allocate_create_object_id,
                     unique_suffix=unique_suffix,
                 )

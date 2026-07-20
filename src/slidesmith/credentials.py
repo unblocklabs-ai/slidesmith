@@ -562,7 +562,6 @@ class CredentialsManager(BrowserFlowMixin):
         credentials = service_account.Credentials.from_service_account_file(
             str(self._sa_path),
             scopes=[
-                "https://www.googleapis.com/auth/spreadsheets",
                 "https://www.googleapis.com/auth/presentations",
             ],
         )

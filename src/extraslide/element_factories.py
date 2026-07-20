@@ -37,10 +37,11 @@ def _create_move_request(
     google_id: str,
     position: dict[str, float],
     pristine_style: dict[str, Any] | None = None,
+    pristine_position: dict[str, float] | None = None,
 ) -> dict[str, Any]:
     """Create a transform update that preserves native scale, shear, and flips."""
     pristine_style = pristine_style or {}
-    old_position = pristine_style.get("position", {})
+    old_position = pristine_position or pristine_style.get("position", {})
     native_size = pristine_style.get("nativeSize", {})
     native_transform = pristine_style.get("nativeTransform", {})
 
@@ -104,13 +105,35 @@ def _create_move_request(
             sy * height_emu,
             shy * width_emu + sy * height_emu,
         )
+        old_x_offsets = (
+            0.0,
+            float(native_transform.get("scaleX", 1)) * width_emu,
+            float(native_transform.get("shearX", 0)) * height_emu,
+            float(native_transform.get("scaleX", 1)) * width_emu
+            + float(native_transform.get("shearX", 0)) * height_emu,
+        )
+        old_y_offsets = (
+            0.0,
+            float(native_transform.get("shearY", 0)) * width_emu,
+            float(native_transform.get("scaleY", 1)) * height_emu,
+            float(native_transform.get("shearY", 0)) * width_emu
+            + float(native_transform.get("scaleY", 1)) * height_emu,
+        )
+        old_visual_x = float(native_transform.get("translateX", 0)) + min(
+            old_x_offsets
+        )
+        old_visual_y = float(native_transform.get("translateY", 0)) + min(
+            old_y_offsets
+        )
+        delta_x = pt_to_emu(float(position["x"]) - float(old_position.get("x", 0)))
+        delta_y = pt_to_emu(float(position["y"]) - float(old_position.get("y", 0)))
         transform = {
             "scaleX": sx,
             "scaleY": sy,
             "shearX": shx,
             "shearY": shy,
-            "translateX": pt_to_emu(position["x"]) - min(x_offsets),
-            "translateY": pt_to_emu(position["y"]) - min(y_offsets),
+            "translateX": old_visual_x + delta_x - min(x_offsets),
+            "translateY": old_visual_y + delta_y - min(y_offsets),
             "unit": "EMU",
         }
     else:

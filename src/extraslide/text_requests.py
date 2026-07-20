@@ -120,8 +120,10 @@ def _create_text_update_requests(
     ):
         suffix += 1
 
-    old_mid = "\n".join(old_paras[prefix : m - suffix])
-    new_mid = "\n".join(new_paras[prefix : n - suffix])
+    old_mid_paras = old_paras[prefix : m - suffix]
+    new_mid_paras = new_paras[prefix : n - suffix]
+    old_mid = "\n".join(old_mid_paras)
+    new_mid = "\n".join(new_mid_paras)
 
     # UTF-16 offset of the changed span within the old combined text.
     # When every old paragraph matched the prefix, edits append at the end.
@@ -139,7 +141,25 @@ def _create_text_update_requests(
 
     requests: list[dict[str, Any]] = []
 
-    if old_mid == new_mid:
+    if not old_mid_paras and new_mid_paras:
+        # Pure paragraph insertion: add a separator toward the changed side.
+        # The paragraph count, rather than the joined text, distinguishes an
+        # inserted empty paragraph from a no-op.
+        if prefix < m:
+            requests.append(_insert_text_request(google_id, start, new_mid + "\n"))
+        elif m > 0:
+            requests.append(_insert_text_request(google_id, start, "\n" + new_mid))
+        else:
+            requests.append(_insert_text_request(google_id, 0, new_mid))
+    elif old_mid_paras and not new_mid_paras:
+        # Pure paragraph deletion: remove a separator with the paragraphs.
+        if prefix > 0:
+            requests.append(_delete_text_request(google_id, start - 1, end))
+        elif suffix > 0:
+            requests.append(_delete_text_request(google_id, start, end + 1))
+        else:
+            requests.append(_delete_text_request(google_id, start, end))
+    elif old_mid == new_mid:
         # Only run styling changed. Emit field-level deltas so removing a
         # <T> class resets that property instead of leaving stale formatting.
         return _create_run_style_delta_requests(
@@ -149,22 +169,6 @@ def _create_text_update_requests(
             new_para_runs,
             paragraph_range=(prefix, n - suffix),
         )
-    elif not old_mid:
-        # Pure paragraph insertion: add a separator toward the changed side.
-        if prefix < m:
-            requests.append(_insert_text_request(google_id, start, new_mid + "\n"))
-        elif m > 0:
-            requests.append(_insert_text_request(google_id, start, "\n" + new_mid))
-        else:
-            requests.append(_insert_text_request(google_id, 0, new_mid))
-    elif not new_mid:
-        # Pure paragraph deletion: remove a separator with the paragraphs.
-        if prefix > 0:
-            requests.append(_delete_text_request(google_id, start - 1, end))
-        elif suffix > 0:
-            requests.append(_delete_text_request(google_id, start, end + 1))
-        else:
-            requests.append(_delete_text_request(google_id, start, end))
     elif styled:
         # Explicit <T> runs: replace the changed paragraphs wholesale and
         # reapply their run styles below. Other paragraphs stay untouched.

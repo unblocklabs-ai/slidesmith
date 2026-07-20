@@ -365,6 +365,9 @@ Resolution: newline-bearing indentation between mixed-content tags is now ignore
 ### [x] R3-W2 [WISH] Persist intentional-design QA acceptances
 Resolution: `check --accept/--unaccept` stores stable rule+slide+sorted-element-ID identities in workspace-local `.qa/accepted.json`; accepted findings remain visible but do not affect strict exit status. A deck-committed `qa-accept-<rule>` element class creates the same entry on check and is stripped at the SML parser boundary before request generation.
 
+### [x] R3-W3 [WISH] Show normalized remote values in push persistence warnings
+Resolution: post-refresh divergence warnings now show the sent and remote values for cheaply comparable text, geometry, and style-class fields. Changes without an inexpensive field-level value retain the existing generic change-type wording.
+
 ## ROUND 4
 
 ### [x] R4-1 [HIGH] Partial element class removal silently left remote fields set

@@ -45,10 +45,16 @@ quick whole-deck visual scan. It requires those downloads and therefore cannot
 be used with `--no-thumbnails`.
 
 After a successful refresh, `push` compares the intended local changes with the
-remote-truth projection. A warning such as `warning: 1 change(s) did not persist
-remotely: title (style update) — the API may not support these values` means
-Google accepted the batch but normalized or dropped an authored value. Treat
-the refreshed SML as authoritative and choose a supported alternative.
+remote-truth projection. When both values are cheap to derive from the captured
+intent and refreshed SML, the warning names the specific field and shows both,
+for example `warning: 1 change(s) did not persist remotely: text on title did
+not persist (sent 'Q4', remote now 'Q3') — the API may not support these
+values`. Text content, geometry, affected element/paragraph/run style classes
+use this sent-versus-remote form. For creates, deletes, copies, or another field
+without a cheap refreshed value, the detail keeps the generic
+`title (style update)` form. Either warning means Google accepted the batch but
+normalized or dropped an authored value. Treat the refreshed SML as
+authoritative and choose a supported alternative.
 
 Visual work is iterative: edit, `diff`, run the offline check, `push`, then run
 plain `check` and inspect the new thumbnails. Repeat that push-then-check loop

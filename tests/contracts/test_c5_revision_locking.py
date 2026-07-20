@@ -140,6 +140,25 @@ def recolor_e121_locally(folder: Path, color: str) -> None:
     )
 
 
+def edit_e121_text_locally(folder: Path, replacement: str) -> str:
+    """Replace one existing e121 text segment without changing its styles."""
+    sml = folder / "slides" / "01" / "content.sml"
+    content = sml.read_text(encoding="utf-8")
+    start = content.index('<TextBox id="e121"')
+    end = content.index("</TextBox>", start)
+    segment = content[start:end]
+    paragraph = segment[segment.index("<P") :]
+    text_start = paragraph.index(">") + 1
+    if paragraph[text_start:].startswith("<T"):
+        text_start += paragraph[text_start:].index(">") + 1
+    text_end = paragraph.index("<", text_start)
+    original = paragraph[text_start:text_end]
+    assert original
+    segment = segment.replace(original, replacement, 1)
+    sml.write_text(content[:start] + segment + content[end:], encoding="utf-8")
+    return original
+
+
 def find_element(data: dict[str, Any], object_id: str) -> dict[str, Any]:
     def walk(elements: list[dict[str, Any]]) -> dict[str, Any] | None:
         for element in elements:
@@ -407,9 +426,25 @@ async def test_push_warns_when_an_intended_change_does_not_persist(
     response = await ws.client.push(ws.folder)
 
     assert response["warnings"] == [
-        "1 change(s) did not persist remotely: e121 (style update) "
+        "1 change(s) did not persist remotely: style classes on e121 did not "
+        "persist (sent 'fill-#00ff00', remote now '(none)') "
         "— the API may not support these values"
     ]
+
+
+async def test_push_persistence_warning_shows_sent_and_remote_text(
+    ws: Workspace,
+) -> None:
+    replacement = "Locally authored normalized value"
+    remote_text = edit_e121_text_locally(ws.folder, replacement)
+
+    response = await ws.client.push(ws.folder)
+
+    assert len(response["warnings"]) == 1
+    warning = response["warnings"][0]
+    assert "text on e121 did not persist" in warning
+    assert "sent " in warning and replacement in warning
+    assert "remote now " in warning and remote_text in warning
 
 
 async def test_push_without_remote_divergence_returns_no_warning(

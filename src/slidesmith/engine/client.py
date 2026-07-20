@@ -20,8 +20,18 @@ from slidesmith.engine.conflicts import (
     ensure_no_conflicts,
     index_presentation,
 )
-from slidesmith.engine.content_diff import ChangeType, DiffResult, diff_presentation
-from slidesmith.engine.content_parser import parse_slide_content
+from slidesmith.engine.content_diff import (
+    Change,
+    ChangeType,
+    DiffResult,
+    diff_presentation,
+)
+from slidesmith.engine.content_parser import (
+    ParsedElement,
+    ParsedRun,
+    flatten_elements,
+    parse_slide_content,
+)
 from slidesmith.engine.content_requests import generate_batch_requests
 from slidesmith.engine.json_utils import read_json
 from slidesmith.engine.slide_processor import process_presentation, write_new_format
@@ -79,6 +89,142 @@ def _pristine_element_metadata(
             for element in page.get("pageElements", []) or []:
                 walk(element)
     return types, parents
+
+
+def _index_parsed_elements(
+    slides: dict[str, list[Any]],
+) -> dict[tuple[str, str], ParsedElement]:
+    """Index refreshed or intended SML elements by slide and clean ID."""
+    return {
+        (slide_index, clean_id): element
+        for slide_index, roots in slides.items()
+        for clean_id, element in flatten_elements(roots).items()
+    }
+
+
+def _format_geometry(position: dict[str, float] | None) -> str:
+    if position is None:
+        return ""
+    return ", ".join(
+        f"{field}={position[field]:g}"
+        for field in ("x", "y", "w", "h")
+        if field in position
+    )
+
+
+def _format_run_style_classes(runs: list[list[ParsedRun]] | None) -> str:
+    if not runs:
+        return "(none)"
+    values = [
+        " ".join(run.text_style.to_classes()) if run.text_style is not None else ""
+        for paragraph in runs
+        for run in paragraph
+    ]
+    return " | ".join(values) if any(values) else "(none)"
+
+
+def _format_paragraph_style_classes(change: Change, *, remote: bool) -> str:
+    values: list[str] = []
+    for update in change.paragraph_style_updates or []:
+        styles = update.old_styles if remote else update.new_styles
+        classes: list[str] = []
+        if styles is not None:
+            if styles.text_style is not None:
+                classes.extend(styles.text_style.to_classes())
+            if styles.paragraph_style is not None:
+                classes.extend(styles.paragraph_style.to_classes())
+        values.append(f"P{update.paragraph_index + 1}={' '.join(classes) or '(none)'}")
+    return "; ".join(values)
+
+
+def _format_changed_element_style_classes(
+    change: Change,
+    element: ParsedElement,
+) -> str:
+    styles = element.styles
+    if styles is None:
+        return "(none)"
+    changed = change.new_styles
+    classes: list[str] = []
+    if changed is not None and changed.fill is not None and styles.fill is not None:
+        fill_class = styles.fill.to_class()
+        if fill_class:
+            classes.append(fill_class)
+    if (
+        changed is not None and changed.stroke is not None
+    ) or change.stroke_reset_fields:
+        if styles.stroke is not None:
+            classes.extend(styles.stroke.to_classes())
+    if (
+        changed is not None and changed.text_style is not None
+    ) or change.text_style_reset_fields:
+        if styles.text_style is not None:
+            classes.extend(styles.text_style.to_classes())
+    if (
+        changed is not None and changed.paragraph_style is not None
+    ) or change.paragraph_style_reset_fields:
+        if styles.paragraph_style is not None:
+            classes.extend(styles.paragraph_style.to_classes())
+    if (
+        (changed is not None and changed.content_alignment is not None)
+        or change.reset_content_alignment
+    ) and styles.content_alignment is not None:
+        classes.append(styles.content_alignment.to_class())
+    return " ".join(classes) or "(none)"
+
+
+def _normalized_persistence_detail(
+    change: Change,
+    remote_elements: dict[tuple[str, str], ParsedElement],
+    intended_elements: dict[tuple[str, str], ParsedElement],
+) -> str | None:
+    """Describe sent and refreshed values when both are cheaply available."""
+    if change.change_type == ChangeType.MOVE:
+        sent = _format_geometry(change.new_position)
+        remote = _format_geometry(change.old_position)
+        if sent and remote:
+            return (
+                f"geometry on {change.target_id} did not persist "
+                f"(sent {sent!r}, remote now {remote!r})"
+            )
+
+    if change.change_type == ChangeType.TEXT_UPDATE:
+        sent_text = "\n".join(change.new_text or [])
+        remote_text = "\n".join(change.old_text or [])
+        if change.new_text != change.old_text:
+            return (
+                f"text on {change.target_id} did not persist "
+                f"(sent {sent_text!r}, remote now {remote_text!r})"
+            )
+        sent_styles = _format_run_style_classes(change.new_runs)
+        remote_styles = _format_run_style_classes(change.old_runs)
+        return (
+            f"text run style classes on {change.target_id} did not persist "
+            f"(sent {sent_styles!r}, remote now {remote_styles!r})"
+        )
+
+    if change.change_type == ChangeType.PARAGRAPH_STYLE_UPDATE:
+        sent = _format_paragraph_style_classes(change, remote=False)
+        remote = _format_paragraph_style_classes(change, remote=True)
+        if sent and remote:
+            return (
+                f"paragraph style classes on {change.target_id} did not persist "
+                f"(sent {sent!r}, remote now {remote!r})"
+            )
+
+    if change.change_type == ChangeType.STYLE_UPDATE:
+        key = (change.slide_index or "", change.target_id)
+        remote_element = remote_elements.get(key)
+        intended_element = intended_elements.get(key)
+        if remote_element is not None and intended_element is not None:
+            sent = _format_changed_element_style_classes(change, intended_element)
+            remote = _format_changed_element_style_classes(change, remote_element)
+            return (
+                f"style classes on {change.target_id} did not persist "
+                f"(sent {sent!r}, remote now {remote!r})"
+            )
+
+    return None
 
 
 def _enrich_pristine_geometry(
@@ -479,8 +625,15 @@ class SlidesClient:
                 change.change_type.value,
             ),
         )
+        remote_elements = _index_parsed_elements(refreshed_slides)
+        intended_elements = _index_parsed_elements(intended_slides)
         details = ", ".join(
-            f"{change.target_id} ({change.change_type.value.replace('_', ' ')})"
+            _normalized_persistence_detail(
+                change,
+                remote_elements,
+                intended_elements,
+            )
+            or f"{change.target_id} ({change.change_type.value.replace('_', ' ')})"
             for change in changes
         )
         response.setdefault("warnings", []).append(

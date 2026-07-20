@@ -55,7 +55,7 @@ def _warn_if_stale(folder: str | Path, *, now: datetime | None = None) -> None:
         timezone.utc
     ) > timedelta(hours=24):
         print(
-            f"workspace pulled {pulled_at_raw}; deck may have changed — "
+            f"warning: workspace pulled {pulled_at_raw}; deck may have changed — "
             "re-pull recommended",
             file=sys.stderr,
         )
@@ -145,7 +145,12 @@ def cmd_push(args: Any) -> None:
             resp = await SlidesClient(transport).push(
                 Path(args.folder), force=args.force
             )
-            print(f"Push applied {len(resp.get('replies', []))} change(s).")
+            for warning in resp.get("warnings", []):
+                print(f"warning: {warning}", file=sys.stderr)
+            if message := resp.get("message"):
+                print(message)
+            else:
+                print(f"Push applied {len(resp.get('replies', []))} change(s).")
         finally:
             await transport.close()
 

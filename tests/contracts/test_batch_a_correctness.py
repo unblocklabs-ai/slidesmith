@@ -407,7 +407,10 @@ def test_removed_run_styling_is_reset_and_utf16_combining_offsets_are_exact() ->
 
 
 def test_deep_group_copy_builds_nested_groups_and_reserves_every_id(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("extraslide.content_requests._get_unique_suffix", lambda: "fixed")
+    monkeypatch.setattr(
+        "extraslide.content_requests.IdAllocator.unique_suffix",
+        lambda _self: "fixed",
+    )
     change = Change(
         ChangeType.COPY,
         "copy",

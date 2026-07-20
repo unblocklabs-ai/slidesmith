@@ -300,7 +300,6 @@ def diff_presentation(
 
     # First pass: identify which elements are being copied as groups
     # We need to skip children of copied groups to avoid duplicates
-    copied_group_ids: set[str] = set()
     copied_descendant_instances: set[int] = set()
 
     for elem_id, instances in edited_elements.items():
@@ -320,7 +319,6 @@ def diff_presentation(
                     continue
                 # This is a copy
                 if edited_elem.children:
-                    copied_group_ids.add(elem_id)
                     # Suppress only descendants belonging to this copy. The
                     # original child instance must still be compared for
                     # same-diff edits to text, geometry, and styles.

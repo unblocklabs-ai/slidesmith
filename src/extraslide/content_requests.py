@@ -7,7 +7,8 @@ batch ordering, delete hierarchy handling, and object-ID allocation.
 from __future__ import annotations
 
 import re
-import time
+import threading
+from collections.abc import Callable
 from typing import Any
 
 from extraslide.class_style_requests import _create_class_style_requests
@@ -25,9 +26,6 @@ from extraslide.text_requests import (
     _create_text_update_requests,
 )
 
-# Global counter for unique ID generation within a session
-_id_counter = 0
-
 _BATCH_CHANGE_TYPES = (
     ChangeType.DELETE,
     ChangeType.MOVE,
@@ -39,13 +37,19 @@ _BATCH_CHANGE_TYPES = (
 )
 
 
-def _get_unique_suffix() -> str:
-    """Generate a unique suffix for object IDs."""
-    global _id_counter
-    _id_counter += 1
-    # Use timestamp (last 6 digits) + counter for uniqueness
-    ts = int(time.time() * 1000) % 1000000
-    return f"{ts}_{_id_counter}"
+class IdAllocator:
+    """Allocate deterministic per-batch suffixes without module-global state."""
+
+    def __init__(self) -> None:
+        self._next_suffix = 1
+        self._lock = threading.Lock()
+
+    def unique_suffix(self) -> str:
+        """Return the next suffix safely when an allocator is shared by threads."""
+        with self._lock:
+            suffix = self._next_suffix
+            self._next_suffix += 1
+        return str(suffix)
 
 
 def _allocate_create_object_id(authored_id: str, reserved_ids: set[str]) -> str:
@@ -83,6 +87,7 @@ def _emit_new_slide_requests(
     creates: list[Change],
     slide_ids: dict[str, str],
     reserved_object_ids: set[str],
+    unique_suffix: Callable[[], str],
 ) -> None:
     """Create missing target slides before emitting their element requests."""
     new_slide_indices = {
@@ -91,8 +96,11 @@ def _emit_new_slide_requests(
         if change.slide_index and change.slide_index not in slide_ids
     }
     for slide_index in sorted(new_slide_indices):
-        suffix = _get_unique_suffix()
-        new_slide_id = f"new_slide_{slide_index}_{suffix}"
+        while True:
+            suffix = unique_suffix()
+            new_slide_id = f"new_slide_{slide_index}_{suffix}"
+            if new_slide_id not in reserved_object_ids:
+                break
         requests.append(_create_slide_request(new_slide_id))
         slide_ids[slide_index] = new_slide_id
         reserved_object_ids.add(new_slide_id)
@@ -244,6 +252,7 @@ def _emit_copy_requests(
     slide_ids: dict[str, str],
     diff_result: DiffResult,
     reserved_object_ids: set[str],
+    unique_suffix: Callable[[], str],
 ) -> None:
     """Emit reconstructed copies after modifications are complete."""
     for change in copies:
@@ -261,7 +270,7 @@ def _emit_copy_requests(
                     diff_result.pristine_styles,
                     reserved_object_ids,
                     allocate_object_id=_allocate_create_object_id,
-                    unique_suffix=_get_unique_suffix,
+                    unique_suffix=unique_suffix,
                 )
             )
 
@@ -291,13 +300,14 @@ def generate_batch_requests(
     diff_result: DiffResult,
     id_mapping: dict[str, str],
     slide_id_mapping: dict[str, str],
-    _pristine_element_types: dict[str, str] | None = None,
-    _pristine_element_parents: dict[str, str | None] | None = None,
+    pristine_element_types: dict[str, str] | None = None,
+    pristine_element_parents: dict[str, str | None] | None = None,
 ) -> list[dict[str, Any]]:
     """Generate ordered Google Slides batchUpdate requests from a diff."""
     requests: list[dict[str, Any]] = []
     slide_ids = dict(slide_id_mapping)
     reserved_object_ids = set(id_mapping.values()) | set(slide_ids.values())
+    id_allocator = IdAllocator()
     buckets = _bucket_changes(diff_result.changes)
 
     _emit_new_slide_requests(
@@ -306,13 +316,14 @@ def generate_batch_requests(
         buckets[ChangeType.CREATE],
         slide_ids,
         reserved_object_ids,
+        id_allocator.unique_suffix,
     )
     _emit_delete_requests(
         requests,
         buckets[ChangeType.DELETE],
         id_mapping,
-        _pristine_element_types,
-        _pristine_element_parents,
+        pristine_element_types,
+        pristine_element_parents,
     )
     _emit_move_requests(requests, buckets[ChangeType.MOVE], id_mapping, diff_result)
     _emit_text_update_requests(
@@ -323,7 +334,7 @@ def generate_batch_requests(
         buckets[ChangeType.STYLE_UPDATE],
         id_mapping,
         diff_result,
-        _pristine_element_types,
+        pristine_element_types,
     )
     _emit_paragraph_style_update_requests(
         requests,
@@ -337,6 +348,7 @@ def generate_batch_requests(
         slide_ids,
         diff_result,
         reserved_object_ids,
+        id_allocator.unique_suffix,
     )
     _emit_create_requests(
         requests,

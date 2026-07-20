@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import json
 import re
-import sys
 import zipfile
 from pathlib import Path
 from typing import Any
@@ -325,18 +324,18 @@ class SlidesClient:
         requests = self.diff(folder_path)
 
         if not requests:
-            return {"replies": [], "message": "No changes detected"}
+            return {"replies": [], "message": "No changes detected."}
 
         transport = self._require_transport()
 
         if force:
-            print(
-                "warning: push --force: conflict guard and revision lock "
+            warning = (
+                "push --force: conflict guard and revision lock "
                 "bypassed; concurrent human edits to the touched properties "
-                "will be overwritten",
-                file=sys.stderr,
+                "will be overwritten"
             )
             response = await transport.batch_update(presentation_id, requests)
+            response.setdefault("warnings", []).append(warning)
             await refresh_after_success(
                 transport, folder_path, presentation_id, response
             )
@@ -348,12 +347,11 @@ class SlidesClient:
 
         base_raw = self._read_base_raw(folder_path)
         if base_raw is None:
-            print(
-                "warning: no pristine base snapshot found "
+            warning = (
+                "no pristine base snapshot found "
                 f"({PRISTINE_DIR}/{PRISTINE_BASE_FILE}); this folder was "
                 "pulled by an older slidesmith. Remote-change detection "
-                "skipped for this push -- re-pull to re-enable the guard.",
-                file=sys.stderr,
+                "skipped for this push -- re-pull to re-enable the guard."
             )
         else:
             ensure_no_conflicts(
@@ -376,6 +374,9 @@ class SlidesClient:
                     "Re-pull and retry."
                 ) from e
             raise
+
+        if base_raw is None:
+            response.setdefault("warnings", []).append(warning)
 
         # 4. Refresh from the authoritative post-push deck.
         await refresh_after_success(

@@ -40,6 +40,7 @@ from slidesmith.auth.discovery import (
     _parse_oauth_client_json,  # noqa: F401
 )
 from slidesmith.auth.doctor import auth_doctor_lines as _auth_doctor_lines
+from slidesmith.auth.errors import AuthError, SessionExpiredError
 from slidesmith.auth.stores import (
     FallbackSessionStore,  # noqa: F401
     FileSessionStore,  # noqa: F401
@@ -425,7 +426,7 @@ class CredentialsManager(BrowserFlowMixin):
                 urllib.request.urlopen(req, timeout=10, context=SSL_CONTEXT)
             except Exception as e:
                 print(
-                    f"Warning: server-side session revocation failed ({e}).\n"
+                    f"warning: server-side session revocation failed ({e}).\n"
                     "Local credentials cleared, but your session may still be active on the server.",
                     file=sys.stderr,
                 )
@@ -723,14 +724,14 @@ class CredentialsManager(BrowserFlowMixin):
                 result = json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as e:
             if e.code == 400:
-                raise Exception(
+                raise AuthError(
                     "Auth code invalid or expired. Please re-authenticate: "
                     "slidesmith auth login"
                 ) from e
             error_body = e.read().decode("utf-8") if e.fp else str(e)
-            raise Exception(f"Session token exchange failed: {error_body}") from e
+            raise AuthError(f"Session token exchange failed: {error_body}") from e
         except urllib.error.URLError as e:
-            raise Exception(f"Failed to connect to server: {e}") from e
+            raise AuthError(f"Failed to connect to server: {e}") from e
 
         expires_at_dt = datetime.fromisoformat(
             result["expires_at"].replace("Z", "+00:00")
@@ -782,9 +783,9 @@ class CredentialsManager(BrowserFlowMixin):
         except urllib.error.HTTPError as e:
             error_body = e.read().decode("utf-8") if e.fp else str(e)
             if e.code == 401:
-                raise Exception(
+                raise SessionExpiredError(
                     "Session expired or revoked. Run: slidesmith auth login"
                 ) from e
-            raise Exception(f"Access token exchange failed: {error_body}") from e
+            raise AuthError(f"Access token exchange failed: {error_body}") from e
         except urllib.error.URLError as e:
-            raise Exception(f"Failed to connect to server: {e}") from e
+            raise AuthError(f"Failed to connect to server: {e}") from e

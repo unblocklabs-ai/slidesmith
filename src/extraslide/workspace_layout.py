@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import json
 import shutil
-import sys
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -102,7 +101,6 @@ async def refresh_after_success(
             "push applied; workspace stale; re-pull required "
             f"(post-push refresh failed: {exc})"
         )
-        print(f"warning: {warning}", file=sys.stderr)
         response.setdefault("warnings", []).append(warning)
 
 
@@ -183,5 +181,4 @@ async def refresh_after_push(
                     destination.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(backup, destination)
             raise
-
 

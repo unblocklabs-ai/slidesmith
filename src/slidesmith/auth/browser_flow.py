@@ -18,6 +18,8 @@ import urllib.parse
 import urllib.request
 from typing import Any, Callable
 
+from slidesmith.auth.errors import AuthError
+
 try:
     import certifi
 
@@ -118,7 +120,7 @@ class BrowserFlowMixin:
             )
         except urllib.error.HTTPError as e:
             error_body = e.read().decode("utf-8") if e.fp else str(e)
-            raise Exception(f"Google token exchange failed: {error_body}") from e
+            raise AuthError(f"Google token exchange failed: {error_body}") from e
 
         if "refresh_token" not in result:
             raise RuntimeError(
@@ -206,9 +208,9 @@ class BrowserFlowMixin:
             code = result_holder.get("code")
 
         if error:
-            raise Exception(f"Authentication failed: {error}")
+            raise AuthError(f"Authentication failed: {error}")
         if not code:
-            raise Exception("Authentication timed out. Please try again.")
+            raise AuthError("Authentication timed out. Please try again.")
         return str(code), port
 
     def _run_browser_flow_for_session(self) -> tuple[str, str]:
@@ -253,7 +255,7 @@ class BrowserFlowMixin:
             reader.join(timeout=self.DEFAULT_CALLBACK_TIMEOUT)
 
             if not code_holder:
-                raise Exception(
+                raise AuthError(
                     f"No auth code provided within {self.DEFAULT_CALLBACK_TIMEOUT}s. Please try again."
                 )
             return code_holder[0], code_verifier
@@ -285,7 +287,7 @@ class BrowserFlowMixin:
         class CallbackHandler(http.server.BaseHTTPRequestHandler):
             """HTTP handler to receive OAuth callback."""
 
-            def log_message(self, format: str, *args: Any) -> None:
+            def log_message(self, format_string: str, *args: Any) -> None:
                 """Suppress default logging."""
                 pass
 

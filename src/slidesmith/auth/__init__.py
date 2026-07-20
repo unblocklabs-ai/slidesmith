@@ -1,6 +1,7 @@
 """Authentication building blocks for Slidesmith."""
 
 from slidesmith.auth.discovery import OAuthClientCredentials
+from slidesmith.auth.errors import AuthError, SessionExpiredError
 from slidesmith.auth.stores import (
     FallbackSessionStore,
     FileSessionStore,
@@ -11,6 +12,7 @@ from slidesmith.auth.stores import (
 )
 
 __all__ = [
+    "AuthError",
     "FallbackSessionStore",
     "FileSessionStore",
     "InMemorySessionStore",
@@ -18,4 +20,5 @@ __all__ = [
     "OAuthClientCredentials",
     "SessionStore",
     "SessionToken",
+    "SessionExpiredError",
 ]

@@ -208,8 +208,8 @@ class _RefreshFailTransport(Transport):
         pass
 
 
-async def test_committed_push_with_failed_refresh_warns_and_keeps_workspace_consistent(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+async def test_committed_push_with_failed_refresh_returns_warning_and_keeps_workspace_consistent(
+    tmp_path: Path,
 ) -> None:
     transport = _RefreshFailTransport(_deck())
     client = SlidesClient(transport)
@@ -236,7 +236,8 @@ async def test_committed_push_with_failed_refresh_warns_and_keeps_workspace_cons
     assert transport.batch_calls == 1
     assert before == after
     assert response["warnings"] == [
+        "push --force: conflict guard and revision lock bypassed; concurrent "
+        "human edits to the touched properties will be overwritten",
         "push applied; workspace stale; re-pull required "
         "(post-push refresh failed: refresh unavailable)"
     ]
-    assert "warning: push applied; workspace stale; re-pull required" in capsys.readouterr().err

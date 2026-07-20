@@ -313,7 +313,7 @@ async def test_unrelated_400_is_not_masked_as_conflict(ws: Workspace) -> None:
 
 
 async def test_folder_without_base_snapshot_degrades_gracefully(
-    ws: Workspace, capsys: pytest.CaptureFixture[str]
+    ws: Workspace,
 ) -> None:
     # Simulate a folder pulled by the old code: no base snapshot, no raw.
     (ws.folder / ".pristine" / "base.json").unlink()
@@ -327,13 +327,17 @@ async def test_folder_without_base_snapshot_degrades_gracefully(
     response = await ws.client.push(ws.folder)
 
     assert response["replies"], "old folders must still push (guard skipped)"
-    assert "warning" in capsys.readouterr().err.lower()
+    assert response["warnings"] == [
+        "no pristine base snapshot found (.pristine/base.json); this folder was "
+        "pulled by an older slidesmith. Remote-change detection skipped for this "
+        "push -- re-pull to re-enable the guard."
+    ]
     # The revision lock still applies even in degraded mode.
     assert ws.stub.batch_calls[0]["required_revision_id"] is not None
 
 
 async def test_force_bypasses_guard_with_warning(
-    ws: Workspace, capsys: pytest.CaptureFixture[str]
+    ws: Workspace,
 ) -> None:
     edit_e121_locally(ws.folder)
     remote_e121 = find_element(ws.stub.data, ws.id_mapping["e121"])
@@ -344,7 +348,10 @@ async def test_force_bypasses_guard_with_warning(
     assert response["replies"]
     assert len(ws.stub.batch_calls) == 1
     assert ws.stub.batch_calls[0]["required_revision_id"] is None
-    assert "warning" in capsys.readouterr().err.lower()
+    assert response["warnings"] == [
+        "push --force: conflict guard and revision lock bypassed; concurrent "
+        "human edits to the touched properties will be overwritten"
+    ]
     metadata = json.loads(
         (ws.folder / "presentation.json").read_text(encoding="utf-8")
     )
@@ -386,7 +393,7 @@ async def test_immediate_second_push_is_a_noop_against_refreshed_pristine(
 
     response = await ws.client.push(ws.folder)
 
-    assert response == {"replies": [], "message": "No changes detected"}
+    assert response == {"replies": [], "message": "No changes detected."}
     assert len(ws.stub.batch_calls) == 1
 
 

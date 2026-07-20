@@ -246,14 +246,42 @@ Implementation: `generate_batch_requests` now delegates bucketing and missing-sl
 Implementation: split the current post-security-fix file into session persistence, browser/PKCE callback flows, gws/gogcli discovery, and secret-safe doctor diagnostics. `CredentialsManager` remains in `credentials.py`, with compatibility re-exports preserving existing imports.
 ### [x] T-M4 [MEDIUM] cli.py cmd_check embeds thumbnail engine — extract qa.download_thumbnails(transport, folder, qa_dir).
 ### [x] T-M5 [MEDIUM] content_diff.diff_presentation 235 lines with duplicated COPY construction (== D-D5) — extract _make_copy_change, _split_original_and_copies.
-### T-L1..L4 [LOW] copied_group_ids written never read; _id_counter global state → IdAllocator; duplicate _read_json (== D-D11); builtin shadowing (`id`, `format`).
+### [x] T-L1 [LOW] `copied_group_ids` written but never read
+Disposition: **fixed**. Removed the dead set and write while retaining the live copied-descendant suppression set.
+
+### [x] T-L2 [LOW] `_id_counter` global state
+Disposition: **fixed**. Replaced the timestamp/global counter with a deterministic, per-batch `IdAllocator` whose suffix allocation is lock-protected and has no shared mutable module state.
+
+### [x] T-L3 [LOW] Duplicate `_read_json` (== D-D11)
+Disposition: **already resolved**. The current source tree has one shared `json_utils.read_json` file loader with explicit missing-file behavior; direct `json.loads` calls consume strings or non-workspace payloads rather than duplicating that file helper.
+
+### [x] T-L4 [LOW] Builtin shadowing (`id`, `format`)
+Disposition: **fixed**. Renamed the remaining callback parameter `format` to `format_string`; the earlier `id` locals/parameters are already gone, and current `id(...)` occurrences call the builtin.
 
 ### Consistency
-### T-C1 [HIGH] credentials.py raises bare Exception in 10 places — add AuthError/SessionExpiredError hierarchy (transport.py already has the pattern).
-### T-C2 [MEDIUM] Three stderr warning shapes — standardize `warning: ` prefix; staleness message currently unprefixed (highest value).
-### T-C3 [MEDIUM] CLI no-op wording differs (diff vs push) — cmd_push should print resp["message"].
-### T-C4 [MEDIUM] Library code prints to stderr (client.push) — return structured warnings in response; cli prints.
-### T-C5..C8 [LOW] Docstring style divergence; `_pristine_element_types` naming; Change.tag duality; hex parsing ×3 (== D-D2); vendor-vs-wave test style note.
+### [x] T-C1 [HIGH] Bare authentication exceptions
+Disposition: **fixed**. Added `AuthError` and `SessionExpiredError` in the auth package and replaced all ten bare `raise Exception(...)` sites now split between `credentials.py` and `auth/browser_flow.py`, preserving their messages.
+
+### [x] T-C2 [MEDIUM] Divergent stderr warning prefixes
+Disposition: **fixed**. CLI and authentication warnings now consistently begin with lowercase `warning: `, including workspace staleness and best-effort session revocation.
+
+### [x] T-C3 [MEDIUM] CLI no-op wording differs (diff versus push)
+Disposition: **fixed**. The push no-op response now carries the same `No changes detected.` text as diff, and `cmd_push` prints the response message instead of a zero-change success line.
+
+### [x] T-C4 [MEDIUM] Library code prints push warnings to stderr
+Disposition: **fixed**. `client.push` and post-push refresh return warning strings in `response["warnings"]`; only `cmd_push` adds the `warning: ` prefix and writes them to stderr.
+
+### [x] T-C5 [LOW] Docstring style divergence
+Disposition: **already resolved**. After the module splits, the current production modules use summary-first docstrings and Google-style sections where expanded argument/return documentation is needed; no distinct conflicting convention remains to migrate.
+
+### [x] T-C6 [LOW] `_pristine_element_types` naming
+Disposition: **fixed**. Renamed the now-live public request-generator parameters to `pristine_element_types` and `pristine_element_parents`; their retained behavior is documented under D-M6.
+
+### [x] T-C7 [LOW] `Change.tag` duality
+Disposition: **already resolved**. `Change.tag` remains the sole change-level source of truth; no `metadata["tag"]` representation exists in the current source tree. Serialized child dictionaries retain their own structural `tag` field.
+
+### [x] T-C8 [LOW] Hex parsing duplicated three times (== D-D2)
+Disposition: **already resolved**. Production hex decoding is centralized in `units.hex_to_rgb`, and styles.json replay validates through that shared typed-color path. The vendor-versus-wave remark is test-organization commentary, so the intentionally preserved vendor suite was not restyled.
 
 ### Test gaps
 ### [x] T-G1 [HIGH] Zero coverage of _handle_http_error branches; NO retry/backoff for 429/5xx anywhere; push-succeeds-refresh-fails scenario untested (== B-EXTRA — fix + tests together).

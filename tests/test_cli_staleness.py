@@ -35,7 +35,7 @@ def test_staleness_warning_fires_after_24_hours(
     _warn_if_stale(folder, now=now)
 
     assert capsys.readouterr().err == (
-        "workspace pulled 2026-07-18T11:59:59Z; deck may have changed — "
+        "warning: workspace pulled 2026-07-18T11:59:59Z; deck may have changed — "
         "re-pull recommended\n"
     )
 

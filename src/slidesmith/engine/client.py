@@ -52,6 +52,7 @@ from slidesmith.engine.push_progress import (
     partition_requests_by_slide,
     write_progress_ledger,
 )
+from slidesmith.engine.shape_types import TAG_TO_TYPE, VALID_GOOGLE_TYPES
 from slidesmith.engine.transport import APIError, Transport
 from slidesmith.engine.units import pt_to_emu
 from slidesmith.engine.workspace_layout import (
@@ -74,9 +75,16 @@ PERSISTENCE_GEOMETRY_TOLERANCE_PT = 0.02
 GOOGLE_DEFAULT_TEXT_LAYOUT_CLASSES = frozenset(
     {
         "content-align-top",
+        "content-align-middle",
         "text-align-left",
         "leading-100",
+        "space-above-0",
+        "space-below-0",
+        "indent-start-0",
+        "indent-first-0",
+        "spacing-never-collapse",
         "spacing-collapse-lists",
+        "font-weight-400",
     }
 )
 
@@ -402,28 +410,104 @@ def _is_normalized_persistence_change(
             return False
         sent = _format_changed_element_style_classes(change, intended_element)
         remote = _format_changed_element_style_classes(change, remote_element)
-        return sent == "(none)" and _only_default_text_layout_classes(remote)
+        return _only_google_default_class_additions(
+            sent,
+            remote,
+            remote_element,
+        )
 
     if change.change_type == ChangeType.PARAGRAPH_STYLE_UPDATE:
         for update in change.paragraph_style_updates or []:
             sent = _paragraph_style_classes(update.new_styles)
             remote = _paragraph_style_classes(update.old_styles)
-            if sent or not remote or not remote <= GOOGLE_DEFAULT_TEXT_LAYOUT_CLASSES:
+            if not _only_google_default_class_additions(sent, remote):
                 return False
         return bool(change.paragraph_style_updates)
+
+    if change.change_type == ChangeType.TEXT_UPDATE:
+        return (
+            change.new_text == change.old_text
+            and _runs_only_gain_google_defaults(change.new_runs, change.old_runs)
+        )
 
     return False
 
 
-def _only_default_text_layout_classes(value: str) -> bool:
-    classes = set(value.split())
-    return bool(classes) and classes <= GOOGLE_DEFAULT_TEXT_LAYOUT_CLASSES
+def _only_google_default_class_additions(
+    sent: str | set[str],
+    remote: str | set[str],
+    element: ParsedElement | None = None,
+) -> bool:
+    sent_classes = (
+        set()
+        if sent == "(none)"
+        else set(sent.split() if isinstance(sent, str) else sent)
+    )
+    remote_classes = (
+        set()
+        if remote == "(none)"
+        else set(remote.split() if isinstance(remote, str) else remote)
+    )
+    added = remote_classes - sent_classes
+    if not added or not sent_classes <= remote_classes:
+        return False
+    if not added <= GOOGLE_DEFAULT_TEXT_LAYOUT_CLASSES:
+        return False
+    if "content-align-top" in added:
+        if element is None or TAG_TO_TYPE.get(element.tag) != "TEXT_BOX":
+            return False
+    if "content-align-middle" in added:
+        element_type = TAG_TO_TYPE.get(element.tag) if element is not None else None
+        if element_type not in VALID_GOOGLE_TYPES or element_type == "TEXT_BOX":
+            return False
+    return True
+
+
+def _runs_only_gain_google_defaults(
+    sent: list[list[ParsedRun]] | None,
+    remote: list[list[ParsedRun]] | None,
+) -> bool:
+    if sent is None or remote is None or len(sent) != len(remote):
+        return False
+    saw_default = False
+    for sent_paragraph, remote_paragraph in zip(sent, remote, strict=True):
+        if len(sent_paragraph) != len(remote_paragraph):
+            return False
+        for sent_run, remote_run in zip(
+            sent_paragraph, remote_paragraph, strict=True
+        ):
+            if (
+                sent_run.text != remote_run.text
+                or sent_run.auto_text_type != remote_run.auto_text_type
+            ):
+                return False
+            sent_classes = (
+                set(sent_run.text_style.to_classes())
+                if sent_run.text_style is not None
+                else set()
+            )
+            remote_classes = (
+                set(remote_run.text_style.to_classes())
+                if remote_run.text_style is not None
+                else set()
+            )
+            if sent_classes == remote_classes:
+                continue
+            if not _only_google_default_class_additions(sent_classes, remote_classes):
+                return False
+            saw_default = True
+    return saw_default
 
 
 def _paragraph_style_classes(styles: Any) -> set[str]:
-    if styles is None or styles.paragraph_style is None:
+    if styles is None:
         return set()
-    return set(styles.paragraph_style.to_classes())
+    classes: set[str] = set()
+    if styles.text_style is not None:
+        classes.update(styles.text_style.to_classes())
+    if styles.paragraph_style is not None:
+        classes.update(styles.paragraph_style.to_classes())
+    return classes
 
 
 def _enrich_pristine_geometry(

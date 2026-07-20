@@ -481,3 +481,12 @@ contract. Cover/crop remains unsupported.
   exposes a definition's body and slot contract; unknown component/slot errors
   list valid choices.
 - [x] Minor: `diff --slide N` limits raw or summary output to one 1-based slide.
+
+## M6 DOGFOOD R3 FIX
+
+- [x] Finding R3: post-push persistence verification now routes ordinary,
+  component-expanded, and image creates through one normalization filter. It
+  suppresses only sub-0.02 pt geometry drift and Google-added default style
+  classes while preserving warnings for dropped authored classes, text loss,
+  real geometry changes, and non-default alignment such as
+  `content-align-middle` on a `TextBox`.

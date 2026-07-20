@@ -23,6 +23,7 @@ import pytest
 from PIL import Image
 
 from slidesmith.engine.client import ConflictError, SlidesClient
+from slidesmith.engine.components import load_components
 from slidesmith.engine.content_diff import ChangeType
 from slidesmith.engine.content_parser import ParsedElement, parse_slide_content
 from slidesmith.engine.transport import (
@@ -566,6 +567,152 @@ def test_persistence_warning_ignores_created_text_layout_defaults(
         {"01": intended},
         {("new_box", ChangeType.CREATE)},
         {("01", "new_box")},
+        response,
+    )
+
+    assert "warnings" not in response
+
+
+def test_persistence_warning_ignores_component_create_google_defaults(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    folder = tmp_path / "deck"
+    folder.mkdir()
+    (folder / "id_mapping.json").write_text("{}", encoding="utf-8")
+    (folder / "components.sml").write_text(
+        "<Components><Component name=\"badge\">"
+        '<Rect id="label" x="0" y="0" w="100" h="30">'
+        "<P>Authored</P></Rect>"
+        "</Component></Components>",
+        encoding="utf-8",
+    )
+    intended = parse_slide_content(
+        '<Slide id="s1"><Use id="status" component="badge" '
+        'x="10" y="20" w="100" h="30" /></Slide>',
+        components=load_components(folder),
+    )
+    remote = parse_slide_content(
+        '<Slide id="s1"><Rect id="status__label" x="10" y="20" '
+        'w="100" h="30" class="content-align-middle text-align-left '
+        'leading-100 space-above-0 space-below-0 indent-start-0 '
+        'indent-first-0 spacing-never-collapse">'
+        '<P class="font-weight-400">Authored</P></Rect></Slide>'
+    )
+    client = SlidesClient()
+    monkeypatch.setattr(
+        client,
+        "_read_pristine",
+        lambda _folder: ({"01": remote}, {}),
+    )
+    response: dict[str, Any] = {}
+
+    client._append_persistence_warning(
+        folder,
+        {"01": intended},
+        {("status__label", ChangeType.CREATE)},
+        {("01", "status__label")},
+        response,
+    )
+
+    assert "warnings" not in response
+
+
+def test_persistence_warning_keeps_dropped_authored_class_on_create(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    folder = tmp_path / "deck"
+    folder.mkdir()
+    (folder / "id_mapping.json").write_text("{}", encoding="utf-8")
+    intended = parse_slide_content(
+        '<Slide id="s1"><TextBox id="new_box" x="10" y="20" w="100" h="30">'
+        '<P><T class="text-color-#5df2b2">Authored</T></P>'
+        "</TextBox></Slide>"
+    )
+    remote = parse_slide_content(
+        '<Slide id="s1"><TextBox id="new_box" x="10" y="20" w="100" h="30" '
+        'class="content-align-top text-align-left leading-100 space-above-0 '
+        'space-below-0 indent-start-0 indent-first-0 spacing-never-collapse">'
+        '<P><T class="font-weight-400">Authored</T></P></TextBox></Slide>'
+    )
+    client = SlidesClient()
+    monkeypatch.setattr(
+        client,
+        "_read_pristine",
+        lambda _folder: ({"01": remote}, {}),
+    )
+    response: dict[str, Any] = {}
+
+    client._append_persistence_warning(
+        folder,
+        {"01": intended},
+        {("new_box", ChangeType.CREATE)},
+        {("01", "new_box")},
+        response,
+    )
+
+    assert response.get("warnings")
+    assert "text-color-#5df2b2" in response["warnings"][0]
+
+
+def test_persistence_warning_keeps_middle_alignment_on_textbox_create(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    folder = tmp_path / "deck"
+    folder.mkdir()
+    (folder / "id_mapping.json").write_text("{}", encoding="utf-8")
+    intended = parse_slide_content(
+        '<Slide id="s1"><TextBox id="new_box" x="10" y="20" '
+        'w="100" h="30" /></Slide>'
+    )
+    remote = parse_slide_content(
+        '<Slide id="s1"><TextBox id="new_box" x="10" y="20" '
+        'w="100" h="30" class="content-align-middle" /></Slide>'
+    )
+    client = SlidesClient()
+    monkeypatch.setattr(
+        client,
+        "_read_pristine",
+        lambda _folder: ({"01": remote}, {}),
+    )
+    response: dict[str, Any] = {}
+
+    client._append_persistence_warning(
+        folder,
+        {"01": intended},
+        {("new_box", ChangeType.CREATE)},
+        {("01", "new_box")},
+        response,
+    )
+
+    assert response.get("warnings")
+    assert "content-align-middle" in response["warnings"][0]
+
+
+def test_created_image_keeps_sub_point_zero_two_geometry_suppression(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    folder = tmp_path / "deck"
+    folder.mkdir()
+    (folder / "id_mapping.json").write_text("{}", encoding="utf-8")
+    intended = ParsedElement("hero", "Image", x=100, y=20, w=30, h=40)
+    remote = ParsedElement("hero", "Image", x=99.981, y=20, w=30, h=40)
+    client = SlidesClient()
+    monkeypatch.setattr(
+        client,
+        "_read_pristine",
+        lambda _folder: ({"01": [remote]}, {}),
+    )
+    response: dict[str, Any] = {}
+
+    client._append_persistence_warning(
+        folder,
+        {"01": [intended]},
+        {("hero", ChangeType.CREATE)},
+        {("01", "hero")},
         response,
     )
 

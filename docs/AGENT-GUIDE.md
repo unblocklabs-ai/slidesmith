@@ -103,10 +103,20 @@ normalized or dropped an authored value. Treat the refreshed SML as
 authoritative and choose a supported alternative.
 
 Persistence verification intentionally suppresses two always-normalized cases:
-geometry differences smaller than 0.02 pt on every changed box field, and
-Google's injected default text-layout classes (`content-align-top`,
-`text-align-left`, `leading-100`, and `spacing-collapse-lists`) on newly created
-elements. The aspect-correct effective width/height of an authored
+geometry differences smaller than 0.02 pt on every changed box field, and only
+Google-added default classes on newly created elements. The exact shared
+default-class set is `font-weight-400`, `text-align-left`, `leading-100`,
+`space-above-0`, `space-below-0`, `indent-start-0`, `indent-first-0`,
+`spacing-never-collapse`, and `spacing-collapse-lists`, plus shape-specific
+content alignment: `content-align-top` only for `TextBox`, and
+`content-align-middle` only for non-`TextBox` Google shape types such as `Rect`,
+`RoundRect`, and `Ellipse`. Google documents that an unspecified alignment uses
+the new-editor default for the shape kind; pulled API evidence confirms middle
+for those geometric shape creates but not for `TextBox`, so a middle-aligned
+`TextBox` still warns. Suppression applies only when every authored class is
+still present remotely and the entire difference is additions from this set.
+Component-expanded children and image creates use the same created-element
+normalization path. The aspect-correct effective width/height of an authored
 `Image fit="contain"` is also the intended geometry, so Google's expected
 authored-frame-to-contained-frame correction does not warn as a persistence
 failure. Differences at or above 0.02 pt and any meaningful text, geometry, or

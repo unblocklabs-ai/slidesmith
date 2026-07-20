@@ -790,6 +790,7 @@ _TEXT_STYLE_FIELD_NAMES = {
     "background_color": "backgroundColor",
     "link": "link",
 }
+_TEXT_STYLE_FONT_FAMILY_FIELDS = frozenset({"fontFamily", "weightedFontFamily"})
 _PARAGRAPH_STYLE_FIELD_NAMES = {
     "alignment": "alignment",
     "line_spacing": "lineSpacing",
@@ -809,11 +810,30 @@ def _changed_style_fields(
     field_names: dict[str, str],
 ) -> list[str]:
     """Return API fields whose typed style values changed."""
-    return [
-        api_name
-        for attr_name, api_name in field_names.items()
-        if getattr(old_style, attr_name, None) != getattr(new_style, attr_name, None)
-    ]
+    fields: list[str] = []
+    for attr_name, api_name in field_names.items():
+        if getattr(old_style, attr_name, None) == getattr(
+            new_style, attr_name, None
+        ):
+            continue
+        if (
+            field_names is _TEXT_STYLE_FIELD_NAMES
+            and attr_name == "font_family"
+            and getattr(new_style, "font_weight", None) is not None
+        ):
+            api_name = "weightedFontFamily"
+        if api_name not in fields:
+            fields.append(api_name)
+    return fields
+
+
+def _text_style_font_family_field(style: TextStyle) -> str | None:
+    """Return the API field representing the authored font-family group."""
+    if style.font_weight is not None:
+        return "weightedFontFamily"
+    if style.font_family is not None:
+        return "fontFamily"
+    return None
 
 
 def _text_style_fields(style: TextStyle) -> list[str]:
@@ -833,10 +853,9 @@ def _text_style_fields(style: TextStyle) -> list[str]:
     ):
         if getattr(style, attribute) is not None:
             fields.append(api_name)
-    if style.font_weight is not None:
-        fields.append("weightedFontFamily")
-    elif style.font_family is not None:
-        fields.append("fontFamily")
+    family_field = _text_style_font_family_field(style)
+    if family_field is not None:
+        fields.append(family_field)
     return fields
 
 
@@ -868,6 +887,8 @@ def _removed_text_style_fields(
     new = edited or TextStyle()
     changed = set(_changed_style_fields(old, new, _TEXT_STYLE_FIELD_NAMES))
     represented_after = set(_text_style_fields(new))
+    if new.font_family is not None:
+        represented_after.update(_TEXT_STYLE_FONT_FAMILY_FIELDS)
     removed = [
         field
         for field in _text_style_fields(old)

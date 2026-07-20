@@ -383,7 +383,7 @@ Resolution: duplicate copies now allocate deterministic `objectIds` for every de
 
 ## ROUND 2-DOGFOOD (found by Claude dogfooding the deck-wide restyle live)
 
-### [ ] R2D-1 [HIGH] Run-level font-family change silently converts into a reset — fonts cannot be changed via run classes
+### [x] R2D-1 [HIGH] Run-level font-family change silently converts into a reset — fonts cannot be changed via run classes
 Repro: change a run's `font-family-arial` → `font-family-montserrat` (weight 700
 unchanged); diff emits only `updateTextStyle {fields:"fontFamily", style:{}}` — an
 empty-payload reset; Google reverts to Arial. Push "succeeds"; re-pull shows Arial

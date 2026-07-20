@@ -151,6 +151,140 @@ def test_removing_fill_and_outline_classes_resets_them_to_inherit() -> None:
     ]
 
 
+def test_run_family_swap_with_unchanged_weight_applies_weighted_family() -> None:
+    pristine = (
+        '<Slide id="s1"><TextBox id="label"><P>'
+        '<T class="font-family-arial font-weight-700">Hi</T>'
+        "</P></TextBox></Slide>"
+    )
+    edited = (
+        '<Slide id="s1"><TextBox id="label"><P>'
+        '<T class="font-family-montserrat font-weight-700">Hi</T>'
+        "</P></TextBox></Slide>"
+    )
+    changes = diff_slide_content(pristine, edited, {}, "01")
+    requests = generate_batch_requests(
+        DiffResult(changes=changes),
+        {"label": "label-google"},
+        {"01": "slide-google"},
+    )
+
+    assert requests == [
+        {
+            "updateTextStyle": {
+                "objectId": "label-google",
+                "textRange": {
+                    "type": "FIXED_RANGE",
+                    "startIndex": 0,
+                    "endIndex": 2,
+                },
+                "style": {
+                    "weightedFontFamily": {
+                        "fontFamily": "Montserrat",
+                        "weight": 700,
+                    }
+                },
+                "fields": "weightedFontFamily",
+            }
+        }
+    ]
+
+
+def test_element_family_swap_with_unchanged_weight_applies_weighted_family() -> None:
+    pristine = (
+        '<Slide id="s1"><TextBox id="label" '
+        'class="font-family-arial font-weight-700"><P>Hi</P>'
+        "</TextBox></Slide>"
+    )
+    edited = (
+        '<Slide id="s1"><TextBox id="label" '
+        'class="font-family-montserrat font-weight-700"><P>Hi</P>'
+        "</TextBox></Slide>"
+    )
+    changes = diff_slide_content(pristine, edited, {}, "01")
+    requests = generate_batch_requests(
+        DiffResult(changes=changes),
+        {"label": "label-google"},
+        {"01": "slide-google"},
+    )
+
+    assert requests == [
+        {
+            "updateTextStyle": {
+                "objectId": "label-google",
+                "textRange": {"type": "ALL"},
+                "style": {
+                    "weightedFontFamily": {
+                        "fontFamily": "Montserrat",
+                        "weight": 700,
+                    }
+                },
+                "fields": "weightedFontFamily",
+            }
+        }
+    ]
+
+
+def test_removing_whole_element_family_class_emits_weighted_family_reset() -> None:
+    pristine = (
+        '<Slide id="s1"><TextBox id="label" '
+        'class="font-family-arial font-weight-700"><P>Hi</P>'
+        "</TextBox></Slide>"
+    )
+    edited = '<Slide id="s1"><TextBox id="label"><P>Hi</P></TextBox></Slide>'
+    changes = diff_slide_content(pristine, edited, {}, "01")
+    requests = generate_batch_requests(
+        DiffResult(changes=changes),
+        {"label": "label-google"},
+        {"01": "slide-google"},
+    )
+
+    assert requests == [
+        {
+            "updateTextStyle": {
+                "objectId": "label-google",
+                "textRange": {"type": "ALL"},
+                "style": {},
+                "fields": "weightedFontFamily",
+            }
+        }
+    ]
+
+
+def test_run_family_swap_without_weight_applies_unweighted_family() -> None:
+    pristine = (
+        '<Slide id="s1"><TextBox id="label"><P>'
+        '<T class="font-family-arial">Hi</T>'
+        "</P></TextBox></Slide>"
+    )
+    edited = (
+        '<Slide id="s1"><TextBox id="label"><P>'
+        '<T class="font-family-montserrat">Hi</T>'
+        "</P></TextBox></Slide>"
+    )
+    changes = diff_slide_content(pristine, edited, {}, "01")
+    requests = generate_batch_requests(
+        DiffResult(changes=changes),
+        {"label": "label-google"},
+        {"01": "slide-google"},
+    )
+
+    assert requests == [
+        {
+            "updateTextStyle": {
+                "objectId": "label-google",
+                "textRange": {
+                    "type": "FIXED_RANGE",
+                    "startIndex": 0,
+                    "endIndex": 2,
+                },
+                "style": {"fontFamily": "Montserrat"},
+                "fields": "fontFamily",
+            }
+        }
+    ]
+
+
 def test_copy_merges_pristine_and_edited_run_styles_on_new_text_ranges() -> None:
     pristine = (
         '<Slide id="s1"><TextBox id="label" x="0" y="0" w="100" h="30">'

@@ -1,5 +1,5 @@
 """Repro harness for slidesmith candidate bugs."""
-import json, sys
+import json
 
 # ---------- A. zero-height line ----------
 from extraslide.content_requests import _create_line_request, generate_batch_requests, _order_deletes_for_safe_removal, _create_shape_request
@@ -117,7 +117,6 @@ print("   ordered deletes:", out, " <- wrapper id missing =>", "copy_01_5_1" not
 print()
 
 # ---------- E. copy children double translation ----------
-from extraslide.content_diff import ChangeType
 pres4_children = [
     {
         "objectId": "cardX",
@@ -143,8 +142,6 @@ sml4 = res4["slides"][0]["content"]
 print("E. pristine SML (label nested in card by bounds containment):")
 print(sml4)
 # author duplicates the card at +300pt, moving children to final positions too
-import re as _re
-dup = sml4
 # full-copy legacy style: same ids, everything at new position
 copy_block = """  <Rect id="e1" x="300" y="0" w="200" h="200">
     <TextBox id="e2" x="310" y="10" w="50" h="25">

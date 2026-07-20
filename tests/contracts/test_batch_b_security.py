@@ -109,7 +109,6 @@ def test_session_exchange_sends_pkce_verifier(
 ) -> None:
     manager = object.__new__(CredentialsManager)
     manager._server_base_url = "https://auth.example"
-    manager._resolve_profile = lambda: "default"
     manager._load_session_token = lambda _name: None
     manager._run_browser_flow_for_session = lambda: ("auth-code", "pkce-verifier")
     manager._collect_device_info = lambda: {}

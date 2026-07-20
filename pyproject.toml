@@ -18,6 +18,8 @@ slidesmith = "slidesmith.cli:main"
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23.0",
+    "ruff>=0.9",
+    "vulture>=2.14",
 ]
 
 [build-system]
@@ -30,3 +32,9 @@ packages = ["src/slidesmith", "src/extraslide"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+
+[tool.ruff]
+extend-exclude = ["tooling/vulture_whitelist.py"]
+
+[tool.ruff.lint]
+select = ["F", "E9"]

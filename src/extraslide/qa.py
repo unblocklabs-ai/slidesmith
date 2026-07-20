@@ -285,7 +285,13 @@ def _find_overlaps(
     slide_number: int,
 ) -> list[Finding]:
     findings: list[Finding] = []
-    leaves = [element for element in siblings if not element.children]
+    # Divider lines intentionally cross other content. Treating their thin
+    # bounding boxes as ordinary shapes produces noisy overlap findings.
+    leaves = [
+        element
+        for element in siblings
+        if not element.children and element.tag != "Line"
+    ]
     for index, first in enumerate(leaves):
         first_box = _box(first)
         if first_box is None or first_box.area <= 0:

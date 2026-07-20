@@ -126,6 +126,45 @@ def test_overlap_allows_exactly_fifteen_percent(qa_folder: Path) -> None:
     assert "OVERLAP" not in _rules(qa_folder)
 
 
+def test_overlap_ignores_line_crossing_content_box(qa_folder: Path) -> None:
+    _replace_slides(
+        qa_folder,
+        '<Rect id="content" x="50" y="20" w="100" h="60" />'
+        '<Line id="divider" x="0" y="50" w="200" h="1" />',
+    )
+
+    assert "OVERLAP" not in _rules(qa_folder)
+
+
+def test_overlap_recurses_into_group_children(qa_folder: Path) -> None:
+    _replace_slides(
+        qa_folder,
+        '<Group id="cards">'
+        '<Rect id="left" x="10" y="10" w="100" h="100" />'
+        '<Rect id="right" x="90" y="10" w="100" h="100" />'
+        "</Group>",
+    )
+
+    overlaps = [
+        finding for finding in lint_folder(qa_folder) if finding.rule == "OVERLAP"
+    ]
+
+    assert [finding.element_ids for finding in overlaps] == [("left", "right")]
+
+
+@pytest.mark.parametrize("zero_dimension", ['w="0" h="100"', 'w="100" h="0"'])
+def test_overlap_skips_zero_area_elements(
+    qa_folder: Path, zero_dimension: str
+) -> None:
+    _replace_slides(
+        qa_folder,
+        f'<Rect id="zero" x="20" y="20" {zero_dimension} />'
+        '<Rect id="content" x="10" y="10" w="100" h="100" />',
+    )
+
+    assert "OVERLAP" not in _rules(qa_folder)
+
+
 def test_out_of_bounds_flags_element_beyond_page(qa_folder: Path) -> None:
     _replace_slides(
         qa_folder,
@@ -176,6 +215,30 @@ def test_text_overflow_allows_text_that_fits(qa_folder: Path) -> None:
     assert "TEXT_OVERFLOW" not in _rules(qa_folder)
 
 
+def test_text_overflow_with_nonpositive_width_is_unbounded(
+    qa_folder: Path,
+) -> None:
+    class UnexpectedMeasurer:
+        def measure_wrapped_height(self, *_args: Any, **_kwargs: Any) -> float:
+            raise AssertionError("zero-width text must not be measured")
+
+    _replace_slides(
+        qa_folder,
+        '<TextBox id="copy" x="10" y="10" w="0" h="40">'
+        "<P>Visible text.</P></TextBox>",
+    )
+
+    findings = [
+        finding
+        for finding in lint_folder(qa_folder, text_measurer=UnexpectedMeasurer())
+        if finding.rule == "TEXT_OVERFLOW"
+    ]
+
+    assert len(findings) == 1
+    assert findings[0].element_ids == ("copy",)
+    assert "unbounded amount" in findings[0].description
+
+
 def test_check_folder_strict_exit_and_clean_bill(
     qa_folder: Path,
 ) -> None:
@@ -189,6 +252,15 @@ def test_check_folder_strict_exit_and_clean_bill(
     )
     assert check_folder(qa_folder, strict=False, output=lambda _: None) == 0
     assert check_folder(qa_folder, strict=True, output=lambda _: None) == 1
+
+
+def test_check_folder_rejects_nonlist_qa_baseline(qa_folder: Path) -> None:
+    baseline_path = qa_folder / ".pristine" / "qa-baseline.json"
+    baseline_path.parent.mkdir(parents=True, exist_ok=True)
+    baseline_path.write_text('{"findings": {}}', encoding="utf-8")
+
+    with pytest.raises(ValueError, match="Expected a findings list"):
+        check_folder(qa_folder)
 
 
 def test_check_labels_new_pre_existing_and_resolved_findings(

@@ -5,7 +5,6 @@ from __future__ import annotations
 import copy
 import json
 import xml.etree.ElementTree as ET
-import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
 
@@ -22,7 +21,6 @@ from extraslide.content_diff import (
     diff_presentation,
     diff_slide_content,
 )
-from extraslide.content_generator import generate_slide_content
 from extraslide.content_parser import ParsedRun, parse_slide_content
 from extraslide.content_requests import (
     _order_deletes_for_safe_removal,
@@ -31,23 +29,11 @@ from extraslide.content_requests import (
 from extraslide.copy_requests import _apply_text_style_requests
 from extraslide.element_factories import _create_line_request, _create_shape_request
 from extraslide.text_requests import _create_text_update_requests
-from extraslide.id_manager import assign_ids
-from extraslide.render_tree import RenderNode
 from extraslide.slide_processor import process_presentation
 from extraslide.style_extractor import _extract_color
 from extraslide.transport import PresentationData, Transport
 from extraslide.units import pt_to_emu
 from slidesmith.workspace import materialize
-
-GOLDEN = (
-    Path(__file__).parent.parent
-    / "vendor"
-    / "golden"
-    / "simple_presentation"
-    / "presentation.json"
-)
-from slidesmith.workspace import materialize
-
 
 GOLDEN = (
     Path(__file__).parent.parent

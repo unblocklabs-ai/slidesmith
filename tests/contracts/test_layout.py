@@ -172,6 +172,171 @@ def test_explicit_child_position_fails_with_element_id() -> None:
         parse_slide_content(sml)
 
 
+@pytest.mark.parametrize(
+    ("sml", "message"),
+    [
+        pytest.param(
+            '<Stack direction="diagonal" x="0" y="0" w="100" h="100">'
+            '<Rect w="10" h="10"/></Stack>',
+            "direction must be",
+            id="invalid-direction",
+        ),
+        pytest.param(
+            '<Stack align="baseline" x="0" y="0" w="100" h="100">'
+            '<Rect w="10" h="10"/></Stack>',
+            "align must be",
+            id="invalid-align",
+        ),
+        pytest.param(
+            '<Stack distribute="evenly" x="0" y="0" w="100" h="100">'
+            '<Rect w="10" h="10"/></Stack>',
+            "distribute must be",
+            id="invalid-distribute",
+        ),
+        pytest.param(
+            '<Stack gap="-1" x="0" y="0" w="100" h="100">'
+            '<Rect w="10" h="10"/></Stack>',
+            "gap and padding cannot be negative",
+            id="negative-stack-gap",
+        ),
+        pytest.param(
+            '<Stack padding="-1" x="0" y="0" w="100" h="100">'
+            '<Rect w="10" h="10"/></Stack>',
+            "gap and padding cannot be negative",
+            id="negative-padding",
+        ),
+        pytest.param(
+            '<Stack padding="6" x="0" y="0" w="10" h="10">'
+            '<Rect w="1" h="1"/></Stack>',
+            "padding is larger than the container frame",
+            id="padding-exceeds-frame",
+        ),
+        pytest.param(
+            '<Stack x="0" y="0" w="50" h="20">'
+            '<Rect w="60" h="10"/><Rect flex="1" h="10"/></Stack>',
+            "children, gap, and padding exceed its frame",
+            id="overflow-with-flex",
+        ),
+        pytest.param(
+            '<Stack x="0" y="0" w="50" h="20">'
+            '<Rect w="30" h="10"/><Rect w="30" h="10"/></Stack>',
+            "children, gap, and padding exceed its frame",
+            id="overflow-without-flex",
+        ),
+        pytest.param(
+            '<Grid x="0" y="0" w="100" h="100"><Rect h="10"/></Grid>',
+            "missing required 'columns'",
+            id="missing-column-spec",
+        ),
+        pytest.param(
+            '<Grid columns="many" x="0" y="0" w="100" h="100">'
+            '<Rect h="10"/></Grid>',
+            "'columns' must be a number",
+            id="nonnumeric-column-spec",
+        ),
+        pytest.param(
+            '<Grid columns="0" x="0" y="0" w="100" h="100">'
+            '<Rect h="10"/></Grid>',
+            "columns must be a positive integer",
+            id="zero-columns",
+        ),
+        pytest.param(
+            '<Grid columns="1.5" x="0" y="0" w="100" h="100">'
+            '<Rect h="10"/></Grid>',
+            "columns must be a positive integer",
+            id="fractional-columns",
+        ),
+        pytest.param(
+            '<Grid columns="2" gap="-1" x="0" y="0" w="100" h="100">'
+            '<Rect h="10"/></Grid>',
+            "gap cannot be negative",
+            id="negative-grid-gap",
+        ),
+        pytest.param(
+            '<Grid columns="2" gap="20" x="0" y="0" w="10" h="100">'
+            '<Rect h="10"/></Grid>',
+            "columns and gap exceed its width",
+            id="grid-width-overflow",
+        ),
+        pytest.param(
+            '<Grid columns="1" row-h="60" x="0" y="0" w="100" h="50">'
+            '<Rect/></Grid>',
+            "rows and gap exceed its height",
+            id="fixed-grid-height-overflow",
+        ),
+        pytest.param(
+            '<Grid columns="1" x="0" y="0" w="100" h="50">'
+            '<Rect h="60"/></Grid>',
+            "rows and gap exceed its height",
+            id="auto-grid-height-overflow",
+        ),
+        pytest.param(
+            '<Stack x="nan" y="0" w="100" h="100">'
+            '<Rect w="10" h="10"/></Stack>',
+            "'x' must be finite",
+            id="nan-dimension",
+        ),
+        pytest.param(
+            '<Stack x="0" y="0" w="inf" h="100">'
+            '<Rect w="10" h="10"/></Stack>',
+            "'w' must be finite",
+            id="infinite-dimension",
+        ),
+        pytest.param(
+            '<TextBox id="copy" x="0" y="0" w="0" h="auto"><P>x</P></TextBox>',
+            "h='auto' requires a positive width",
+            id="auto-height-zero-width",
+        ),
+        pytest.param(
+            '<TextBox id="copy" x="0" y="0" w="-1" h="auto"><P>x</P></TextBox>',
+            "h='auto' requires a positive width",
+            id="auto-height-negative-width",
+        ),
+    ],
+)
+def test_layout_validation_errors_are_explicit(sml: str, message: str) -> None:
+    with pytest.raises(ValueError, match=message):
+        compile_layout(sml)
+
+
+def test_space_between_distributes_remaining_width_exactly() -> None:
+    sml = """<Slide><Stack x="0" y="0" w="100" h="20" gap="5"
+        distribute="space-between">
+      <Rect id="a" w="20" h="10"/><Rect id="b" w="20" h="10"/>
+      <Rect id="c" w="20" h="10"/>
+    </Stack></Slide>"""
+
+    elements = _elements(sml)
+
+    assert _geometry(elements["a"]) == (0.0, 0.0, 20.0, 10.0)
+    assert _geometry(elements["b"]) == (40.0, 0.0, 20.0, 10.0)
+    assert _geometry(elements["c"]) == (80.0, 0.0, 20.0, 10.0)
+
+
+def test_grid_without_row_height_uses_tallest_child_per_row() -> None:
+    sml = """<Slide><Grid x="0" y="0" w="210" h="100" columns="2" gap="10">
+      <Rect id="a" h="20"/><Rect id="b" h="40"/><Rect id="c" h="30"/>
+    </Grid></Slide>"""
+
+    elements = _elements(sml)
+
+    assert _geometry(elements["a"]) == (0.0, 0.0, 100.0, 40.0)
+    assert _geometry(elements["b"]) == (110.0, 0.0, 100.0, 40.0)
+    assert _geometry(elements["c"]) == (0.0, 50.0, 100.0, 30.0)
+
+
+def test_empty_container_is_omitted_from_compiled_layout() -> None:
+    sml = """<Slide id="s1"><Stack id="empty" x="0" y="0" w="100" h="50"/>
+      <Rect id="kept" x="1" y="2" w="3" h="4"/>
+    </Slide>"""
+
+    compiled = compile_layout(sml)
+
+    # Intentional current contract: an empty authoring container vanishes.
+    assert "empty" not in compiled
+    assert _geometry(_elements(compiled)["kept"]) == (1.0, 2.0, 3.0, 4.0)
+
+
 def test_plain_sml_passes_through_byte_identical() -> None:
     plain = """<Slide id="s1">
   <TextBox id="plain" x="1" y="2" w="3" h="4"><P>Hello</P></TextBox>

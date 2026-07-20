@@ -46,3 +46,5 @@ complete edit/diff/push/check loop.
 ```bash
 .venv/bin/pytest -q
 ```
+
+Run `scripts/lint.sh` to check Pyflakes/syntax errors with Ruff and intentional dead-code exceptions with Vulture.

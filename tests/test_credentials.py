@@ -192,6 +192,73 @@ def test_keyring_failure_falls_back_once_to_file_store(
     assert "Unknown Error" in stderr
 
 
+def test_invalid_token_store_choice_is_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("SLIDESMITH_TOKEN_STORE", "database")
+
+    with pytest.raises(ValueError, match="must be 'keyring' or 'file'.*database"):
+        CredentialsManager(server_url="https://auth.example")
+
+
+def test_forced_keyring_store_rejects_unavailable_package(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("SLIDESMITH_TOKEN_STORE", "keyring")
+    monkeypatch.setattr(credentials, "_KEYRING_AVAILABLE", False)
+
+    with pytest.raises(RuntimeError, match="keyring is not available"):
+        CredentialsManager(server_url="https://auth.example")
+
+
+def test_forced_keyring_store_propagates_backend_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("SLIDESMITH_TOKEN_STORE", "keyring")
+    monkeypatch.setattr(credentials, "_KEYRING_AVAILABLE", True)
+    monkeypatch.setattr(credentials, "_keyring", BrokenKeyring())
+    manager = CredentialsManager(server_url="https://auth.example")
+
+    with pytest.raises(RuntimeError, match="Unknown Error"):
+        manager._load_session_token("default")
+
+
+def test_corrupt_file_session_is_treated_as_missing(tmp_path: Path) -> None:
+    path = tmp_path / "session.json"
+    path.write_text("{not valid json", encoding="utf-8")
+
+    # Conscious design choice: corrupt persisted state silently triggers re-auth.
+    assert FileSessionStore(path).load("default") is None
+
+
+def test_fallback_save_reraises_when_both_backends_fail() -> None:
+    class FailingStore:
+        def load(self, _profile_name: str) -> SessionToken | None:
+            return None
+
+        def save(self, _profile_name: str, _token: SessionToken) -> None:
+            raise OSError("storage unavailable")
+
+        def delete(self, _profile_name: str) -> None:
+            pass
+
+    store = FallbackSessionStore(FailingStore(), FailingStore())
+
+    with pytest.raises(OSError, match="storage unavailable"):
+        store.save("default", _token())
+
+
+def test_file_session_store_loads_legacy_single_payload(tmp_path: Path) -> None:
+    path = tmp_path / "session.json"
+    token = _token()
+    path.write_text(json.dumps(token.to_dict()), encoding="utf-8")
+
+    assert FileSessionStore(path).load("default") == token
+
+
 def test_oauth_sessions_mirror_on_login_and_keyring_load_without_client_secret(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

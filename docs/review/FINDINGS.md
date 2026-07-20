@@ -288,12 +288,16 @@ Disposition: **already resolved**. Production hex decoding is centralized in `un
 ### [x] T-G2 [HIGH] Group/deep-copy request generation untested end-to-end (translation math, groupObjects, nested recursion) — contract test from golden fixture.
 ### [x] T-G3 [HIGH] _order_deletes_for_safe_removal untested + nondeterministic (== B-H1/H2 — fix + tests).
 ### [x] T-G4 [HIGH] Conflict guard: remote-slide-deleted branch and group-copy childrenObjectIds collection never executed by tests.
-### T-G5 [MEDIUM] Layout: all ten error branches, distribute, auto-row-height, empty-container-vanishes untested (parametrized tests; compile_layout is pure).
+### [x] T-G5 [MEDIUM] Layout: all ten error branches, distribute, auto-row-height, empty-container-vanishes untested (parametrized tests; compile_layout is pure).
+Disposition: **covered**. `tests/contracts/test_layout.py::test_layout_validation_errors_are_explicit` parametrizes the current validation branches; `test_space_between_distributes_remaining_width_exactly`, `test_grid_without_row_height_uses_tallest_child_per_row`, and `test_empty_container_is_omitted_from_compiled_layout` pin the requested positive and empty-container behavior.
 ### [x] T-G6 [MEDIUM] UTF-16: combining-char edit test; old_text=None fallback; styling-removed path (== B-L3).
-### T-G7 [MEDIUM] QA lint on Lines (divider-crossing-box false positive — decide+pin: likely exempt LINE from OVERLAP) and nested Groups; zero-area skip; box.w<=0 branch.
-### T-G8 [MEDIUM] Auth store modes: invalid SLIDESMITH_TOKEN_STORE, keyring-forced-unavailable, corrupt session.json silent loss, both-stores-fail, legacy format.
+### [x] T-G7 [MEDIUM] QA lint on Lines (divider-crossing-box false positive — decide+pin: likely exempt LINE from OVERLAP) and nested Groups; zero-area skip; box.w<=0 branch.
+Disposition: **fixed and covered**. LINE-tagged leaves are exempt from overlap comparisons in `qa._find_overlaps`; `tests/contracts/test_qa.py::test_overlap_ignores_line_crossing_content_box`, `test_overlap_recurses_into_group_children`, `test_overlap_skips_zero_area_elements`, and `test_text_overflow_with_nonpositive_width_is_unbounded` pin the rule and remaining branches.
+### [x] T-G8 [MEDIUM] Auth store modes: invalid SLIDESMITH_TOKEN_STORE, keyring-forced-unavailable, corrupt session.json silent loss, both-stores-fail, legacy format.
+Disposition: **covered**. `tests/test_credentials.py::test_invalid_token_store_choice_is_rejected`, `test_forced_keyring_store_rejects_unavailable_package`, `test_forced_keyring_store_propagates_backend_failure`, `test_corrupt_file_session_is_treated_as_missing`, `test_fallback_save_reraises_when_both_backends_fail`, and `test_file_session_store_loads_legacy_single_payload` pin the current error, fallback, silent-reauth, and compatibility contracts.
 ### [x] T-G9 [MEDIUM] Copy/child ID minting bypasses reserved_object_ids until after build — route through allocator + collision test.
-### T-G10 [LOW] CLI contracts: ConflictError→exit 2, top-level error→exit 1, _warn_if_stale corrupt-metadata silence, _read_qa_baseline invalid branch.
+### [x] T-G10 [LOW] CLI contracts: ConflictError→exit 2, top-level error→exit 1, _warn_if_stale corrupt-metadata silence, _read_qa_baseline invalid branch.
+Disposition: **covered**. `tests/test_cli_staleness.py::test_push_conflict_exits_two_and_lists_conflicting_elements`, `test_unhandled_cli_error_exits_one`, and `test_staleness_warning_silently_ignores_corrupt_timestamp` pin the CLI contracts; `tests/contracts/test_qa.py::test_check_folder_rejects_nonlist_qa_baseline` covers the invalid baseline branch.
 
 ---
 

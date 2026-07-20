@@ -380,3 +380,21 @@ Resolution: COPY changes that preserve `autoText` through `duplicateObject` now 
 
 ### [x] R5-2 [MEDIUM] duplicateObject mapped only authored descendants
 Resolution: duplicate copies now allocate deterministic `objectIds` for every descendant in the pristine source tree. Descendants omitted from the authored copy are deleted by their mapped copy IDs after replay completes, and ambiguous authored child positions emit the same R3-7 warning as recreated copies.
+
+## ROUND 2-DOGFOOD (found by Claude dogfooding the deck-wide restyle live)
+
+### [ ] R2D-1 [HIGH] Run-level font-family change silently converts into a reset — fonts cannot be changed via run classes
+Repro: change a run's `font-family-arial` → `font-family-montserrat` (weight 700
+unchanged); diff emits only `updateTextStyle {fields:"fontFamily", style:{}}` — an
+empty-payload reset; Google reverts to Arial. Push "succeeds"; re-pull shows Arial
+(confirmed live twice: Space Grotesk, then Montserrat; .raw showed 352× Arial after).
+Mechanism: family+weight serialize as `weightedFontFamily` (`_text_style_fields`,
+content_diff.py ~:836-839) but the changed-attr map names `font_family → "fontFamily"`
+(~:786), so `_removed_text_style_fields` (~:860) classifies the family as REMOVED
+(changed ∧ not represented-after) → reset; no `weightedFontFamily` apply fires since
+the weight attr didn't change. Check the element-level path for the same seam.
+Fix: treat fontFamily/weightedFontFamily as one logical field — family counts as
+represented when `new.font_family` is not None; a family change maps to
+`weightedFontFamily` when `new.font_weight` is not None. Tests: family swap w/
+unchanged weight (run and element level) emits apply not reset; whole-class removal
+still resets.

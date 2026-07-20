@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
-from extraslide.json_utils import read_json
+from slidesmith.engine.json_utils import read_json
 
 try:
     import keyring as _keyring

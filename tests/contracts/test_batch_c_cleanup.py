@@ -4,9 +4,9 @@ from pathlib import Path
 
 import pytest
 
-from extraslide.element_factories import _parse_color, _tag_to_type
-from extraslide.json_utils import read_json
-from extraslide.shape_types import TAG_TO_TYPE, TYPE_TO_TAG, VALID_GOOGLE_TYPES
+from slidesmith.engine.element_factories import _parse_color, _tag_to_type
+from slidesmith.engine.json_utils import read_json
+from slidesmith.engine.shape_types import TAG_TO_TYPE, TYPE_TO_TAG, VALID_GOOGLE_TYPES
 
 
 def test_shape_tables_are_derived_from_one_round_trip_mapping() -> None:

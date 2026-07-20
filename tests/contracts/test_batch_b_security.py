@@ -13,7 +13,7 @@ from typing import Any
 import httpx
 import pytest
 
-from extraslide.transport import GoogleSlidesTransport, TransportError
+from slidesmith.engine.transport import GoogleSlidesTransport, TransportError
 from slidesmith import credentials
 from slidesmith.cli import _presentation_id
 from slidesmith.credentials import CredentialsManager, SessionToken

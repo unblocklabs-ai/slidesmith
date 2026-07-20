@@ -14,11 +14,11 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from pathlib import Path
 
-from extraslide.content_generator import generate_slide_content
-from extraslide.id_manager import assign_ids
-from extraslide.render_tree import RenderNode, build_render_tree
-from extraslide.style_extractor import extract_styles
-from extraslide.units import emu_to_pt
+from slidesmith.engine.content_generator import generate_slide_content
+from slidesmith.engine.id_manager import assign_ids
+from slidesmith.engine.render_tree import RenderNode, build_render_tree
+from slidesmith.engine.style_extractor import extract_styles
+from slidesmith.engine.units import emu_to_pt
 
 
 def process_presentation(

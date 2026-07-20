@@ -1,6 +1,6 @@
 """Compatibility injection for vendor tests without restoring shipped test code."""
 
-import extraslide
+import slidesmith.engine as extraslide
 
 from .helpers import LocalFileTransport
 

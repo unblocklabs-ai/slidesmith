@@ -108,7 +108,7 @@ XML rules still apply: escape `&`, `<`, and `>` in text; quote attributes; keep
 ## Class vocabulary
 
 The accepted vocabulary below is derived from the parsing functions in
-`src/extraslide/classes.py`. Class names are whitespace-separated. Numeric
+`src/slidesmith/engine/classes.py`. Class names are whitespace-separated. Numeric
 dimensions are points. Hex colors are exactly six digits and include the `#`.
 Opacity is an integer suffix after `/` (normally 0–100).
 

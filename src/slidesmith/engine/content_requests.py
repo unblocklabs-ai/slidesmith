@@ -11,16 +11,16 @@ import threading
 from collections.abc import Callable
 from typing import Any
 
-from extraslide.class_style_requests import _create_class_style_requests
-from extraslide.content_diff import Change, ChangeType, DiffResult, ParagraphClassUpdate
-from extraslide.copy_requests import _create_copy_requests, _uses_duplicate_object
-from extraslide.element_factories import (
+from slidesmith.engine.class_style_requests import _create_class_style_requests
+from slidesmith.engine.content_diff import Change, ChangeType, DiffResult, ParagraphClassUpdate
+from slidesmith.engine.copy_requests import _create_copy_requests, _uses_duplicate_object
+from slidesmith.engine.element_factories import (
     _create_element_requests,
     _create_move_request,
     _create_slide_request,
 )
-from extraslide.id_manager import is_valid_google_object_id
-from extraslide.text_requests import (
+from slidesmith.engine.id_manager import is_valid_google_object_id
+from slidesmith.engine.text_requests import (
     _create_paragraph_class_update_requests,
     _create_run_style_requests,
     _create_text_update_requests,

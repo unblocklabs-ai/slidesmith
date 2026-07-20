@@ -6,15 +6,15 @@ from types import SimpleNamespace
 
 import pytest
 
-from extraslide.classes import ContentAlignment
-from extraslide.content_diff import (
+from slidesmith.engine.classes import ContentAlignment
+from slidesmith.engine.content_diff import (
     Change,
     ChangeType,
     DiffResult,
     ParagraphClassUpdate,
     format_diff_summary,
 )
-from extraslide.content_parser import ElementStyles
+from slidesmith.engine.content_parser import ElementStyles
 from slidesmith import cli
 from slidesmith.cli import _request_id_legend
 
@@ -84,7 +84,7 @@ def test_diff_summary_cli_uses_compact_stdout_without_legend(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     monkeypatch.setattr(
-        "extraslide.client.diff_folder_with_result",
+        "slidesmith.engine.client.diff_folder_with_result",
         lambda _: (_summary_result(), [{"request": {}}] * 39),
     )
     monkeypatch.setattr(cli, "_warn_if_stale", lambda _: None)

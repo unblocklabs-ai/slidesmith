@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-from extraslide.classes import (
+from slidesmith.engine.classes import (
     ContentAlignment,
     ParagraphStyle,
     Stroke,
@@ -31,13 +31,13 @@ from extraslide.classes import (
     parse_stroke_classes,
     parse_text_style_classes,
 )
-from extraslide.client import diff_folder
-from extraslide.content_diff import DiffResult, diff_slide_content
-from extraslide.content_requests import generate_batch_requests
-from extraslide.bounds import BoundingBox
-from extraslide.content_generator import generate_slide_content
-from extraslide.content_parser import parse_slide_content
-from extraslide.render_tree import RenderNode
+from slidesmith.engine.client import diff_folder
+from slidesmith.engine.content_diff import DiffResult, diff_slide_content
+from slidesmith.engine.content_requests import generate_batch_requests
+from slidesmith.engine.bounds import BoundingBox
+from slidesmith.engine.content_generator import generate_slide_content
+from slidesmith.engine.content_parser import parse_slide_content
+from slidesmith.engine.render_tree import RenderNode
 from slidesmith.workspace import materialize
 
 GOLDEN = (

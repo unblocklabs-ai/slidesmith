@@ -5,9 +5,9 @@ edit them (you or your agent), preview the exact `batchUpdate` diff, and push
 it back to the **same deck in place** — edits show up in Drive version history
 like any collaborator's.
 
-Built on a surgical extraction of [ExtraSuite](https://github.com/think41/extrasuite)
-(MIT — see `NOTICE`), with its release bugs fixed and its unfinished layers
-being rewritten per [DESIGN.md](DESIGN.md).
+slidesmith descends from think41/extrasuite's extraslide (MIT, heavily rewritten
+— see NOTICE). Its release bugs are fixed and its unfinished layers are being
+rewritten per [DESIGN.md](DESIGN.md).
 
 ## Quickstart
 

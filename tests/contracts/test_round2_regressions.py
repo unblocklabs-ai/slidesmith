@@ -10,11 +10,11 @@ from pathlib import Path
 
 import pytest
 
-from extraslide.content_diff import ChangeType, DiffResult, diff_slide_content
-from extraslide.content_parser import parse_slide_content
-from extraslide.content_requests import generate_batch_requests
-from extraslide.text_requests import _create_text_update_requests
-from extraslide.units import pt_to_emu
+from slidesmith.engine.content_diff import ChangeType, DiffResult, diff_slide_content
+from slidesmith.engine.content_parser import parse_slide_content
+from slidesmith.engine.content_requests import generate_batch_requests
+from slidesmith.engine.text_requests import _create_text_update_requests
+from slidesmith.engine.units import pt_to_emu
 from slidesmith.workspace import materialize
 
 
@@ -43,7 +43,7 @@ def _edit_golden_element(
             continue
         edit(element)
         sml_path.write_text(ET.tostring(root, encoding="unicode"), encoding="utf-8")
-        from extraslide.client import diff_folder
+        from slidesmith.engine.client import diff_folder
 
         return diff_folder(folder)
     raise AssertionError(f"golden element {element_id!r} not found")
@@ -247,7 +247,7 @@ def test_golden_image_copy_replays_writable_properties_and_warns_on_dropped_adju
     else:
         raise AssertionError("golden element 'e125' not found")
 
-    from extraslide.client import diff_folder_with_result
+    from slidesmith.engine.client import diff_folder_with_result
 
     diff_result, requests = diff_folder_with_result(folder)
     image_update = next(

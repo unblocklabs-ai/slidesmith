@@ -6,11 +6,11 @@ import json
 import re
 from pathlib import Path
 
-from extraslide.client import diff_folder
-from extraslide.content_diff import Change, ChangeType, DiffResult
-from extraslide.content_requests import generate_batch_requests
-from extraslide.id_manager import IDManager
-from extraslide.slide_processor import process_presentation
+from slidesmith.engine.client import diff_folder
+from slidesmith.engine.content_diff import Change, ChangeType, DiffResult
+from slidesmith.engine.content_requests import generate_batch_requests
+from slidesmith.engine.id_manager import IDManager
+from slidesmith.engine.slide_processor import process_presentation
 from slidesmith.workspace import materialize
 
 GOLDEN = (

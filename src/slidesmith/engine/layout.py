@@ -25,8 +25,8 @@ from typing import Protocol
 from defusedxml import ElementTree as DefusedET
 from defusedxml.common import DefusedXmlException
 
-from extraslide.classes import parse_class_string, parse_text_style_classes
-from extraslide.units import format_pt
+from slidesmith.engine.classes import parse_class_string, parse_text_style_classes
+from slidesmith.engine.units import format_pt
 
 
 class TextMeasurer(Protocol):

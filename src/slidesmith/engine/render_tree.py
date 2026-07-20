@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from extraslide.bounds import BoundingBox, Transform, get_bounds, get_group_bounds
+from slidesmith.engine.bounds import BoundingBox, Transform, get_bounds, get_group_bounds
 
 
 @dataclass

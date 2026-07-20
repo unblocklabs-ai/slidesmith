@@ -85,11 +85,11 @@ encoding the known parser gap. C3–C5 are live-deck stubs
 
 ## Provenance
 
-Vendored from ExtraSuite (MIT, think41/extrasuite — see NOTICE): the
-`extraslide` package (transport, EMU/pt units, transforms, ID mapping, style
-extraction, request builders, SML processor/parser/diff) and the zero-config
-gogcli credential resolver. Known donor bugs fixed here: the CLI awaited the
-synchronous `diff()`.
+slidesmith descends from think41/extrasuite's extraslide (MIT, heavily rewritten
+— see NOTICE). The descended code covers the engine package (transport, EMU/pt
+units, transforms, ID mapping, style extraction, request builders, and the SML
+processor/parser/diff) plus the zero-config gogcli credential resolver. Known
+donor bugs fixed here: the CLI awaited the synchronous `diff()`.
 
 Planned rewrites (donor code is scaffolding, not contract): the SML parser
 (must consume class attributes and nested text runs — see C2 xfail), the

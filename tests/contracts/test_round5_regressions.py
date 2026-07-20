@@ -136,7 +136,7 @@ def test_duplicate_precedes_deleting_a_source_group_child(tmp_path: Path) -> Non
 
     _edit_slide(folder, edit)
 
-    from extraslide.client import diff_folder
+    from slidesmith.engine.client import diff_folder
 
     requests = diff_folder(folder)
     duplicate_index = _request_index(requests, lambda request: "duplicateObject" in request)
@@ -165,7 +165,7 @@ def test_duplicates_precede_source_text_edits_for_edited_and_pristine_copies(
 
     _edit_slide(folder, edit)
 
-    from extraslide.client import diff_folder
+    from slidesmith.engine.client import diff_folder
 
     requests = diff_folder(folder)
     duplicate_indices = [
@@ -197,7 +197,7 @@ def test_duplicate_precedes_deleting_source_group_when_only_copy_survives(
 
     _edit_slide(folder, edit)
 
-    from extraslide.client import diff_folder
+    from slidesmith.engine.client import diff_folder
 
     requests = diff_folder(folder)
     duplicate_index = _request_index(requests, lambda request: "duplicateObject" in request)
@@ -225,7 +225,7 @@ def test_duplicate_maps_and_deletes_descendant_removed_from_authored_copy(
 
     _edit_slide(folder, edit)
 
-    from extraslide.client import diff_folder
+    from slidesmith.engine.client import diff_folder
 
     requests = diff_folder(folder)
     duplicate_index = _request_index(requests, lambda request: "duplicateObject" in request)
@@ -254,7 +254,7 @@ def test_duplicate_warns_when_authored_child_position_is_ambiguous(
 
     _edit_slide(folder, edit)
 
-    from extraslide.client import diff_folder_with_result
+    from slidesmith.engine.client import diff_folder_with_result
 
     diff_result, requests = diff_folder_with_result(folder)
     assert any("duplicateObject" in request for request in requests)

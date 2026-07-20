@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from extraslide.content_parser import parse_element_classes, parse_slide_content
+from slidesmith.engine.content_parser import parse_element_classes, parse_slide_content
 
 
 GUIDE = Path(__file__).parent.parent / "docs" / "AGENT-GUIDE.md"

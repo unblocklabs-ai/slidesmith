@@ -1,9 +1,9 @@
 """Repro E redo: copy with duplicate ids (legacy detection) - child translation."""
 import json
-from extraslide.slide_processor import process_presentation
-from extraslide.content_parser import parse_slide_content
-from extraslide.content_diff import diff_presentation
-from extraslide.content_requests import generate_batch_requests
+from slidesmith.engine.slide_processor import process_presentation
+from slidesmith.engine.content_parser import parse_slide_content
+from slidesmith.engine.content_diff import diff_presentation
+from slidesmith.engine.content_requests import generate_batch_requests
 
 pres4_children = [
     {

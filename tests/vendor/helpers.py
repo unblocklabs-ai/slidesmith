@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from extraslide.transport import NotFoundError, PresentationData, Transport
+from slidesmith.engine.transport import NotFoundError, PresentationData, Transport
 
 
 class LocalFileTransport(Transport):

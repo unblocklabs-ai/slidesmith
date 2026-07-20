@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from extraslide.json_utils import read_json
+from slidesmith.engine.json_utils import read_json
 
 
 @dataclass

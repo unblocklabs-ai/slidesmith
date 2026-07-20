@@ -173,7 +173,7 @@ Disposition: **kept-deliberately-with-reason**. Commit `80075bc` genuinely resur
 Disposition: **kept-deliberately-with-reason**. Commit `80075bc` made it the live `old_text is None` compatibility path for B-C1's minimal text-edit algorithm.
 
 ### [x] D-M8 [MEDIUM] Shipped `LocalFileTransport`
-Disposition: **fixed**. Vendor tests still require it, so the class moved to `tests/vendor/helpers.py` with test-only injection; it is absent from the shipped package and `extraslide.__all__`. Vendor test files themselves are unchanged.
+Disposition: **fixed**. Vendor tests still require it, so the class moved to `tests/vendor/helpers.py` with test-only injection; it is absent from the shipped package and `slidesmith.engine.__all__`. Vendor test bodies remain unchanged; their import lines now target the engine package.
 
 ### [x] D-M9 [MEDIUM] Dead `ParsedElement.to_dict` / `has_full_position`
 Disposition: **fixed**. Removed after current-tree grep verification.

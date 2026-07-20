@@ -12,9 +12,9 @@ from typing import Any
 import httpx
 import pytest
 
-from extraslide.client import SlidesClient
-from extraslide.qa import check_folder, lint_folder, record_qa_baseline
-from extraslide.transport import (
+from slidesmith.engine.client import SlidesClient
+from slidesmith.engine.qa import check_folder, lint_folder, record_qa_baseline
+from slidesmith.engine.transport import (
     GoogleSlidesTransport,
     PresentationData,
     Transport,
@@ -422,7 +422,7 @@ def test_cli_no_thumbnails_uses_no_auth_or_transport(
         raise AssertionError("lint-only check must not use auth or transport")
 
     monkeypatch.setattr(cli, "_token", forbidden)
-    monkeypatch.setattr("extraslide.transport.GoogleSlidesTransport", forbidden)
+    monkeypatch.setattr("slidesmith.engine.transport.GoogleSlidesTransport", forbidden)
 
     cli.main(["check", str(qa_folder), "--no-thumbnails"])
 
@@ -480,7 +480,7 @@ def test_cli_downloads_thumbnails_sequentially_and_prints_paths(
         return "fake-token"
 
     monkeypatch.setattr(cli, "_token", fake_token)
-    monkeypatch.setattr("extraslide.transport.GoogleSlidesTransport", FakeTransport)
+    monkeypatch.setattr("slidesmith.engine.transport.GoogleSlidesTransport", FakeTransport)
 
     cli.main(["check", str(qa_folder)])
 

@@ -9,17 +9,17 @@ from pathlib import Path
 
 import pytest
 
-from extraslide.client import SlidesClient
-from extraslide.content_diff import (
+from slidesmith.engine.client import SlidesClient
+from slidesmith.engine.content_diff import (
     Change,
     ChangeType,
     DiffResult,
     diff_slide_content,
 )
-from extraslide.content_parser import ParsedRun
-from extraslide.content_requests import generate_batch_requests
-from extraslide.transport import PresentationData, Transport
-from extraslide.units import pt_to_emu
+from slidesmith.engine.content_parser import ParsedRun
+from slidesmith.engine.content_requests import generate_batch_requests
+from slidesmith.engine.transport import PresentationData, Transport
+from slidesmith.engine.units import pt_to_emu
 from slidesmith.workspace import materialize
 
 
@@ -60,7 +60,7 @@ def _edit_element(
             continue
         edit(element)
         sml_path.write_text(ET.tostring(root, encoding="unicode"), encoding="utf-8")
-        from extraslide.client import diff_folder
+        from slidesmith.engine.client import diff_folder
 
         return diff_folder(folder)
     raise AssertionError(f"element {element_id!r} not found")
@@ -262,7 +262,7 @@ async def test_copy_generation_warnings_are_returned_by_push(
     async def no_refresh(*_args: object, **_kwargs: object) -> None:
         return None
 
-    monkeypatch.setattr("extraslide.client.refresh_after_success", no_refresh)
+    monkeypatch.setattr("slidesmith.engine.client.refresh_after_success", no_refresh)
 
     response = await client.push(folder, force=True)
 

@@ -4,21 +4,21 @@ from __future__ import annotations
 
 from typing import Any
 
-from extraslide.classes import Color
-from extraslide.class_style_requests import (
+from slidesmith.engine.classes import Color
+from slidesmith.engine.class_style_requests import (
     _create_class_line_style_request,
     _create_class_paragraph_style_request,
     _create_class_shape_style_requests,
     _create_class_text_style_request,
 )
-from extraslide.content_diff import Change, ParagraphClassUpdate
-from extraslide.shape_types import TAG_TO_TYPE, VALID_GOOGLE_TYPES
-from extraslide.text_requests import (
+from slidesmith.engine.content_diff import Change, ParagraphClassUpdate
+from slidesmith.engine.shape_types import TAG_TO_TYPE, VALID_GOOGLE_TYPES
+from slidesmith.engine.text_requests import (
     _create_paragraph_class_update_requests,
     _create_run_style_requests,
     _create_text_insert_requests,
 )
-from extraslide.units import hex_to_rgb, pt_to_emu
+from slidesmith.engine.units import hex_to_rgb, pt_to_emu
 
 _MIN_EMU = 1
 

@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from extraslide.content_diff import ChangeType, diff_slide_content
-from extraslide.content_parser import parse_slide_content
+from slidesmith.engine.content_diff import ChangeType, diff_slide_content
+from slidesmith.engine.content_parser import parse_slide_content
 
 
 class TestContentParser:

@@ -21,8 +21,8 @@ from typing import Any
 import httpx
 import pytest
 
-from extraslide.client import ConflictError, SlidesClient
-from extraslide.transport import (
+from slidesmith.engine.client import ConflictError, SlidesClient
+from slidesmith.engine.transport import (
     APIError,
     GoogleSlidesTransport,
     PresentationData,

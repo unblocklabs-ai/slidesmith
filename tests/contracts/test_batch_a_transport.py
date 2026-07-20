@@ -10,9 +10,9 @@ from typing import Any
 import httpx
 import pytest
 
-from extraslide.client import SlidesClient
-from extraslide.conflicts import collect_request_object_ids, detect_conflicts
-from extraslide.transport import (
+from slidesmith.engine.client import SlidesClient
+from slidesmith.engine.conflicts import collect_request_object_ids, detect_conflicts
+from slidesmith.engine.transport import (
     APIError,
     AuthenticationError,
     GoogleSlidesTransport,

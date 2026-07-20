@@ -1,8 +1,8 @@
-"""extraslide - Edit Google Slides through SML (Slide Markup Language)."""
+"""slidesmith.engine - Edit Google Slides through SML (Slide Markup Language)."""
 
-from extraslide.client import SlidesClient, diff_folder
-from extraslide.conflicts import ConflictError
-from extraslide.transport import (
+from slidesmith.engine.client import SlidesClient, diff_folder
+from slidesmith.engine.conflicts import ConflictError
+from slidesmith.engine.transport import (
     APIError,
     AuthenticationError,
     GoogleSlidesTransport,

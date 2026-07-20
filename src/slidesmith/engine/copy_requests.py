@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from extraslide.classes import (
+from slidesmith.engine.classes import (
     Color,
     ContentAlignment,
     DashStyle,
@@ -16,15 +16,15 @@ from extraslide.classes import (
     TextStyle,
     TextAlignment,
 )
-from extraslide.class_style_requests import (
+from slidesmith.engine.class_style_requests import (
     _class_paragraph_style_to_api,
     _class_text_style_to_api,
     _create_class_line_style_request,
     _create_class_shape_style_requests,
 )
-from extraslide.content_diff import Change, ParagraphClassUpdate
-from extraslide.content_parser import ElementStyles, ParagraphStyles, ParsedRun
-from extraslide.element_factories import (
+from slidesmith.engine.content_diff import Change, ParagraphClassUpdate
+from slidesmith.engine.content_parser import ElementStyles, ParagraphStyles, ParsedRun
+from slidesmith.engine.element_factories import (
     _create_image_request,
     _create_line_request,
     _create_move_request,
@@ -32,7 +32,7 @@ from extraslide.element_factories import (
     _parse_color,
     _tag_to_type,
 )
-from extraslide.text_requests import (
+from slidesmith.engine.text_requests import (
     _create_paragraph_class_update_requests,
     _create_run_style_requests,
     _create_text_insert_requests,

@@ -1,6 +1,6 @@
 """Workspace folder layout: constants and pure helpers shared by pull/diff/push.
 
-Lives in extraslide (lower layer) so extraslide.client never imports from
+Lives in slidesmith.engine (lower layer) so slidesmith.engine.client never imports from
 slidesmith. slidesmith.workspace re-exports these for back-compat.
 """
 
@@ -14,8 +14,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
 
-from extraslide.slide_processor import process_presentation, write_new_format
-from extraslide.transport import Transport
+from slidesmith.engine.slide_processor import process_presentation, write_new_format
+from slidesmith.engine.transport import Transport
 
 PRESENTATION_FILE = "presentation.json"
 ID_MAPPING_FILE = "id_mapping.json"

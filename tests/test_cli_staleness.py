@@ -10,7 +10,7 @@ from typing import Any
 
 import pytest
 
-from extraslide.conflicts import ConflictError
+from slidesmith.engine.conflicts import ConflictError
 from slidesmith import cli
 from slidesmith.cli import _warn_if_stale
 
@@ -137,7 +137,7 @@ def test_diff_stdout_stays_json_and_stderr_maps_object_ids(
         {"updateShapeProperties": {"objectId": "g87a21", "fields": "contentAlignment"}},
         {"createShape": {"objectId": "new_card_ship"}},
     ]
-    monkeypatch.setattr("extraslide.client.diff_folder", lambda _: requests)
+    monkeypatch.setattr("slidesmith.engine.client.diff_folder", lambda _: requests)
     monkeypatch.setattr(cli, "_warn_if_stale", lambda _: None)
 
     cli.cmd_diff(SimpleNamespace(folder=folder))

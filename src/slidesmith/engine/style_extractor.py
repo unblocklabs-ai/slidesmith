@@ -8,8 +8,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from extraslide.bounds import Transform
-from extraslide.classes import (
+from slidesmith.engine.bounds import Transform
+from slidesmith.engine.classes import (
     ContentAlignment,
     Fill,
     ParagraphStyle,
@@ -17,10 +17,10 @@ from extraslide.classes import (
     TextStyle,
     common_classes,
 )
-from extraslide.units import emu_to_pt, rgb_to_hex
+from slidesmith.engine.units import emu_to_pt, rgb_to_hex
 
 if TYPE_CHECKING:
-    from extraslide.render_tree import RenderNode
+    from slidesmith.engine.render_tree import RenderNode
 
 
 def extract_sml_element_classes(node: RenderNode) -> list[str]:

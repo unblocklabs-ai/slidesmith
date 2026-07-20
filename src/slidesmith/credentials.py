@@ -23,7 +23,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from extraslide.json_utils import read_json
+from slidesmith.engine.json_utils import read_json
 from slidesmith.auth import browser_flow as _browser_flow
 from slidesmith.auth.browser_flow import (
     SSL_CONTEXT,  # noqa: F401

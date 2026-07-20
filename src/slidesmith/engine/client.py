@@ -1,4 +1,4 @@
-"""SlidesClient - Main API for extraslide.
+"""SlidesClient - Main API for slidesmith.engine.
 
 Provides the `pull`, `diff`, and `push` methods for the presentation workflow:
 - id_mapping.json: clean_id -> google_object_id
@@ -14,19 +14,19 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
-from extraslide.bounds import Transform
-from extraslide.conflicts import (
+from slidesmith.engine.bounds import Transform
+from slidesmith.engine.conflicts import (
     ConflictError,
     ensure_no_conflicts,
     index_presentation,
 )
-from extraslide.content_diff import DiffResult, diff_presentation
-from extraslide.content_parser import parse_slide_content
-from extraslide.content_requests import generate_batch_requests
-from extraslide.json_utils import read_json
-from extraslide.slide_processor import process_presentation, write_new_format
-from extraslide.transport import APIError, Transport
-from extraslide.workspace_layout import (
+from slidesmith.engine.content_diff import DiffResult, diff_presentation
+from slidesmith.engine.content_parser import parse_slide_content
+from slidesmith.engine.content_requests import generate_batch_requests
+from slidesmith.engine.json_utils import read_json
+from slidesmith.engine.slide_processor import process_presentation, write_new_format
+from slidesmith.engine.transport import APIError, Transport
+from slidesmith.engine.workspace_layout import (
     ID_MAPPING_FILE,
     PRESENTATION_FILE,
     PRISTINE_BASE_FILE,
@@ -165,7 +165,7 @@ class SlidesClient:
     3. push() - Apply changes to Google Slides
 
     Example:
-        >>> from extraslide.transport import GoogleSlidesTransport
+        >>> from slidesmith.engine.transport import GoogleSlidesTransport
         >>> transport = GoogleSlidesTransport(access_token="ya29...")
         >>> client = SlidesClient(transport)
         >>> await client.pull("1abc...", "./output")
@@ -267,7 +267,7 @@ class SlidesClient:
         )
         written_files.append(base_path)
 
-        from extraslide.qa import record_qa_baseline
+        from slidesmith.engine.qa import record_qa_baseline
 
         written_files.append(record_qa_baseline(presentation_dir))
 

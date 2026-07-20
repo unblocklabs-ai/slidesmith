@@ -12,7 +12,7 @@ from typing import Any
 
 import pytest
 
-from extraslide.units import pt_to_emu
+from slidesmith.engine.units import pt_to_emu
 from slidesmith.workspace import materialize
 
 
@@ -199,7 +199,7 @@ def test_partial_element_class_removal_emits_field_reset(
         lambda element: _edit_classes(element, remove=(removed_class,)),
     )
 
-    from extraslide.client import diff_folder
+    from slidesmith.engine.client import diff_folder
 
     requests = diff_folder(folder)
     assert any(
@@ -230,7 +230,7 @@ def test_removed_original_child_is_deleted_when_only_copy_instance_survives(
     root.append(copied)
     sml_path.write_text(ET.tostring(root, encoding="unicode"), encoding="utf-8")
 
-    from extraslide.client import diff_folder
+    from slidesmith.engine.client import diff_folder
 
     requests = diff_folder(folder)
     id_mapping = json.loads((folder / "id_mapping.json").read_text(encoding="utf-8"))
@@ -279,7 +279,7 @@ def test_same_slide_auto_text_group_copy_applies_edited_child_text(
     root.append(copied)
     sml_path.write_text(ET.tostring(root, encoding="unicode"), encoding="utf-8")
 
-    from extraslide.client import diff_folder_with_result
+    from slidesmith.engine.client import diff_folder_with_result
 
     diff_result, requests = diff_folder_with_result(folder)
     assert any("duplicateObject" in request for request in requests)
@@ -312,7 +312,7 @@ def test_same_slide_auto_text_copy_applies_root_paragraph_style(
     root.append(copied)
     sml_path.write_text(ET.tostring(root, encoding="unicode"), encoding="utf-8")
 
-    from extraslide.client import diff_folder
+    from slidesmith.engine.client import diff_folder
 
     requests = diff_folder(folder)
     assert any(
@@ -365,7 +365,7 @@ def test_old_workspace_enrichment_backfills_composed_parent_transform(
     child.set("x", str(float(child.get("x", "0")) + 20))
     sml_path.write_text(ET.tostring(root, encoding="unicode"), encoding="utf-8")
 
-    from extraslide.client import diff_folder
+    from slidesmith.engine.client import diff_folder
 
     requests = diff_folder(folder)
     transform = next(request["updatePageElementTransform"] for request in requests)

@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
-from extraslide.json_utils import read_json
+from slidesmith.engine.json_utils import read_json
 from slidesmith.auth.discovery import (
     OAuthClientCredentials,
     _find_gogcli_client_credentials,

@@ -2,7 +2,7 @@
 import json
 
 # ---------- A. zero-height line ----------
-from extraslide.content_requests import _create_line_request, generate_batch_requests, _order_deletes_for_safe_removal, _create_shape_request
+from slidesmith.engine.content_requests import _create_line_request, generate_batch_requests, _order_deletes_for_safe_removal, _create_shape_request
 r = _create_line_request("line1", "slide1", {"x": 100, "y": 200, "w": 300, "h": 0})
 print("A. createLine for h=0:")
 print(json.dumps(r["createLine"]["elementProperties"]["size"], indent=None))
@@ -14,9 +14,9 @@ print("A2. createShape h=0 transform:", s["createShape"]["elementProperties"]["t
 print()
 
 # ---------- B. text index corruption from dropped empty paragraph ----------
-from extraslide.slide_processor import process_presentation
-from extraslide.content_parser import parse_slide_content
-from extraslide.content_diff import diff_presentation
+from slidesmith.engine.slide_processor import process_presentation
+from slidesmith.engine.content_parser import parse_slide_content
+from slidesmith.engine.content_diff import diff_presentation
 
 def text_el(oid, paras):
     tes = []

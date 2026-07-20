@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from extraslide.classes import ParagraphStyle, PropertyState, Stroke, TextStyle
-from extraslide.content_parser import ElementStyles
-from extraslide.units import pt_to_emu
+from slidesmith.engine.classes import ParagraphStyle, PropertyState, Stroke, TextStyle
+from slidesmith.engine.content_parser import ElementStyles
+from slidesmith.engine.units import pt_to_emu
 
 
 def _create_class_style_requests(

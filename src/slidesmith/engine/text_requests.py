@@ -4,19 +4,19 @@ from __future__ import annotations
 
 from typing import Any
 
-from extraslide.classes import ParagraphStyle, TextStyle
-from extraslide.class_style_requests import (
+from slidesmith.engine.classes import ParagraphStyle, TextStyle
+from slidesmith.engine.class_style_requests import (
     _class_paragraph_style_to_api,
     _class_text_style_to_api,
     _create_class_text_style_request,
 )
-from extraslide.content_diff import (
+from slidesmith.engine.content_diff import (
     _PARAGRAPH_STYLE_FIELD_NAMES,
     _TEXT_STYLE_FIELD_NAMES,
     ParagraphClassUpdate,
     _changed_style_fields,
 )
-from extraslide.content_parser import ParagraphStyles, ParsedRun
+from slidesmith.engine.content_parser import ParagraphStyles, ParsedRun
 
 
 def _utf16_len(text: str) -> int:

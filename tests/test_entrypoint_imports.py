@@ -12,10 +12,10 @@ import pytest
 
 ORDERS = [
     "import slidesmith.cli",
-    "import slidesmith.workspace; import extraslide.client",
-    "import extraslide.client; import slidesmith.workspace",
+    "import slidesmith.workspace; import slidesmith.engine.client",
+    "import slidesmith.engine.client; import slidesmith.workspace",
     "import slidesmith.credentials",
-    "import extraslide",
+    "import slidesmith.engine",
 ]
 
 

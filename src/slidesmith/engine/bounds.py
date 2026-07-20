@@ -8,7 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from extraslide.units import emu_to_pt
+from slidesmith.engine.units import emu_to_pt
 
 
 @dataclass

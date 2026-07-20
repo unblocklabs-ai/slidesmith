@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from extraslide.json_utils import read_json
+from slidesmith.engine.json_utils import read_json
 
 
 def _presentation_id(url_or_id: str) -> str:
@@ -62,8 +62,8 @@ def _warn_if_stale(folder: str | Path, *, now: datetime | None = None) -> None:
 
 
 def cmd_pull(args: Any) -> None:
-    from extraslide.client import SlidesClient
-    from extraslide.transport import GoogleSlidesTransport
+    from slidesmith.engine.client import SlidesClient
+    from slidesmith.engine.transport import GoogleSlidesTransport
 
     pid = _presentation_id(args.url)
     token = _token("slide.pull", args.url)
@@ -85,17 +85,17 @@ def cmd_diff(args: Any) -> None:
     _warn_if_stale(args.folder)
     summary = bool(getattr(args, "summary", False))
     if summary:
-        from extraslide.client import diff_folder_with_result
+        from slidesmith.engine.client import diff_folder_with_result
 
         diff_result, requests = diff_folder_with_result(args.folder)
     else:
-        from extraslide.client import diff_folder
+        from slidesmith.engine.client import diff_folder
 
         requests = diff_folder(args.folder)
     if not requests:
         print("No changes detected.")
     elif summary:
-        from extraslide.content_diff import format_diff_summary
+        from slidesmith.engine.content_diff import format_diff_summary
 
         print(format_diff_summary(diff_result, len(requests)))
     else:
@@ -132,9 +132,9 @@ def _request_id_legend(
 
 
 def cmd_push(args: Any) -> None:
-    from extraslide.client import SlidesClient
-    from extraslide.conflicts import ConflictError
-    from extraslide.transport import GoogleSlidesTransport
+    from slidesmith.engine.client import SlidesClient
+    from slidesmith.engine.conflicts import ConflictError
+    from slidesmith.engine.transport import GoogleSlidesTransport
 
     _warn_if_stale(args.folder)
     token = _token("slide.push", str(args.folder))
@@ -163,12 +163,12 @@ def cmd_push(args: Any) -> None:
 
 
 def cmd_check(args: Any) -> None:
-    from extraslide.qa import check_folder, download_thumbnails
+    from slidesmith.engine.qa import check_folder, download_thumbnails
 
     folder = Path(args.folder)
     _warn_if_stale(folder)
     if not args.no_thumbnails:
-        from extraslide.transport import GoogleSlidesTransport
+        from slidesmith.engine.transport import GoogleSlidesTransport
 
         metadata = read_json(folder / "presentation.json", missing_ok=False)
         # Preserve the pre-auth workspace validation order from the inline engine.

@@ -7,7 +7,7 @@ Tests cover bidirectional conversion between:
 Spec reference: markup-syntax-design.md
 """
 
-from extraslide.classes import (
+from slidesmith.engine.classes import (
     Color,
     DashStyle,
     Fill,

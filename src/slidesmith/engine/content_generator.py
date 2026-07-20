@@ -17,13 +17,13 @@ import re
 from typing import TYPE_CHECKING, Any
 from xml.sax.saxutils import escape
 
-from extraslide.classes import ParagraphStyle, common_classes
-from extraslide.shape_types import TYPE_TO_TAG
-from extraslide.style_extractor import (
+from slidesmith.engine.classes import ParagraphStyle, common_classes
+from slidesmith.engine.shape_types import TYPE_TO_TAG
+from slidesmith.engine.style_extractor import (
     extract_sml_element_classes,
     extract_sml_text_classes,
 )
-from extraslide.units import format_pt
+from slidesmith.engine.units import format_pt
 
 # Pattern to match XML-invalid control characters (except tab, newline, carriage return)
 _CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
@@ -35,7 +35,7 @@ def _sanitize_text(text: str) -> str:
 
 
 if TYPE_CHECKING:
-    from extraslide.render_tree import RenderNode
+    from slidesmith.engine.render_tree import RenderNode
 
 
 def generate_slide_content(

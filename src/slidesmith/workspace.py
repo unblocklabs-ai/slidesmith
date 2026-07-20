@@ -6,8 +6,8 @@ import json
 from pathlib import Path
 from typing import Any
 
-from extraslide.slide_processor import process_presentation, write_new_format
-from extraslide.workspace_layout import (
+from slidesmith.engine.slide_processor import process_presentation, write_new_format
+from slidesmith.engine.workspace_layout import (
     ID_MAPPING_FILE,
     PRESENTATION_FILE,
     PRISTINE_BASE_FILE,

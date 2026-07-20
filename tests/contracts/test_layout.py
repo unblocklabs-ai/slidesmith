@@ -7,10 +7,10 @@ from pathlib import Path
 
 import pytest
 
-from extraslide.client import diff_folder
-from extraslide.content_parser import ParsedElement, parse_slide_content
-from extraslide.layout import ApproximateTextMeasurer, compile_layout
-from extraslide.units import pt_to_emu
+from slidesmith.engine.client import diff_folder
+from slidesmith.engine.content_parser import ParsedElement, parse_slide_content
+from slidesmith.engine.layout import ApproximateTextMeasurer, compile_layout
+from slidesmith.engine.units import pt_to_emu
 from slidesmith.workspace import materialize
 
 

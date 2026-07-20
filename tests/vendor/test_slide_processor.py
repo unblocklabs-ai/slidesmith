@@ -7,12 +7,12 @@ from pathlib import Path
 
 import pytest
 
-from extraslide.bounds import BoundingBox
-from extraslide.content_generator import generate_slide_content
-from extraslide.id_manager import IDManager
-from extraslide.render_tree import RenderNode, build_render_tree
-from extraslide.slide_processor import process_presentation
-from extraslide.style_extractor import extract_styles
+from slidesmith.engine.bounds import BoundingBox
+from slidesmith.engine.content_generator import generate_slide_content
+from slidesmith.engine.id_manager import IDManager
+from slidesmith.engine.render_tree import RenderNode, build_render_tree
+from slidesmith.engine.slide_processor import process_presentation
+from slidesmith.engine.style_extractor import extract_styles
 
 
 class TestBoundingBox:

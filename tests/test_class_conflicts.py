@@ -7,9 +7,9 @@ from pathlib import Path
 
 import pytest
 
-from extraslide.classes import ContentAlignment
-from extraslide.client import diff_folder
-from extraslide.content_parser import parse_slide_content
+from slidesmith.engine.classes import ContentAlignment
+from slidesmith.engine.client import diff_folder
+from slidesmith.engine.content_parser import parse_slide_content
 from slidesmith.workspace import materialize
 
 

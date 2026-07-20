@@ -1,7 +1,7 @@
-from extraslide.content_requests import _order_deletes_for_safe_removal
-from extraslide.id_manager import assign_ids
-from extraslide.client import SlidesClient
-from extraslide.transport import Transport
+from slidesmith.engine.content_requests import _order_deletes_for_safe_removal
+from slidesmith.engine.id_manager import assign_ids
+from slidesmith.engine.client import SlidesClient
+from slidesmith.engine.transport import Transport
 
 # 1. Group + children delete ordering: pristine google ids (no _c pattern)
 ids = {"gGROUP123", "gCHILDa", "gCHILDb"}

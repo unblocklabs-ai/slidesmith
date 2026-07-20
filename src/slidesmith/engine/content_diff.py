@@ -15,8 +15,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
-from extraslide.classes import Fill, ParagraphStyle, PropertyState, Stroke, TextStyle
-from extraslide.content_parser import (
+from slidesmith.engine.classes import Fill, ParagraphStyle, PropertyState, Stroke, TextStyle
+from slidesmith.engine.content_parser import (
     ElementStyles,
     ParagraphStyles,
     ParsedElement,

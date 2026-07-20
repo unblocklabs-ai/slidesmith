@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
-from extraslide.units import emu_to_pt, format_pt, hex_to_rgb, rgb_to_hex
+from slidesmith.engine.units import emu_to_pt, format_pt, hex_to_rgb, rgb_to_hex
 
 
 class PropertyState(Enum):

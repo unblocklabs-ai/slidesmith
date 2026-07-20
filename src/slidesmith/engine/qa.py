@@ -10,10 +10,10 @@ from typing import Any, Callable
 
 from defusedxml import ElementTree as DefusedET
 
-from extraslide.bounds import BoundingBox
-from extraslide.content_parser import ParsedElement, ParsedRun, parse_all_slides
-from extraslide.json_utils import read_json
-from extraslide.layout import ApproximateTextMeasurer, TextMeasurer
+from slidesmith.engine.bounds import BoundingBox
+from slidesmith.engine.content_parser import ParsedElement, ParsedRun, parse_all_slides
+from slidesmith.engine.json_utils import read_json
+from slidesmith.engine.layout import ApproximateTextMeasurer, TextMeasurer
 
 OVERLAP_THRESHOLD = 0.15
 TEXT_OVERFLOW_TOLERANCE = 1.10

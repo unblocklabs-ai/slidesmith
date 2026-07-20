@@ -10,28 +10,28 @@ from typing import Any
 
 import pytest
 
-from extraslide.bounds import BoundingBox
-from extraslide.classes import TextStyle, parse_text_style_classes
-from extraslide.client import SlidesClient, diff_folder
-from extraslide.conflicts import collect_request_object_ids
-from extraslide.content_diff import (
+from slidesmith.engine.bounds import BoundingBox
+from slidesmith.engine.classes import TextStyle, parse_text_style_classes
+from slidesmith.engine.client import SlidesClient, diff_folder
+from slidesmith.engine.conflicts import collect_request_object_ids
+from slidesmith.engine.content_diff import (
     Change,
     ChangeType,
     DiffResult,
     diff_presentation,
     diff_slide_content,
 )
-from extraslide.content_parser import ParsedRun, parse_slide_content
-from extraslide.content_requests import (
+from slidesmith.engine.content_parser import ParsedRun, parse_slide_content
+from slidesmith.engine.content_requests import (
     _order_deletes_for_safe_removal,
     generate_batch_requests,
 )
-from extraslide.element_factories import _create_line_request, _create_shape_request
-from extraslide.text_requests import _create_text_update_requests
-from extraslide.slide_processor import process_presentation
-from extraslide.style_extractor import _extract_color
-from extraslide.transport import PresentationData, Transport
-from extraslide.units import pt_to_emu
+from slidesmith.engine.element_factories import _create_line_request, _create_shape_request
+from slidesmith.engine.text_requests import _create_text_update_requests
+from slidesmith.engine.slide_processor import process_presentation
+from slidesmith.engine.style_extractor import _extract_color
+from slidesmith.engine.transport import PresentationData, Transport
+from slidesmith.engine.units import pt_to_emu
 from slidesmith.workspace import materialize
 
 GOLDEN = (
@@ -438,7 +438,7 @@ def test_removed_run_styling_is_reset_and_utf16_combining_offsets_are_exact() ->
 
 def test_deep_group_copy_builds_nested_groups_and_reserves_every_id(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        "extraslide.content_requests.IdAllocator.unique_suffix",
+        "slidesmith.engine.content_requests.IdAllocator.unique_suffix",
         lambda _self: "fixed",
     )
     change = Change(

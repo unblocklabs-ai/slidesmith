@@ -13,7 +13,7 @@ from pathlib import Path
 from defusedxml import ElementTree as DefusedET
 from defusedxml.common import DefusedXmlException
 
-from extraslide.classes import (
+from slidesmith.engine.classes import (
     ClassKind,
     ContentAlignment,
     Fill,
@@ -28,7 +28,7 @@ from extraslide.classes import (
     parse_text_style_classes,
     validate_mutually_exclusive_classes,
 )
-from extraslide.layout import compile_layout
+from slidesmith.engine.layout import compile_layout
 
 
 @dataclass

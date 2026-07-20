@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from extraslide import (
+from slidesmith.engine import (
     LocalFileTransport,
     NotFoundError,
     PresentationData,

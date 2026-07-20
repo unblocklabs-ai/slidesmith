@@ -8,7 +8,7 @@ Tests cover:
 
 import pytest
 
-from extraslide.units import emu_to_pt, format_pt, hex_to_rgb, pt_to_emu, rgb_to_hex
+from slidesmith.engine.units import emu_to_pt, format_pt, hex_to_rgb, pt_to_emu, rgb_to_hex
 
 
 class TestEmuPtConversion:

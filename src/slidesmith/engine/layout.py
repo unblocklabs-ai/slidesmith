@@ -439,7 +439,15 @@ def _expand_use(
         raise ValueError(f"{use_label}: missing required 'component' attribute")
     definition = components.get(component_name) if components is not None else None
     if definition is None:
-        raise ValueError(f"{use_label}: unknown component '{component_name}'")
+        available = (
+            ", ".join(sorted(components.definitions))
+            if components is not None
+            else ""
+        ) or "(none)"
+        raise ValueError(
+            f"{use_label}: unknown component '{component_name}'; "
+            f"available components: {available}"
+        )
 
     id_prefix = authored_id or f"use_{component_name}_{use_state.count}"
     if id_prefix in use_state.prefixes:

@@ -468,3 +468,16 @@ and both requests without upload or write. Authored create-contain remains a
 single `createImage` because its aspect-matched size and embedded transform
 already pin the intended visual frame; an offline regression now locks that
 contract. Cover/crop remains unsupported.
+
+## M6 DOGFOOD R2 FIXES
+
+- [x] Finding 1: authored `Image fit="contain"` elements now use one
+  aspect-correct effective box for request generation, QA/preflight geometry,
+  and post-push persistence comparison. Clear effective boxes no longer report
+  false overlap or failed-persistence warnings, while genuine effective overlap
+  remains visible.
+- [x] Finding 2: expanded component children are verified selectable/editable
+  by deterministic ID after a simulated push/re-pull; `components --show`
+  exposes a definition's body and slot contract; unknown component/slot errors
+  list valid choices.
+- [x] Minor: `diff --slide N` limits raw or summary output to one 1-based slide.

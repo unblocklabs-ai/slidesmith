@@ -625,7 +625,12 @@ class SlidesClient:
 
         return written_files
 
-    def diff(self, folder_path: Path) -> list[dict[str, Any]]:
+    def diff(
+        self,
+        folder_path: Path,
+        *,
+        slide: int | None = None,
+    ) -> list[dict[str, Any]]:
         """Compare current content against pristine copy and generate update requests.
 
         This is a local-only operation that does not call any APIs.
@@ -636,14 +641,19 @@ class SlidesClient:
         Returns:
             List of Google Slides API batchUpdate request objects
         """
-        _, requests = self.diff_with_result(folder_path)
+        _, requests = self.diff_with_result(folder_path, slide=slide)
         return requests
 
     def diff_with_result(
-        self, folder_path: Path
+        self,
+        folder_path: Path,
+        *,
+        slide: int | None = None,
     ) -> tuple[DiffResult, list[dict[str, Any]]]:
         """Return both semantic changes and their generated API requests."""
         folder_path = Path(folder_path)
+        if slide is not None and slide < 1:
+            raise ValueError("diff --slide must be at least 1")
 
         # Read current state
         current_slides = self._read_current_slides(folder_path)
@@ -662,6 +672,13 @@ class SlidesClient:
             id_mapping,
             workspace_root=folder_path,
         )
+        if slide is not None:
+            slide_index = f"{slide:02d}"
+            diff_result.changes = [
+                change
+                for change in diff_result.changes
+                if change.slide_index == slide_index
+            ]
 
         # Build slide ID mapping (slide_index -> google_slide_id)
         metadata = read_json(folder_path / PRESENTATION_FILE, missing_ok=True)
@@ -1268,7 +1285,11 @@ class SlidesClient:
 
         return result
 
-def diff_folder(folder_path: str | Path) -> list[dict[str, Any]]:
+def diff_folder(
+    folder_path: str | Path,
+    *,
+    slide: int | None = None,
+) -> list[dict[str, Any]]:
     """Convenience function to diff a presentation folder.
 
     Args:
@@ -1278,12 +1299,14 @@ def diff_folder(folder_path: str | Path) -> list[dict[str, Any]]:
         List of batchUpdate request objects
     """
 
-    return diff_folder_with_result(folder_path)[1]
+    return diff_folder_with_result(folder_path, slide=slide)[1]
 
 
 def diff_folder_with_result(
     folder_path: str | Path,
+    *,
+    slide: int | None = None,
 ) -> tuple[DiffResult, list[dict[str, Any]]]:
     """Return semantic changes and batchUpdate requests for a local folder."""
     client = SlidesClient()
-    return client.diff_with_result(Path(folder_path))
+    return client.diff_with_result(Path(folder_path), slide=slide)

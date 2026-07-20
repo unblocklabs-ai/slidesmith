@@ -20,6 +20,7 @@ inspect and validate them before writing remotely, then check the rendered deck:
 ```bash
 slidesmith diff <ID>
 slidesmith diff <ID> --summary
+slidesmith diff <ID> --slide 1
 slidesmith check <ID> --no-thumbnails
 slidesmith push <ID>
 slidesmith check <ID>
@@ -38,6 +39,9 @@ the authored local source because its public Drive URL does not exist yet;
 creates, moves, copies, style changes, and text edits, followed by the total
 generated request count. It is intended for a quick human review; use plain
 `diff` whenever the exact API payload matters.
+`diff --slide N` limits either raw JSON or `--summary` output to one 1-based
+slide, which is useful for inspecting a focused edit without unrelated deck
+changes.
 `check --no-thumbnails` is also local-only.
 Plain `check`, run after push, downloads current slide thumbnails into
 `<ID>/.qa/` before running geometry QA, so it needs authentication. `push`
@@ -73,7 +77,9 @@ authentication or API call. `off` is the default. `warn` prints the normal QA
 report and proceeds when active findings are `NEW` relative to
 `.pristine/qa-baseline.json`; `block` prints the report and exits 1 instead.
 Pre-existing and accepted findings do not block. The same gate runs once before
-a deck-wide or `--per-slide` push.
+a deck-wide or `--per-slide` push. Geometry QA uses the effective post-layout
+box. In particular, an authored `Image fit="contain"` is checked at its
+aspect-correct contained width/height, not its larger authored frame.
 
 This is a deliberate atomicity tradeoff: earlier slide batches remain applied
 when a later slide fails. Do not use `--per-slide` when the deck must change as
@@ -100,7 +106,10 @@ Persistence verification intentionally suppresses two always-normalized cases:
 geometry differences smaller than 0.02 pt on every changed box field, and
 Google's injected default text-layout classes (`content-align-top`,
 `text-align-left`, `leading-100`, and `spacing-collapse-lists`) on newly created
-elements. Differences at or above 0.02 pt and any meaningful text, geometry, or
+elements. The aspect-correct effective width/height of an authored
+`Image fit="contain"` is also the intended geometry, so Google's expected
+authored-frame-to-contained-frame correction does not warn as a persistence
+failure. Differences at or above 0.02 pt and any meaningful text, geometry, or
 style drop still warn.
 
 Visual work is iterative: edit, `diff`, run the offline check, `push`, then run
@@ -654,7 +663,8 @@ with Pillow and never pass through the HTTP fetcher. Slidesmith shrinks either
 the authored width or height, keeping the resulting frame anchored at the
 authored top-left `x`, `y` position. Authored `x`, `y`, `w`, and `h` must all be
 finite and strictly positive for local and remote images under both `stretch`
-and `contain`.
+and `contain`. This post-contain frame is the single effective geometry used by
+request generation, diff/persistence comparison, and offline QA/preflight.
 
 Google's `cropProperties` are **READ-ONLY via the API**, so `fit="cover"` is
 impossible. Slidesmith rejects `cover` instead of pretending it can create that
@@ -774,7 +784,12 @@ slots derived from their bodies with:
 
 ```bash
 slidesmith components <ID>
+slidesmith components <ID> --show stat-card
 ```
+
+The list form prints every component and its derived slots. `--show` prints one
+component's body plus whether each slot is required or optional, so an agent can
+inspect the reusable definition before authoring a `Use`.
 
 Use a component from a slide like this:
 
@@ -810,6 +825,17 @@ instances cannot collide. If `Use` omits `id`, Slidesmith uses
 `use_<component-name>_<1-based-document-occurrence>` as the prefix. Explicit
 `Use` IDs must be unique within the slide.
 
+After push and re-pull, the expanded children are ordinary SML elements with
+those IDs. Target a specific instance through the normal selector engine:
+
+```bash
+slidesmith select <ID> 'id=revenue__card'
+slidesmith apply <ID> 'id=revenue__card' --add-class fill-#eef2ff
+```
+
+The re-pulled slide does not reconstruct `Use`, but its deterministic child IDs
+remain selectable and editable.
+
 Compilation is interleaved with layout rather than a blind before/after pass.
 For a nested `Use`, the parent Stack/Grid first computes the Use frame; then
 Slidesmith clones the component, interpolates slots, prefixes IDs, compiles any
@@ -820,11 +846,12 @@ Google never sees `Use`, `Component`, layout containers, roles, or
 `qa-accept-*` classes. Pull generation never emits `Use`, and a later pull does
 not reconstruct component intent.
 
-Unknown component names, missing required slots, duplicate Use IDs, malformed
-placeholders, and malformed `components.sml` fail loudly. Errors name the
-offending Use/component (and the components file where applicable). A workspace
-with no `components.sml` and a slide with no authoring constructs stays on the
-strict byte-identical passthrough path.
+Unknown component names, unknown or missing required slots, duplicate Use IDs,
+malformed placeholders, and malformed `components.sml` fail loudly. Unknown
+component and slot errors list the currently available component or slot names;
+all errors name the offending Use/component (and the components file where
+applicable). A workspace with no `components.sml` and a slide with no authoring
+constructs stays on the strict byte-identical passthrough path.
 
 ### Stack
 

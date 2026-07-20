@@ -6,6 +6,9 @@ import json
 import re
 from pathlib import Path
 
+import pytest
+
+from slidesmith.cli import main
 from slidesmith.engine.client import diff_folder
 from slidesmith.engine.content_diff import Change, ChangeType, DiffResult
 from slidesmith.engine.content_requests import generate_batch_requests
@@ -61,6 +64,33 @@ def test_authored_id_is_sent_directly_in_create_requests(tmp_path: Path) -> None
         for body in request.values()
         if isinstance(body, dict) and "objectId" in body
     )
+
+
+def test_diff_slide_limits_output_to_one_slide(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    folder = materialize(json.loads(GOLDEN.read_text(encoding="utf-8")), tmp_path)
+    for slide_index, element_id in (("01", "slide_one_box"), ("02", "slide_two_box")):
+        sml = folder / "slides" / slide_index / "content.sml"
+        sml.write_text(
+            sml.read_text(encoding="utf-8").replace(
+                "</Slide>",
+                f'<Rect id="{element_id}" x="10" y="10" w="20" h="20" />'
+                "</Slide>",
+            ),
+            encoding="utf-8",
+        )
+
+    main(["diff", str(folder), "--slide", "1"])
+
+    requests = json.loads(capsys.readouterr().out)
+    created_ids = [
+        request["createShape"]["objectId"]
+        for request in requests
+        if "createShape" in request
+    ]
+    assert created_ids == ["slide_one_box"]
 
 
 def test_pull_preserves_authored_and_legacy_ids_but_filters_google_ids() -> None:

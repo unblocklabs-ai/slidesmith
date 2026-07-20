@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,7 @@ from slidesmith.engine.client import diff_folder
 from slidesmith.engine.components import load_components
 from slidesmith.engine.content_parser import ParsedElement, parse_slide_content
 from slidesmith.engine.layout import compile_layout
+from slidesmith.engine.selector import apply_to_elements, select_elements
 from slidesmith.workspace import materialize
 
 
@@ -141,12 +143,44 @@ def test_use_inside_stack_gets_stack_frame_before_component_expands(
 
 
 def test_unknown_component_error_names_use_and_component(tmp_path: Path) -> None:
-    _write_components(tmp_path, '<Component name="known"><Rect /></Component>')
+    _write_components(
+        tmp_path,
+        '<Component name="known"><Rect /></Component>'
+        '<Component name="other"><Rect /></Component>',
+    )
 
-    with pytest.raises(ValueError, match="Use 'bad'.*unknown component 'missing'"):
+    with pytest.raises(
+        ValueError,
+        match=(
+            "Use 'bad'.*unknown component 'missing'.*"
+            "available components: known, other"
+        ),
+    ):
         _elements(
             '<Slide><Use id="bad" component="missing" x="0" y="0" '
             'w="10" h="10" /></Slide>',
+            tmp_path,
+        )
+
+
+def test_unknown_component_slot_lists_available_slots(tmp_path: Path) -> None:
+    _write_components(
+        tmp_path,
+        '<Component name="stat-card"><TextBox id="text" x="0" y="0" '
+        'w="100" h="20"><P>{{title}}: {{value}}</P></TextBox></Component>',
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            "Use 'bad-slot'.*unknown slot 'titel'.*"
+            "available slots: title, value"
+        ),
+    ):
+        _elements(
+            '<Slide><Use id="bad-slot" component="stat-card" titel="Revenue" '
+            'title="Revenue" value="$4M" x="0" y="0" w="100" h="20" />'
+            "</Slide>",
             tmp_path,
         )
 
@@ -229,6 +263,65 @@ def test_components_cli_lists_names_and_derived_slots(
         "spacer: (no slots)",
         "stat-card: accent, title, value",
     ]
+
+
+def test_components_cli_show_prints_slots_and_body(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _write_components(
+        tmp_path,
+        '<Component name="stat-card"><Rect id="body" x="0" y="0" '
+        'w="100" h="40" class="fill-{{accent|#000000}}" />'
+        '<TextBox id="text" x="0" y="0" w="100" h="20">'
+        '<P>{{title}}</P></TextBox></Component>',
+    )
+
+    main(["components", str(tmp_path), "--show", "stat-card"])
+
+    output = capsys.readouterr().out
+    assert output.startswith("stat-card\nSlots:\n")
+    assert "  accent (optional)\n" in output
+    assert "  title (required)\n" in output
+    assert "Body:\n" in output
+    assert '<Rect id="body"' in output
+    assert '<TextBox id="text"' in output
+    assert "{{title}}" in output
+
+
+def test_expanded_component_child_is_selectable_and_editable_after_round_trip(
+    tmp_path: Path,
+) -> None:
+    folder = materialize(json.loads(GOLDEN.read_text(encoding="utf-8")), tmp_path)
+    _write_components(
+        folder,
+        '<Component name="tile"><Rect id="body" x="0" y="0" '
+        'w="100" h="40" /></Component>',
+    )
+    content_path = folder / "slides" / "01" / "content.sml"
+    slide_id = ET.fromstring(content_path.read_text(encoding="utf-8")).get("id")
+    authored = (
+        f'<Slide id="{slide_id}"><Use id="revenue" component="tile" '
+        'x="10" y="20" w="100" h="40" /></Slide>'
+    )
+    # A pull returns the expanded plain SML and preserves the deterministic ID.
+    content_path.write_text(
+        compile_layout(authored, components=load_components(folder)),
+        encoding="utf-8",
+    )
+
+    matches = select_elements(folder, 'id="revenue__body"')
+    result = apply_to_elements(
+        folder,
+        'id="revenue__body"',
+        add_classes=("fill-#abcdef",),
+    )
+
+    assert [match.element.clean_id for match in matches] == ["revenue__body"]
+    assert result.total_matches == 1
+    assert result.total_mutations == 1
+    assert 'id="revenue__body"' in content_path.read_text(encoding="utf-8")
+    assert 'class="fill-#abcdef"' in content_path.read_text(encoding="utf-8")
 
 
 def test_malformed_components_file_is_loud_and_names_path(tmp_path: Path) -> None:

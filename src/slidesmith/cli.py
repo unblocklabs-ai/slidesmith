@@ -109,14 +109,24 @@ def cmd_pull(args: Any) -> None:
 def cmd_diff(args: Any) -> None:
     _warn_if_stale(args.folder)
     summary = bool(getattr(args, "summary", False))
+    slide = getattr(args, "slide", None)
     if summary:
         from slidesmith.engine.client import diff_folder_with_result
 
-        diff_result, requests = diff_folder_with_result(args.folder)
+        if slide is None:
+            diff_result, requests = diff_folder_with_result(args.folder)
+        else:
+            diff_result, requests = diff_folder_with_result(
+                args.folder,
+                slide=slide,
+            )
     else:
         from slidesmith.engine.client import diff_folder
 
-        requests = diff_folder(args.folder)
+        if slide is None:
+            requests = diff_folder(args.folder)
+        else:
+            requests = diff_folder(args.folder, slide=slide)
     if not requests:
         print("No changes detected.")
     elif summary:
@@ -335,6 +345,25 @@ def cmd_components(args: Any) -> None:
     from slidesmith.engine.components import load_components
 
     library = load_components(args.folder)
+    if args.show:
+        definition = library.get(args.show)
+        if definition is None:
+            available = ", ".join(sorted(library.definitions)) or "(none)"
+            raise ValueError(
+                f"Unknown component '{args.show}'; available components: {available}"
+            )
+        print(definition.name)
+        print("Slots:")
+        if definition.slots:
+            for slot in definition.slots:
+                requirement = "required" if slot.required else "optional"
+                print(f"  {slot.name} ({requirement})")
+        else:
+            print("  (none)")
+        print("Body:")
+        for line in definition.format_body().splitlines():
+            print(f"  {line}")
+        return
     for name in sorted(library.definitions):
         definition = library.definitions[name]
         slots = ", ".join(slot.name for slot in definition.slots) or "(no slots)"
@@ -519,6 +548,12 @@ def main(argv: list[str] | None = None) -> None:
         action="store_true",
         help="Print a compact slide-grouped summary instead of request JSON",
     )
+    sd.add_argument(
+        "--slide",
+        type=int,
+        metavar="N",
+        help="Limit output to one 1-based slide number",
+    )
     sd.set_defaults(func=cmd_diff)
 
     spu = sub.add_parser("push", help="Apply local edits to the same deck in place")
@@ -674,6 +709,11 @@ def main(argv: list[str] | None = None) -> None:
         help="List reusable components and their derived slots (local only)",
     )
     sco.add_argument("folder", help="Presentation folder containing components.sml")
+    sco.add_argument(
+        "--show",
+        metavar="NAME",
+        help="Print one component's body and required/optional slot list",
+    )
     sco.set_defaults(func=cmd_components)
 
     sth = sub.add_parser(

@@ -17,6 +17,7 @@ _NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_-]*\Z")
 _SLOT = re.compile(
     r"\{\{([A-Za-z_][A-Za-z0-9_-]*)(?:\|([^{}]*))?\}\}"
 )
+_USE_LAYOUT_ATTRIBUTES = frozenset({"id", "x", "y", "w", "h", "flex"})
 
 
 @dataclass(frozen=True)
@@ -43,6 +44,16 @@ class ComponentDefinition:
         use_label: str,
     ) -> list[ET.Element]:
         """Clone, interpolate, and deterministically prefix this definition."""
+        available = {slot.name for slot in self.slots}
+        unknown = sorted(set(values) - available - _USE_LAYOUT_ATTRIBUTES)
+        if unknown:
+            label = "slot" if len(unknown) == 1 else "slots"
+            names = ", ".join(repr(name) for name in unknown)
+            options = ", ".join(sorted(available)) or "(none)"
+            raise ValueError(
+                f"{use_label} of component '{self.name}': unknown {label} "
+                f"{names}; available slots: {options}"
+            )
         missing = next(
             (slot.name for slot in self.slots if slot.required and slot.name not in values),
             None,
@@ -72,6 +83,18 @@ class ComponentDefinition:
                 if element_id := element.get("id"):
                     element.set("id", f"{id_prefix}__{element_id}")
         return roots
+
+    def format_body(self) -> str:
+        """Serialize the reusable body for agent-facing inspection."""
+        serialized: list[str] = []
+        for element in self.body:
+            clone = copy.deepcopy(element)
+            clone.tail = None
+            ET.indent(clone, space="  ")
+            serialized.append(
+                ET.tostring(clone, encoding="unicode", short_empty_elements=True)
+            )
+        return "\n".join(serialized)
 
 
 @dataclass(frozen=True)

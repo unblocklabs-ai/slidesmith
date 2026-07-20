@@ -117,9 +117,12 @@ user's Drive.
 
 ## For agents
 
-Read [docs/AGENT-GUIDE.md](docs/AGENT-GUIDE.md) before editing a deck. It is the
-source-derived reference for the pull/diff/check/push loop, accepted SML class
-vocabulary, one-shot Stack/Grid layout, QA judgment, and auth recovery.
+Start with the packaged skill: [skills/slidesmith/SKILL.md](skills/slidesmith/SKILL.md)
+(mental model + command surface) and [skills/slidesmith/recipes.md](skills/slidesmith/recipes.md)
+(copy-paste task recipes). For the exhaustive reference — full class vocabulary,
+selector grammar, one-shot layout, QA judgment, auth recovery — read
+[docs/AGENT-GUIDE.md](docs/AGENT-GUIDE.md). See [CHANGELOG.md](CHANGELOG.md) for
+what shipped in each release.
 
 ## Features
 

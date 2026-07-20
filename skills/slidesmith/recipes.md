@@ -1,0 +1,114 @@
+# slidesmith recipes
+
+Copy-paste task recipes. Replace `$ID` with the presentation id (or paste the
+full URL). Every recipe ends by previewing with `diff` before `push` — keep that
+habit. `slidesmith` here means the installed CLI (`.venv/bin/slidesmith` in a
+dev checkout).
+
+## 0. Setup / sanity
+```bash
+slidesmith auth doctor
+ID=<presentation-id-or-url>
+slidesmith pull "$ID" -o .        # creates ./<id>/
+D=./<id>                          # the pulled folder
+```
+
+## 1. Deck-wide restyle by role (the ID-scripting killer)
+Tag once, restyle forever.
+```bash
+# tag a role taxonomy (adjust selectors to the deck)
+slidesmith apply "$D" 'text$=/ 06'                      --set-role footer
+slidesmith apply "$D" 'tag=Rect AND h>60 AND slide in 2..6' --set-role title
+slidesmith apply "$D" 'role=title' --add-class text-color-#f2ede2 --add-class font-family-montserrat
+# preview + push
+slidesmith diff "$D" --summary
+slidesmith push "$D"
+```
+
+## 2. Bulk color/font swap across the whole deck
+```bash
+slidesmith replace-class "$D" \
+  --swap text-color-#ffffff=text-color-#f2ede2 \
+  --swap bold\ font-family-arial=bold\ font-family-montserrat \
+  --dry-run                       # shows per-slide counts, writes nothing
+slidesmith replace-class "$D" --swap text-color-#ffffff=text-color-#f2ede2
+slidesmith diff "$D" --summary && slidesmith push "$D"
+```
+
+## 3. Add a row of cards with the layout engine (no coordinate math)
+Append inside a slide's `content.sml`, before `</Slide>`:
+```xml
+<Stack id="mrow" x="56" y="440" w="848" h="72" direction="row" gap="24" align="stretch">
+  <TextBox id="m1" flex="1" class="fill-#0a111d stroke-#5df2b2/36 stroke-solid content-align-middle text-align-center"><P class="bold text-size-13 text-color-#5df2b2">SHIP</P></TextBox>
+  <TextBox id="m2" flex="1" class="fill-#0a111d stroke-#5df2b2/36 stroke-solid content-align-middle text-align-center"><P class="bold text-size-13 text-color-#5df2b2">SCALE</P></TextBox>
+  <TextBox id="m3" flex="1" class="fill-#0a111d stroke-#d9b36c/54 stroke-solid content-align-middle text-align-center"><P class="bold text-size-13 text-color-#d9b36c">PROFIT</P></TextBox>
+</Stack>
+```
+```bash
+slidesmith diff "$D" --summary     # confirms 3 CREATEs at computed x-positions
+slidesmith push "$D"
+```
+
+## 4. Repeat a card via a component
+`$D/components.sml`:
+```xml
+<Components>
+  <Component name="stat">
+    <Rect id="box" x="0" y="0" w="200" h="96" class="fill-#0a111d stroke-{{accent|#5df2b2}}/40 stroke-solid content-align-middle text-align-center">
+      <P class="bold font-family-montserrat text-size-28 text-color-{{accent|#5df2b2}}">{{value}}</P>
+      <P class="font-family-arial text-size-9 text-color-#bdc5d4">{{label}}</P>
+    </Rect>
+  </Component>
+</Components>
+```
+In a slide, inside a Stack:
+```xml
+<Use component="stat" flex="1" value="90d" label="TO LAUNCH" accent="#d9b36c"/>
+```
+```bash
+slidesmith components "$D" --show stat     # inspect body + slots
+slidesmith diff "$D" --summary && slidesmith push "$D"
+```
+
+## 5. Image gallery, mixed aspect ratios
+```xml
+<Image id="hero"  src="https://picsum.photos/seed/a/1600/900" x="56"  y="150" w="480" h="270" fit="contain"/>
+<Image id="tall"  src="https://picsum.photos/seed/b/800/1200" x="560" y="150" w="140" h="210" fit="contain"/>
+<Image id="sq"    src="./assets/logo.png"                     x="720" y="150" w="150" h="150" fit="contain"/>
+```
+```bash
+slidesmith diff "$D" --summary
+slidesmith push "$D"
+slidesmith check "$D" --contact-sheet        # verify the render visually
+# swap one later, geometry pinned:
+slidesmith replace-image "$D" hero https://picsum.photos/seed/c/1200/675 --dry-run
+```
+
+## 6. Big deck: safe, resumable push
+```bash
+slidesmith push "$D" --per-slide --preflight=block   # QA-gate + per-slide progress
+# if it stops mid-deck on a failure:
+slidesmith push "$D" --per-slide --resume            # continues from the first unfinished slide
+```
+
+## 7. Apply one deck's design language to another
+```bash
+slidesmith theme extract "$SRC" --from-slides 1-3 -o theme.json
+# on the target deck, assign roles first if you want role-aware restyle (recipe 1), then:
+slidesmith theme apply "$DST" theme.json --to-slides 4-24 --map-colors --dry-run --verbose
+slidesmith theme apply "$DST" theme.json --to-slides 4-24 --map-colors
+slidesmith diff "$DST" --summary && slidesmith push "$DST"
+```
+
+## 8. Silence intentional decorative bleed in QA
+```bash
+slidesmith check "$D" --no-thumbnails            # see finding ids
+slidesmith check "$D" --accept OUT_OF_BOUNDS:1:e3
+# or inline: add class "qa-accept-out-of-bounds" to element e3 in the SML
+```
+
+## 9. Normalize hand-edited SML before diffing
+```bash
+slidesmith fmt "$D"                # canonical formatting, semantics unchanged
+slidesmith diff "$D" --summary     # now shows only real changes
+```

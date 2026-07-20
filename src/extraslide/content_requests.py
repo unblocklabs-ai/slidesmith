@@ -12,15 +12,11 @@ from typing import Any
 
 from extraslide.class_style_requests import _create_class_style_requests
 from extraslide.content_diff import Change, ChangeType, DiffResult, ParagraphClassUpdate
-from extraslide.copy_requests import _apply_text_style_requests, _create_copy_requests
+from extraslide.copy_requests import _create_copy_requests
 from extraslide.element_factories import (
     _create_element_requests,
-    _create_line_request,
     _create_move_request,
-    _create_shape_request,
     _create_slide_request,
-    _parse_color,
-    _tag_to_type,
 )
 from extraslide.id_manager import is_valid_google_object_id
 from extraslide.text_requests import (

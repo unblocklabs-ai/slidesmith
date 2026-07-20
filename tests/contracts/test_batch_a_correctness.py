@@ -25,13 +25,12 @@ from extraslide.content_diff import (
 from extraslide.content_generator import generate_slide_content
 from extraslide.content_parser import ParsedRun, parse_slide_content
 from extraslide.content_requests import (
-    _apply_text_style_requests,
-    _create_line_request,
-    _create_shape_request,
-    _create_text_update_requests,
     _order_deletes_for_safe_removal,
     generate_batch_requests,
 )
+from extraslide.copy_requests import _apply_text_style_requests
+from extraslide.element_factories import _create_line_request, _create_shape_request
+from extraslide.text_requests import _create_text_update_requests
 from extraslide.id_manager import assign_ids
 from extraslide.render_tree import RenderNode
 from extraslide.slide_processor import process_presentation

@@ -77,6 +77,34 @@ def test_replace_class_dry_run_counts_without_writes(
     )
 
 
+def test_replace_class_ignores_attribute_names_ending_in_class(
+    tmp_path: Path,
+) -> None:
+    folder = _workspace(tmp_path)
+    path = folder / "slides" / "01" / "content.sml"
+    path.write_text(
+        '<Slide id="s1"><TextBox id="title" '
+        'data-class="font-family-arial" class="font-family-roboto"/>'
+        "</Slide>",
+        encoding="utf-8",
+    )
+    other = folder / "slides" / "02" / "content.sml"
+    other.write_text('<Slide id="s2"/>', encoding="utf-8")
+
+    result = replace_class(
+        folder,
+        "font-family-arial",
+        "font-family-inter",
+    )
+
+    assert result.total == 0
+    assert path.read_text(encoding="utf-8") == (
+        '<Slide id="s1"><TextBox id="title" '
+        'data-class="font-family-arial" class="font-family-roboto"/>'
+        "</Slide>"
+    )
+
+
 def test_replace_class_rejects_invalid_new_class_before_writing(
     tmp_path: Path,
 ) -> None:

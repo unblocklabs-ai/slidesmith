@@ -7,9 +7,9 @@ Format: <Slide id="s1">...</Slide> with all elements having absolute positions.
 from __future__ import annotations
 
 import xml.etree.ElementTree as ET
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
-from urllib.parse import urlsplit
 
 from defusedxml import ElementTree as DefusedET
 from defusedxml.common import DefusedXmlException
@@ -30,6 +30,7 @@ from slidesmith.engine.classes import (
     validate_mutually_exclusive_classes,
 )
 from slidesmith.engine.layout import compile_layout
+from slidesmith.engine.image_fetch import validate_public_image_url
 
 QA_ACCEPT_CLASS_PREFIX = "qa-accept-"
 
@@ -165,6 +166,8 @@ def _parse_element(elem: ET.Element, parent_id: str | None) -> ParsedElement:
     h = _parse_float(elem.get("h"), clean_id, "h")
 
     src, fit = _parse_image_authoring(elem, clean_id)
+    if src is not None:
+        validate_authored_image_geometry(clean_id, x=x, y=y, w=w, h=h)
 
     # Parse the class attribute into typed styles (fails loudly on unknown classes)
     styles = parse_element_classes(elem.get("class"), clean_id, elem.tag)
@@ -233,17 +236,11 @@ def _parse_image_authoring(
         return None, None
 
     try:
-        parsed = urlsplit(src)
+        validate_public_image_url(src, resolve_host=False)
     except ValueError as exc:
         raise ValueError(
-            f"Invalid src on Image element '{element_id}': expected an "
-            f"http(s) URL, got {src!r}"
+            f"Invalid src on Image element '{element_id}': {exc}, got {src!r}"
         ) from exc
-    if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
-        raise ValueError(
-            f"Invalid src on Image element '{element_id}': expected an "
-            f"http(s) URL, got {src!r}"
-        )
 
     resolved_fit = fit or "stretch"
     if resolved_fit not in {"stretch", "contain"}:
@@ -252,6 +249,28 @@ def _parse_image_authoring(
             "expected 'stretch' or 'contain'"
         )
     return src, resolved_fit
+
+
+def validate_authored_image_geometry(
+    element_id: str,
+    *,
+    x: float | None,
+    y: float | None,
+    w: float | None,
+    h: float | None,
+) -> None:
+    """Require explicit usable geometry for an authored image source."""
+    geometry = {"x": x, "y": y, "w": w, "h": h}
+    invalid = [
+        name
+        for name, value in geometry.items()
+        if value is None or not math.isfinite(value) or value <= 0
+    ]
+    if invalid:
+        raise ValueError(
+            f"Image element '{element_id}' requires finite, strictly-positive "
+            f"x/y/w/h; invalid: {', '.join(invalid)}"
+        )
 
 
 def _parse_paragraph_runs(p_elem: ET.Element, element_id: str) -> list[ParsedRun]:

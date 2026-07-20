@@ -11,13 +11,9 @@ For copies, calculates translation from original position to apply to children.
 
 from __future__ import annotations
 
-from io import BytesIO
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
-
-import httpx
-from PIL import Image
 
 from slidesmith.engine.classes import Fill, ParagraphStyle, PropertyState, Stroke, TextStyle
 from slidesmith.engine.content_parser import (
@@ -27,7 +23,9 @@ from slidesmith.engine.content_parser import (
     ParsedRun,
     flatten_elements,
     parse_slide_content,
+    validate_authored_image_geometry,
 )
+from slidesmith.engine.image_fetch import fetch_image_dimensions
 
 
 class ChangeType(Enum):
@@ -967,6 +965,14 @@ def _get_position(elem: ParsedElement) -> dict[str, float] | None:
 
 def _get_create_position(elem: ParsedElement) -> dict[str, float] | None:
     """Resolve authored CREATE geometry, including Image contain fitting."""
+    if elem.tag == "Image" and elem.src is not None:
+        validate_authored_image_geometry(
+            elem.clean_id,
+            x=elem.x,
+            y=elem.y,
+            w=elem.w,
+            h=elem.h,
+        )
     position = _get_position(elem)
     if elem.tag != "Image" or elem.fit != "contain":
         return position
@@ -999,16 +1005,8 @@ def _get_create_position(elem: ParsedElement) -> dict[str, float] | None:
 
 
 def _fetch_image_dimensions(url: str) -> tuple[int, int]:
-    """Download an authored image without credentials and return pixel dimensions."""
-    try:
-        response = httpx.get(url, timeout=10.0, follow_redirects=True)
-        response.raise_for_status()
-        with Image.open(BytesIO(response.content)) as image:
-            return image.size
-    except (httpx.HTTPError, OSError) as exc:
-        raise ValueError(
-            f"Could not fetch image dimensions from {url!r} for fit='contain': {exc}"
-        ) from exc
+    """Download an authored image through the shared constrained fetcher."""
+    return fetch_image_dimensions(url)
 
 
 def _is_copy_by_missing_dimensions(elem: ParsedElement) -> bool:

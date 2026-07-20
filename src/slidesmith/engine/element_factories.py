@@ -12,6 +12,7 @@ from slidesmith.engine.class_style_requests import (
     _create_class_text_style_request,
 )
 from slidesmith.engine.content_diff import Change, ParagraphClassUpdate
+from slidesmith.engine.content_parser import validate_authored_image_geometry
 from slidesmith.engine.shape_types import TAG_TO_TYPE, VALID_GOOGLE_TYPES
 from slidesmith.engine.text_requests import (
     _create_paragraph_class_update_requests,
@@ -404,9 +405,17 @@ def _create_element_requests(
     requests: list[dict[str, Any]] = []
 
     tag = change.tag or "Rect"
-    position = change.new_position or {"x": 0, "y": 0, "w": 100, "h": 100}
-
     shape_type = _tag_to_type(tag)
+    if shape_type == "IMAGE":
+        authored_position = change.new_position or {}
+        validate_authored_image_geometry(
+            change.target_id,
+            x=authored_position.get("x"),
+            y=authored_position.get("y"),
+            w=authored_position.get("w"),
+            h=authored_position.get("h"),
+        )
+    position = change.new_position or {"x": 0, "y": 0, "w": 100, "h": 100}
 
     if shape_type == "LINE":
         requests.append(_create_line_request(new_object_id, slide_google_id, position))

@@ -46,6 +46,7 @@ class StubTransport(Transport):
         self.batch_calls: list[dict[str, Any]] = []
         self.batch_error: Exception | None = None
         self.drop_shape_property_updates = False
+        self.apply_create_shapes = False
 
     async def get_presentation(self, presentation_id: str) -> PresentationData:
         return PresentationData(
@@ -70,6 +71,25 @@ class StubTransport(Transport):
             raise self.batch_error
 
         for request in requests:
+            create = request.get("createShape")
+            if create is not None and self.apply_create_shapes:
+                page_id = create["elementProperties"]["pageObjectId"]
+                slide = next(
+                    slide
+                    for slide in self.data["slides"]
+                    if slide["objectId"] == page_id
+                )
+                slide.setdefault("pageElements", []).append(
+                    {
+                        "objectId": create["objectId"],
+                        "size": copy.deepcopy(create["elementProperties"]["size"]),
+                        "transform": copy.deepcopy(
+                            create["elementProperties"]["transform"]
+                        ),
+                        "shape": {"shapeType": create["shapeType"]},
+                    }
+                )
+                continue
             update = request.get("updateShapeProperties")
             if update is None or self.drop_shape_property_updates:
                 continue
@@ -445,6 +465,29 @@ async def test_push_persistence_warning_shows_sent_and_remote_text(
     assert "text on e121 did not persist" in warning
     assert "sent " in warning and replacement in warning
     assert "remote now " in warning and remote_text in warning
+
+
+async def test_push_warns_when_created_box_text_does_not_persist(
+    ws: Workspace,
+) -> None:
+    sml = ws.folder / "slides" / "01" / "content.sml"
+    content = sml.read_text(encoding="utf-8")
+    sml.write_text(
+        content.replace(
+            "</Slide>",
+            '<TextBox id="brand_new_box" x="100" y="100" w="200" h="50">'
+            "<P>Authored text</P></TextBox></Slide>",
+        ),
+        encoding="utf-8",
+    )
+    ws.stub.apply_create_shapes = True
+
+    response = await ws.client.push(ws.folder)
+
+    assert response.get("warnings"), (
+        "a partial CREATE must not be hidden when it re-diffs as TEXT_UPDATE"
+    )
+    assert "text on brand_new_box did not persist" in response["warnings"][0]
 
 
 async def test_push_without_remote_divergence_returns_no_warning(

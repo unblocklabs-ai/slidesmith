@@ -517,6 +517,11 @@ class SlidesClient:
             (change.target_id, change.change_type)
             for change in diff_result.changes
         }
+        create_copy_targets = {
+            (change.slide_index or "", change.target_id)
+            for change in diff_result.changes
+            if change.change_type in {ChangeType.CREATE, ChangeType.COPY}
+        }
         transport = self._require_transport()
 
         if force:
@@ -537,6 +542,7 @@ class SlidesClient:
                     folder_path,
                     intended_slides,
                     intended_change_keys,
+                    create_copy_targets,
                     response,
                 )
             return response
@@ -590,6 +596,7 @@ class SlidesClient:
                 folder_path,
                 intended_slides,
                 intended_change_keys,
+                create_copy_targets,
                 response,
             )
         return response
@@ -599,6 +606,7 @@ class SlidesClient:
         folder_path: Path,
         intended_slides: dict[str, list[Any]],
         intended_change_keys: set[tuple[str, ChangeType]],
+        create_copy_targets: set[tuple[str, str]],
         response: dict[str, Any],
     ) -> None:
         """Warn when pushed semantic changes differ from refreshed truth."""
@@ -613,6 +621,7 @@ class SlidesClient:
             change
             for change in divergence.changes
             if (change.target_id, change.change_type) in intended_change_keys
+            or (change.slide_index or "", change.target_id) in create_copy_targets
         ]
         if not unpersisted:
             return

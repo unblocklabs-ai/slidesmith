@@ -430,3 +430,21 @@ contain fetches pixel dimensions during diff, preserves aspect ratio by shrinkin
 one axis from the top-left anchor, and works after Stack/Grid layout assignment.
 Offline contracts stub dimension lookup and cover parsing, validation, request
 generation, contain math, and Stack flex layout.
+
+## GPT-REVIEW ROUND 1
+
+- [x] HIGH SSRF in authored contain-image dimension fetching. A shared
+  constrained fetch path now rejects non-public addresses, validates every
+  redirect hop, and pins connections to the resolved and validated address.
+- [x] MEDIUM unbounded contain-image downloads. Fetches reject oversized
+  `Content-Length`, stream through a 25 MB ceiling, and preflight a 100 million
+  pixel ceiling before Pillow inspection.
+- [x] MEDIUM persistence verification missed partial CREATE/COPY failures.
+  Refreshed divergences on emitted CREATE/COPY targets are now checked regardless
+  of the divergence change type.
+- [x] MEDIUM replace-class mutated attributes whose names merely ended in
+  `class`. Quote-aware start-tag tokenization now changes only attributes named
+  exactly `class`.
+- [x] MEDIUM authored stretch images accepted zero or missing geometry. Every
+  authored `<Image src>` now requires finite, strictly-positive `x`, `y`, `w`,
+  and `h` at parser, diff, and request-generation boundaries.

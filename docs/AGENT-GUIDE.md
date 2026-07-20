@@ -26,11 +26,15 @@ slidesmith check <ID>
 slidesmith check <ID> --contact-sheet
 ```
 
-`diff` is local-only and prints the exact request list plus a stderr legend from
-Google object IDs to clean SML IDs. `diff --summary` replaces that raw JSON with
-a compact per-slide view of deletes, creates, moves, copies, style changes, and
-text edits, followed by the total generated request count. It is intended for a
-quick human review; use plain `diff` whenever the exact API payload matters.
+`diff` does not call Google APIs and normally reads only the local workspace.
+The sole network exception is an authored `Image` with `fit="contain"`: the diff
+engine performs a bounded, unauthenticated image fetch to determine its pixel
+dimensions. `fit="stretch"` does not fetch the source. `diff` prints the exact
+request list plus a stderr legend from Google object IDs to clean SML IDs.
+`diff --summary` replaces that raw JSON with a compact per-slide view of deletes,
+creates, moves, copies, style changes, and text edits, followed by the total
+generated request count. It is intended for a quick human review; use plain
+`diff` whenever the exact API payload matters.
 `check --no-thumbnails` is also local-only.
 Plain `check`, run after push, downloads current slide thumbnails into
 `<ID>/.qa/` before running geometry QA, so it needs authentication. `push`
@@ -320,9 +324,13 @@ and optional `fit="stretch|contain"`:
 
 `stretch` is the default Google Slides API behavior: the image fills the
 authored box and may be distorted. `contain` preserves the source aspect ratio.
-During diff generation Slidesmith downloads the image without credentials,
-reads its pixel dimensions, and shrinks either the authored width or height.
-The resulting frame stays anchored at the authored top-left `x`, `y` position.
+Only `contain` causes the diff engine to download the image. That fetch sends no
+credentials, rejects non-public destinations at every redirect hop, is pinned to
+the validated DNS address, and is limited to 25 MB and 100 million pixels before
+Pillow inspection. Slidesmith reads the bounded image dimensions and shrinks
+either the authored width or height. The resulting frame stays anchored at the
+authored top-left `x`, `y` position. Authored `x`, `y`, `w`, and `h` must all be
+finite and strictly positive for both `stretch` and `contain`.
 
 Google's `cropProperties` are **READ-ONLY via the API**, so `fit="cover"` is
 impossible. Slidesmith rejects `cover` instead of pretending it can create that

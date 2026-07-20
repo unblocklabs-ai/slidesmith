@@ -231,6 +231,156 @@ identity survives. Because roles never enter SML, the diff or request generator
 cannot serialize them into a Google Slides `batchUpdate`; they are local
 selection metadata only.
 
+## Cross-deck style transfer
+
+M5 has two separate, local-only tools: themes transfer a deck's design language
+without changing content or layout; snippets transfer selected visual structure
+as newly inserted elements. Both leave API writes to the normal `diff` → `push`
+review loop.
+
+### Extract and apply a theme
+
+Assign roles to representative source and target elements first when you want
+semantic restyling, then extract a theme from the strongest design slides:
+
+```bash
+slidesmith apply source-deck 'slide=1 AND id~=hero_title' --set-role title
+slidesmith apply target-deck 'slide in 4..24 AND id~=title' --set-role title
+slidesmith theme extract source-deck --from-slides 1-3 -o theme.json
+slidesmith theme apply target-deck theme.json --to-slides 4-24 --map-colors --dry-run
+slidesmith theme apply target-deck theme.json --to-slides 4-24 --map-colors
+slidesmith diff target-deck --summary
+```
+
+Slide specifications are inclusive and accept ranges or comma-separated mixes,
+such as `1-3` or `1,3,5-7`. With no range, extract/apply inspects every slide.
+Extraction writes readable versioned JSON with this shape:
+
+```json
+{
+  "version": 1,
+  "source": {"folder": "source-deck", "slides": [1, 2, 3]},
+  "tokens": {
+    "palette": ["#112233", "#f2ede2"],
+    "primaryFontFamily": {
+      "family": "Montserrat",
+      "class": "font-family-montserrat"
+    },
+    "typeScalePt": [53.0, 24.0, 18.0]
+  },
+  "roles": {
+    "title": {
+      "classes": [
+        "font-family-montserrat",
+        "text-size-53",
+        "text-color-#f2ede2"
+      ],
+      "samples": 3,
+      "canonicalSamples": 2,
+      "elementIds": ["cover_title", "section_title", "summary_title"]
+    }
+  },
+  "inventory": {
+    "palette": [
+      {"color": "#112233", "count": 8, "uses": {"fill": 6, "stroke": 2}}
+    ],
+    "type": {"fontFamilies": [], "fontSizes": []}
+  }
+}
+```
+
+The palette counts explicit RGB fill, stroke, text, and highlight classes.
+The type inventory records every explicit font-family and font-size class with
+its frequency, after authoring constructs have been compiled so source
+component styles count as actually used. `tokens` gives the compact reusable
+palette, dominant primary font family, and descending size ladder. For each
+role, the most frequent exact element-class set becomes canonical; ties are
+deterministic. `samples` is the number of role-bearing elements inspected and
+`canonicalSamples` is the number using the chosen class set. Roles with no
+explicit classes are represented by an empty canonical class list.
+
+Theme apply performs three style-only operations on the selected slides:
+
+1. If an element has a role found in `theme.json`, replace its element style
+   classes with that role's canonical classes. Preserve local `qa-accept-*`
+   annotations.
+2. Unify text-bearing elements and explicit `P`/`T` font-family classes to the
+   extracted primary family. This works even when the target has no roles.
+3. With `--map-colors`, replace an explicit off-theme RGB fill, stroke, text,
+   or highlight color only when the nearest palette color is within Euclidean
+   RGB distance 48: `sqrt((R1-R2)^2 + (G1-G2)^2 + (B1-B2)^2)`. On the full
+   0–441.7 RGB scale, 48 absorbs nearby tint/encoding drift while leaving
+   unrelated accents alone. Alpha suffixes such as `/60` are preserved.
+
+All prospective target files pass through the normal SML parser and its
+mutually-exclusive-class checks before the first write; files commit together
+with rollback on I/O failure. `--dry-run` performs the same extraction,
+transformation, and validation and prints identical counts without writes.
+Theme apply never changes text nodes, `x/y/w/h`, element IDs, or tree structure.
+
+The semantic boundary is important: role-aware restyling requires roles already
+assigned on the target. Without them, theme apply can still unify font family
+and map colors, but it cannot safely decide whether an element is a title,
+subtitle, metric, or body. Component-expanded role targets also cannot be
+edited at one slide instance; edit `components.sml` or expose the style as a
+component slot. This is design-language transfer, not layout cloning.
+Font/color classes inside a target component instance have the same boundary:
+change or parameterize `components.sml` when the compiled style is not explicit
+on that slide's raw SML.
+
+### Copy and paste a layout snippet
+
+Use a semantic selector to copy one or more elements from exactly one source
+slide. If both a parent and its descendants match, the parent subtree is copied
+once. The output stores source roles temporarily, normalizes all copied
+coordinates to the selection's `(0,0)` bounding-box origin, and records its
+width and height. Source `Stack`, `Grid`, `Use`, and `h="auto"` constructs are
+compiled first, so the snippet contains their resulting plain shapes rather
+than authoring-only intent:
+
+```bash
+slidesmith snippet copy competitive-deck \
+  'slide=2 AND (id~=hero OR role=hero-art)' -o hero.sml
+```
+
+Paste the visual structure into a destination frame expressed in points:
+
+```bash
+slidesmith snippet paste target-deck --slide 5 hero.sml \
+  --frame 36,48,648,300 \
+  --map title:headline \
+  --map body:summary \
+  --dry-run
+slidesmith snippet paste target-deck --slide 5 hero.sml \
+  --frame 36,48,648,300 \
+  --map title:headline \
+  --map body:summary
+slidesmith diff target-deck --summary
+```
+
+`--frame X,Y,W,H` translates and independently scales the snippet's explicit
+`x/y/w/h` geometry into the chosen frame. Omitting it uses the snippet's
+original size at `(0,0)`. Paste retains shape/style classes and source text by
+default. A repeatable mapping means `SNIPPET_ROLE:DESTINATION_ROLE`: exactly one
+element with the destination role must exist on that slide, and its paragraphs
+replace the text in exactly one snippet role slot. The inserted slot receives
+the destination role; unmapped snippet roles keep their names. Mapped text uses
+the snippet paragraph and first-run styling rather than the destination style.
+
+Paste inserts new root subtrees before the slide closes and prefixes every
+inserted ID with the next available deterministic `snippet_N__` namespace. It
+adds inserted roles to `roles.json`, validates the complete destination SML,
+and commits SML plus roles atomically. `--dry-run` validates and counts the same
+insertion without writes. Existing destination elements—including their text,
+geometry, styles, IDs, and roles—are never edited or deleted.
+
+V1 intentionally does not infer which destination content belongs in which
+visual slot, remove the old destination elements, clone a whole slide, import
+theme masters, or reconstruct component/layout intent after paste. The operator
+supplies role mappings and decides whether to delete or retain old content
+after reviewing `diff`. Snippet transfer is bounded visual structure + styling;
+theme transfer is the deck-wide design-language tool.
+
 ## Formatting SML safely
 
 Use the local-only formatter instead of a generic XML pretty-printer:

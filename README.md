@@ -64,6 +64,37 @@ atomic change against the real SML class parser, with per-swap and per-slide
 counts; `--dry-run` performs the same work without writing. Review the result
 with `diff` and push separately.
 
+Transfer a design language from representative slides into another local deck:
+
+```bash
+slidesmith theme extract source-deck --from-slides 1-3 -o theme.json
+slidesmith theme apply target-deck theme.json --to-slides 4-24 --map-colors --dry-run
+slidesmith theme apply target-deck theme.json --to-slides 4-24 --map-colors
+```
+
+`theme.json` contains reusable palette/type tokens, frequency inventories, and
+canonical element classes for each assigned semantic role. Apply replaces the
+style classes of target elements whose role exists in that map, unifies text to
+the extracted primary font family, and optionally maps only nearby RGB colors
+to the theme palette. It is an atomic, conflict-validated, style-only operation:
+text and geometry are never changed. Role-aware restyling requires `roles.json`;
+without roles, font unification and `--map-colors` still work.
+
+For reusable visual structure, copy a single-slide selection into an
+origin-relative snippet and paste it as new elements in another deck:
+
+```bash
+slidesmith snippet copy source-deck 'slide=2 AND id~=hero' -o hero.sml
+slidesmith snippet paste target-deck --slide 5 hero.sml \
+  --frame 36,48,648,300 --map title:headline --map body:summary --dry-run
+```
+
+Each `SNIPPET_ROLE:DESTINATION_ROLE` mapping copies text from the one matching
+destination-slide role into the snippet slot while retaining the snippet's
+visual style. Paste never deletes or rearranges existing elements; it inserts
+new shapes with collision-free IDs. The operator chooses content mappings and
+the target frame—v1 does not infer them or clone an entire slide automatically.
+
 After pushing, `slidesmith check <ID> --contact-sheet` downloads the slide PNGs
 and combines them into a labeled two-column image at
 `<ID>/.qa/contact-sheet.png`. Contact sheets require thumbnail downloads, so
@@ -108,6 +139,9 @@ vocabulary, one-shot Stack/Grid layout, QA judgment, and auth recovery.
   RESOLVED ledger keyed to your last pull.
 - **Bulk restyles**: `replace-class` swaps one or more validated classes
   deck-wide as a single atomic operation.
+- **Cross-deck style transfer**: `theme extract/apply` moves palette, type, and
+  role styles safely; `snippet copy/paste` reuses bounded visual structures with
+  explicit role-to-content mapping.
 - **Semantic selectors**: local-only `select` / atomic `apply` target elements
   by role, tag, class, ID, text, slide, and geometry without ID-level scripting.
 - **Agent-grade errors and auth**: loud, named errors for unknown or

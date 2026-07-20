@@ -20,6 +20,30 @@ slidesmith diff <ID>     # prints the batchUpdate requests, no API call
 slidesmith push <ID>     # applies them to the same deck
 ```
 
+Author images from public URLs or workspace-local files. Local files are
+uploaded at push time to the authenticated user's own Google Drive, made
+link-readable so Slides can fetch them, and reused through `<ID>/.assets.json`
+when the canonical path and SHA-256 content hash match:
+
+```xml
+<Image id="company_logo" src="./assets/logo.png"
+       x="48" y="36" w="144" h="72" fit="contain" />
+```
+
+Google Slides cannot accept raw image bytes for `createImage` or `replaceImage`;
+both require a publicly fetchable URL. Replace the content of an existing image
+without changing its position or size with:
+
+```bash
+slidesmith replace-image <ID> company_logo ./assets/new-logo.png
+```
+
+Run `replace-image` only with a clean local SML diff; the command refuses
+pending edits before its authoritative post-write refresh can overwrite them.
+
+`fit="stretch"` and `fit="contain"` are supported. `fit="cover"` remains
+unsupported because Slides exposes `cropProperties` as read-only.
+
 The default push is one atomic, deck-wide `batchUpdate`. For large decks, use
 `slidesmith push <ID> --per-slide` to send one revision-locked batch per
 changed slide with progress and a `.push-progress.json` resume ledger. This
@@ -48,7 +72,9 @@ they cannot be combined with `--no-thumbnails`.
 Auth is zero-config if you already use gogcli: slidesmith reads the OAuth
 client from `~/Library/Application Support/gogcli/credentials.json` (or
 `GOG_ACCESS_TOKEN` / `GOOGLE_WORKSPACE_CLI_TOKEN` env vars, or a service
-account via `SERVICE_ACCOUNT_PATH`).
+account via `SERVICE_ACCOUNT_PATH`). Local image uploads use the already
+requested `drive.file` scope; uploaded, link-readable assets remain in the
+user's Drive.
 
 ## For agents
 
@@ -73,6 +99,9 @@ vocabulary, one-shot Stack/Grid layout, QA judgment, and auth recovery.
 - **Layout authoring**: one-shot `Stack`/`Grid` containers, `flex`,
   `h="auto"` text height, reusable `components.sml` + `<Use>` expansion, and
   `content-align-*` — the compiler does the coordinate math.
+- **Image authoring**: public URL or local-file `Image` creation with stretch or
+  contain fitting, Drive upload reuse caching, and geometry-preserving
+  `replace-image`; cover/crop stays explicitly unsupported.
 - **Visual QA**: `check` downloads rendered slide PNGs, optionally creates a
   labeled two-column contact sheet with `--contact-sheet`, and runs geometry lint
   (overlap, out-of-bounds, likely text overflow) with a NEW / PRE-EXISTING /
@@ -91,7 +120,8 @@ vocabulary, one-shot Stack/Grid layout, QA judgment, and auth recovery.
 Production-hardened through six adversarial review rounds (110 findings fixed
 — see `docs/review/FINDINGS.md`) and three live dogfood campaigns in which
 agent designers built new slides, executed deck-wide restyles, and shipped
-freeform polish on a real presentation. 330 tests; `scripts/lint.sh` clean.
+freeform polish on a real presentation. The complete pytest suite and
+`scripts/lint.sh` are clean.
 See the [agent guide](docs/AGENT-GUIDE.md) for the supported class vocabulary
 and the complete edit/diff/push/check loop.
 

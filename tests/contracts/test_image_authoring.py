@@ -228,7 +228,6 @@ def test_parser_accepts_image_src_and_fit_without_changing_pulled_images() -> No
 @pytest.mark.parametrize(
     "src",
     [
-        "file:///tmp/hero.png",
         "data:image/png;base64,AAAA",
         "ftp://example.com/hero.png",
         "https:///missing-host.png",
@@ -237,12 +236,23 @@ def test_parser_accepts_image_src_and_fit_without_changing_pulled_images() -> No
 def test_parser_rejects_non_http_image_src_loudly(src: str) -> None:
     with pytest.raises(
         ValueError,
-        match=r"Invalid src on Image element 'hero'.*expected an http\(s\) URL",
+        match=r"Invalid src on Image element 'hero'",
     ):
         parse_slide_content(
             f'<Slide><Image id="hero" src="{src}" x="0" y="0" '
             'w="100" h="100"/></Slide>'
         )
+
+
+@pytest.mark.parametrize("src", ["./assets/hero.png", "file:///tmp/hero.png"])
+def test_parser_accepts_local_image_sources(src: str) -> None:
+    image = parse_slide_content(
+        f'<Slide><Image id="hero" src="{src}" x="1" y="2" '
+        'w="100" h="100"/></Slide>'
+    )[0]
+
+    assert image.src == src
+    assert image.fit == "stretch"
 
 
 def test_parser_rejects_unknown_image_fit_loudly() -> None:

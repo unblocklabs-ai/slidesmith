@@ -26,11 +26,14 @@ slidesmith check <ID>
 slidesmith check <ID> --contact-sheet
 ```
 
-`diff` does not call Google APIs and normally reads only the local workspace.
-The sole network exception is an authored `Image` with `fit="contain"`: the diff
-engine performs a bounded, unauthenticated image fetch to determine its pixel
-dimensions. `fit="stretch"` does not fetch the source. `diff` prints the exact
-request list plus a stderr legend from Google object IDs to clean SML IDs.
+`diff` does not call Google APIs. For an authored HTTP(S) `Image` with
+`fit="contain"`, the diff engine performs a bounded, unauthenticated image fetch
+to determine its pixel dimensions. A local image is read with Pillow instead;
+it never needs a network request during `diff`. `fit="stretch"` does not fetch a
+remote source. `diff` prints the request list plus a stderr legend from Google
+object IDs to clean SML IDs. A local image's previewed `createImage.url` remains
+the authored local source because its public Drive URL does not exist yet;
+`push` replaces that one outgoing field after upload or cache lookup.
 `diff --summary` replaces that raw JSON with a compact per-slide view of deletes,
 creates, moves, copies, style changes, and text edits, followed by the total
 generated request count. It is intended for a quick human review; use plain
@@ -100,6 +103,7 @@ uncommitted SML edits first.
 ├── presentation.json       title, page size, slide count, revisionId, pulledAt
 ├── id_mapping.json         clean SML IDs -> Google object IDs
 ├── styles.json             pulled style details used by diff and QA
+├── .assets.json            local path + SHA-256 -> uploaded Drive file ID/URL
 ├── roles.json              optional local semantic roles keyed by clean ID
 ├── components.sml          optional reusable authoring-only component definitions
 ├── slides/NN/content.sml   one XML document per slide
@@ -412,7 +416,7 @@ unchanged and names the affected element where applicable. This command does
 not call Google APIs or run a diff; inspect the result with
 `slidesmith diff <ID>` and push it separately.
 
-## Authoring images from URLs
+## Authoring images from URLs or local files
 
 Create an image with an HTTP or HTTPS `src`, an authored point-valued frame,
 and optional `fit="stretch|contain"`:
@@ -422,25 +426,79 @@ and optional `fit="stretch|contain"`:
        x="48" y="72" w="624" h="351" fit="contain" />
 ```
 
+Local paths and absolute `file://` URLs use the same element syntax. Relative
+paths are resolved from the pulled presentation folder, not from the individual
+`slides/NN/` directory:
+
+```xml
+<Image id="company_logo" src="./assets/logo.png"
+       x="48" y="36" w="144" h="72" fit="contain" />
+```
+
+Google Slides `createImage` and `replaceImage` require a publicly fetchable URL;
+the API cannot accept raw image bytes. At push time Slidesmith therefore uploads
+each local file into the authenticated user's own Google Drive, creates an
+`anyone`/`reader` link permission, and passes Drive's `webContentLink` (or the
+equivalent Drive download URL when that field is absent) as the request URL.
+This uses the already-requested per-file
+`https://www.googleapis.com/auth/drive.file` OAuth scope. The uploaded files
+remain in the user's Drive and are link-readable; Slidesmith does not delete
+them after insertion.
+
+Successful uploads are recorded in `<ID>/.assets.json`. Each entry stores the
+workspace-relative canonical path (or an absolute path for a file outside the
+workspace), the file-content SHA-256, Drive `fileId`, and public URL. A later
+push of that exact path and content hash reuses the URL without uploading
+again. Changing the bytes creates a new entry and upload. Do not hand-edit this
+cache unless repairing a known-bad Drive file or URL.
+
 `stretch` is the default Google Slides API behavior: the image fills the
 authored box and may be distorted. `contain` preserves the source aspect ratio.
-Only `contain` causes the diff engine to download the image. That fetch sends no
-credentials, rejects non-public destinations at every redirect hop, is pinned to
-the validated DNS address, and is limited to 25 MB and 100 million pixels before
-Pillow inspection. Slidesmith reads the bounded image dimensions and shrinks
-either the authored width or height. The resulting frame stays anchored at the
+Only a remote `contain` source causes the diff engine to download an image. That
+fetch sends no credentials, rejects non-public destinations at every redirect
+hop, is pinned to the validated DNS address, and is limited to 25 MB and 100
+million pixels before Pillow inspection. Local dimensions are read directly
+with Pillow and never pass through the HTTP fetcher. Slidesmith shrinks either
+the authored width or height, keeping the resulting frame anchored at the
 authored top-left `x`, `y` position. Authored `x`, `y`, `w`, and `h` must all be
-finite and strictly positive for both `stretch` and `contain`.
+finite and strictly positive for local and remote images under both `stretch`
+and `contain`.
 
 Google's `cropProperties` are **READ-ONLY via the API**, so `fit="cover"` is
 impossible. Slidesmith rejects `cover` instead of pretending it can create that
 result. Crop the source image before authoring when a cover treatment is needed.
 
-The `createImage` API requires a publicly fetchable URL. The image must be less
-than 50 MB and less than 25 megapixels. A URL following the
+For direct HTTP(S) sources, the image must be publicly fetchable, less than 50
+MB, and less than 25 megapixels. A URL following the
 `https://picsum.photos/<width>/<height>` pattern, such as the example above, is
-useful for testing. Private URLs, local files, data URLs, and URLs requiring an
-authorization header are not supported.
+useful for testing. Private URLs, data URLs, and URLs requiring an authorization
+header are not supported. Local files work only through the Drive upload path
+described above.
+
+Drive permission changes can take time to propagate, and Workspace policy may
+forbid `anyone` sharing. If Slides rejects a freshly uploaded URL, keep
+`.assets.json` for diagnosis and retry after confirming the Drive file is
+link-readable; the exact URL and permission behavior must be verified against a
+live account because offline tests inject a fake uploader.
+
+### Replacing an existing image
+
+Replace the pixels of a pulled image without changing its page-element frame:
+
+```bash
+slidesmith replace-image <ID> hero_image ./assets/new-hero.png
+slidesmith replace-image <ID> hero_image https://example.com/new-hero.png
+```
+
+The command validates the clean SML ID against the freshly fetched deck and
+fails if the target is not an image. It emits one `replaceImage` request with
+`imageReplaceMethod="CENTER_INSIDE"`; because it does not send a size or
+transform update, the existing element position and size are preserved. A local
+replacement uses the same Drive upload and `.assets.json` reuse path. As with
+`createImage`, Slides fetches the URL once and stores its own copy. Some existing
+image effects may be removed by Google's replacement operation. Run it only on
+a clean workspace: the command refuses pending SML changes before its
+authoritative post-write refresh can overwrite them.
 
 An `Image` inside `Stack` or `Grid` participates like any other child. Give it
 the required fixed `w`/`h` for that container axis, use a positive `flex` for

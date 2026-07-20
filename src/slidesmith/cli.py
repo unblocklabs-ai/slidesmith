@@ -132,6 +132,7 @@ def _request_id_legend(
 
 
 def cmd_push(args: Any) -> None:
+    from slidesmith.engine.assets import GoogleDriveAssetUploader
     from slidesmith.engine.client import SlidesClient
     from slidesmith.engine.conflicts import ConflictError
     from slidesmith.engine.transport import GoogleSlidesTransport
@@ -144,6 +145,7 @@ def cmd_push(args: Any) -> None:
 
     async def run() -> None:
         transport = GoogleSlidesTransport(token)
+        uploader = GoogleDriveAssetUploader(token)
         try:
             def progress(event: str, message: str) -> None:
                 if event == "start":
@@ -151,7 +153,7 @@ def cmd_push(args: Any) -> None:
                 else:
                     print(message, flush=True)
 
-            resp = await SlidesClient(transport).push(
+            resp = await SlidesClient(transport, uploader).push(
                 Path(args.folder),
                 force=args.force,
                 per_slide=args.per_slide,
@@ -165,6 +167,7 @@ def cmd_push(args: Any) -> None:
             else:
                 print(f"Push applied {len(resp.get('replies', []))} change(s).")
         finally:
+            await uploader.close()
             await transport.close()
 
     try:
@@ -173,6 +176,33 @@ def cmd_push(args: Any) -> None:
         # The message already names the conflicting elements and what changed.
         print(str(e), file=sys.stderr)
         sys.exit(2)
+
+
+def cmd_replace_image(args: Any) -> None:
+    from slidesmith.engine.assets import GoogleDriveAssetUploader
+    from slidesmith.engine.client import SlidesClient
+    from slidesmith.engine.transport import GoogleSlidesTransport
+
+    _warn_if_stale(args.folder)
+    token = _token("slide.push", str(args.folder))
+
+    async def run() -> None:
+        transport = GoogleSlidesTransport(token)
+        uploader = GoogleDriveAssetUploader(token)
+        try:
+            response = await SlidesClient(transport, uploader).replace_image(
+                Path(args.folder),
+                args.element_id,
+                args.new_src,
+            )
+            for warning in response.get("warnings", []):
+                print(f"warning: {warning}", file=sys.stderr)
+            print(f"Replaced image {args.element_id}.")
+        finally:
+            await uploader.close()
+            await transport.close()
+
+    asyncio.run(run())
 
 
 def cmd_replace_class(args: Any) -> None:
@@ -385,6 +415,19 @@ def main(argv: list[str] | None = None) -> None:
         ),
     )
     spu.set_defaults(func=cmd_push)
+
+    sri = sub.add_parser(
+        "replace-image",
+        help="Replace an existing image from a local file or public URL",
+    )
+    sri.add_argument("folder", help="Presentation folder created by pull")
+    sri.add_argument("element_id", metavar="ELEMENT_ID", help="Clean SML image ID")
+    sri.add_argument(
+        "new_src",
+        metavar="NEW_SRC",
+        help="Local path, file:// URL, or public HTTP(S) image URL",
+    )
+    sri.set_defaults(func=cmd_replace_image)
 
     src = sub.add_parser(
         "replace-class",

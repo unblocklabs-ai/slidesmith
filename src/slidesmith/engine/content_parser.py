@@ -31,7 +31,7 @@ from slidesmith.engine.classes import (
 )
 from slidesmith.engine.components import ComponentLibrary, load_components
 from slidesmith.engine.layout import compile_layout
-from slidesmith.engine.image_fetch import validate_public_image_url
+from slidesmith.engine.assets import image_source_kind
 
 QA_ACCEPT_CLASS_PREFIX = "qa-accept-"
 
@@ -241,7 +241,7 @@ def _parse_image_authoring(
         return None, None
 
     try:
-        validate_public_image_url(src, resolve_host=False)
+        image_source_kind(src)
     except ValueError as exc:
         raise ValueError(
             f"Invalid src on Image element '{element_id}': {exc}, got {src!r}"
@@ -249,6 +249,12 @@ def _parse_image_authoring(
 
     resolved_fit = fit or "stretch"
     if resolved_fit not in {"stretch", "contain"}:
+        if resolved_fit == "cover":
+            raise ValueError(
+                f"Invalid fit 'cover' on Image element '{element_id}': fit='cover' "
+                "is unsupported because Google Slides cropProperties are read-only; "
+                "expected 'stretch' or 'contain'"
+            )
         raise ValueError(
             f"Invalid fit {resolved_fit!r} on Image element '{element_id}': "
             "expected 'stretch' or 'contain'"

@@ -13,8 +13,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 from typing import Any
 
+from slidesmith.engine.assets import (
+    image_source_kind,
+    inspect_local_image,
+    resolve_local_image_path,
+)
 from slidesmith.engine.classes import Fill, ParagraphStyle, PropertyState, Stroke, TextStyle
 from slidesmith.engine.content_parser import (
     ElementStyles,
@@ -276,6 +282,8 @@ def diff_presentation(
     edited_slides: dict[str, list[ParsedElement]],
     pristine_styles: dict[str, dict[str, Any]],
     _id_mapping: dict[str, str],
+    *,
+    workspace_root: Path | None = None,
 ) -> DiffResult:
     """Diff pristine and edited presentation content.
 
@@ -433,7 +441,9 @@ def diff_presentation(
                         target_id=elem_id,
                         slide_index=slide_idx,
                         parent_id=edited_elem.parent_id,
-                        new_position=_get_create_position(edited_elem),
+                        new_position=_get_create_position(
+                            edited_elem, workspace_root=workspace_root
+                        ),
                         new_text=edited_elem.paragraphs
                         if edited_elem.paragraphs
                         else None,
@@ -963,7 +973,11 @@ def _get_position(elem: ParsedElement) -> dict[str, float] | None:
     }
 
 
-def _get_create_position(elem: ParsedElement) -> dict[str, float] | None:
+def _get_create_position(
+    elem: ParsedElement,
+    *,
+    workspace_root: Path | None = None,
+) -> dict[str, float] | None:
     """Resolve authored CREATE geometry, including Image contain fitting."""
     if elem.tag == "Image" and elem.src is not None:
         validate_authored_image_geometry(
@@ -973,6 +987,16 @@ def _get_create_position(elem: ParsedElement) -> dict[str, float] | None:
             w=elem.w,
             h=elem.h,
         )
+        if image_source_kind(elem.src) == "local":
+            if workspace_root is None:
+                raise ValueError(
+                    f"Local image source {elem.src!r} on Image element "
+                    f"'{elem.clean_id}' requires a presentation workspace"
+                )
+            local_path = resolve_local_image_path(workspace_root, elem.src)
+            local_pixels = inspect_local_image(local_path, source=elem.src)[:2]
+        else:
+            local_pixels = None
     position = _get_position(elem)
     if elem.tag != "Image" or elem.fit != "contain":
         return position
@@ -987,7 +1011,10 @@ def _get_create_position(elem: ParsedElement) -> dict[str, float] | None:
             "positive w and h"
         )
 
-    pixel_width, pixel_height = _fetch_image_dimensions(elem.src)
+    if local_pixels is not None:
+        pixel_width, pixel_height = local_pixels
+    else:
+        pixel_width, pixel_height = _fetch_image_dimensions(elem.src)
     if pixel_width <= 0 or pixel_height <= 0:
         raise ValueError(
             f"Could not determine positive pixel dimensions for Image element "

@@ -15,6 +15,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from slidesmith.engine.assets import AssetCache, AssetUploader, image_source_kind
 from slidesmith.engine.bounds import Transform
 from slidesmith.engine.conflicts import (
     ConflictError,
@@ -391,13 +392,20 @@ class SlidesClient:
         >>> await client.push(Path("./output/1abc..."))
     """
 
-    def __init__(self, transport: Transport | None = None) -> None:
+    def __init__(
+        self,
+        transport: Transport | None = None,
+        asset_uploader: AssetUploader | None = None,
+    ) -> None:
         """Initialize the client.
 
         Args:
             transport: Transport for network operations; local diffing needs none.
+            asset_uploader: Drive upload seam for local image sources. Tests can
+                inject an offline fake; URL-only workflows do not need one.
         """
         self._transport = transport
+        self._asset_uploader = asset_uploader
 
     def _require_transport(self) -> Transport:
         if self._transport is None:
@@ -525,6 +533,7 @@ class SlidesClient:
             current_slides,
             pristine_styles,
             id_mapping,
+            workspace_root=folder_path,
         )
 
         # Build slide ID mapping (slide_index -> google_slide_id)
@@ -595,6 +604,10 @@ class SlidesClient:
             if per_slide:
                 clear_progress_ledger(folder_path)
             return {"replies": [], "message": "No changes detected."}
+
+        # Diff remains local and leaves authored local paths in preview JSON.
+        # Resolve only the outgoing request URLs at push time.
+        await self._resolve_local_asset_requests(folder_path, requests)
 
         intended_slides = self._read_current_slides(folder_path)
         intended_change_keys = {
@@ -698,6 +711,91 @@ class SlidesClient:
                 response,
             )
         return response
+
+    async def replace_image(
+        self,
+        folder_path: Path,
+        element_id: str,
+        new_source: str,
+    ) -> dict[str, Any]:
+        """Replace one existing image while leaving its page geometry untouched."""
+        folder_path = Path(folder_path)
+        metadata = read_json(folder_path / PRESENTATION_FILE, missing_ok=False)
+        presentation_id = metadata.get("presentationId")
+        if not isinstance(presentation_id, str) or not presentation_id:
+            raise ValueError("Presentation ID not found in presentation.json")
+
+        if self.diff(folder_path):
+            raise ValueError(
+                "replace-image requires a clean workspace because its post-write "
+                "refresh would replace pending SML edits; push or revert them first"
+            )
+
+        id_mapping = read_json(folder_path / ID_MAPPING_FILE, missing_ok=False)
+        google_id = id_mapping.get(element_id)
+        if not isinstance(google_id, str) or not google_id:
+            raise ValueError(f"Element {element_id!r} was not found in id_mapping.json")
+
+        transport = self._require_transport()
+        remote = await transport.get_presentation(presentation_id)
+        remote_elements, _ = index_presentation(remote.data)
+        target = remote_elements.get(google_id)
+        if target is None:
+            raise ValueError(
+                f"Element {element_id!r} ({google_id}) no longer exists in the deck"
+            )
+        if "image" not in target:
+            raise ValueError(f"Element {element_id!r} is not an image")
+
+        url = await self._resolve_asset_source(folder_path, new_source)
+        request = {
+            "replaceImage": {
+                "imageObjectId": google_id,
+                "url": url,
+                "imageReplaceMethod": "CENTER_INSIDE",
+            }
+        }
+        try:
+            response = await transport.batch_update(
+                presentation_id,
+                [request],
+                required_revision_id=remote.revision_id,
+            )
+        except APIError as exc:
+            if exc.status_code == 400 and "revision" in str(exc).lower():
+                raise ConflictError(
+                    "replace-image aborted: the deck changed between validation "
+                    "and the write; re-pull and retry"
+                ) from exc
+            raise
+
+        await refresh_after_success(transport, folder_path, presentation_id, response)
+        return response
+
+    async def _resolve_local_asset_requests(
+        self,
+        folder_path: Path,
+        requests: list[dict[str, Any]],
+    ) -> None:
+        for request in requests:
+            create_image = request.get("createImage")
+            if not isinstance(create_image, dict):
+                continue
+            source = create_image.get("url")
+            if not isinstance(source, str) or image_source_kind(source) != "local":
+                continue
+            create_image["url"] = await self._resolve_asset_source(
+                folder_path, source
+            )
+
+    async def _resolve_asset_source(self, folder_path: Path, source: str) -> str:
+        if image_source_kind(source) == "remote":
+            return source
+        if self._asset_uploader is None:
+            raise RuntimeError(
+                f"Local image {source!r} requires a Drive asset uploader at push time"
+            )
+        return await AssetCache(folder_path).resolve(source, self._asset_uploader)
 
     async def _push_per_slide(
         self,
@@ -857,6 +955,7 @@ class SlidesClient:
             intended_slides,
             refreshed_styles,
             read_json(folder_path / ID_MAPPING_FILE, missing_ok=True),
+            workspace_root=folder_path,
         )
         unpersisted = [
             change

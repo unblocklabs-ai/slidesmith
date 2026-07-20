@@ -15,6 +15,7 @@ from slidesmith.engine.assets import UploadedAsset
 from slidesmith.engine.client import SlidesClient
 from slidesmith.engine.content_parser import parse_slide_content
 from slidesmith.engine.transport import APIError, PresentationData, Transport
+from slidesmith.engine.units import pt_to_emu
 
 GOLDEN = (
     Path(__file__).parent.parent
@@ -104,10 +105,15 @@ async def _workspace(tmp_path: Path) -> tuple[ImageTransport, SlidesClient, Path
     return transport, client, tmp_path / data["presentationId"]
 
 
-def _write_png(folder: Path, relative: str = "assets/logo.png") -> Path:
+def _write_png(
+    folder: Path,
+    relative: str = "assets/logo.png",
+    *,
+    size: tuple[int, int] = (80, 40),
+) -> Path:
     path = folder / relative
     path.parent.mkdir(parents=True, exist_ok=True)
-    Image.new("RGB", (80, 40), "navy").save(path)
+    Image.new("RGB", size, "navy").save(path)
     return path
 
 
@@ -229,7 +235,7 @@ async def test_asset_cache_uploads_same_local_path_and_hash_only_once_across_ret
 
 
 @pytest.mark.asyncio
-async def test_replace_image_targets_image_and_preserves_position_and_size(
+async def test_replace_image_contain_pins_top_left_and_new_aspect_geometry(
     tmp_path: Path,
 ) -> None:
     transport, _, folder = await _workspace(tmp_path)
@@ -238,9 +244,18 @@ async def test_replace_image_targets_image_and_preserves_position_and_size(
     image_id = _first_clean_id(folder, transport.data, "image")
     google_id = json.loads((folder / "id_mapping.json").read_text())[image_id]
     target = _find_raw_element(transport.data, google_id)
-    original_size = copy.deepcopy(target["size"])
-    original_transform = copy.deepcopy(target["transform"])
-    _write_png(folder)
+    target["size"] = {
+        "width": {"magnitude": pt_to_emu(220), "unit": "EMU"},
+        "height": {"magnitude": pt_to_emu(124), "unit": "EMU"},
+    }
+    target["transform"] = {
+        "scaleX": 1,
+        "scaleY": 1,
+        "translateX": pt_to_emu(40),
+        "translateY": pt_to_emu(30),
+        "unit": "EMU",
+    }
+    _write_png(folder, size=(900, 600))
 
     await client.replace_image(folder, image_id, "./assets/logo.png")
 
@@ -251,31 +266,131 @@ async def test_replace_image_targets_image_and_preserves_position_and_size(
                 "url": FAKE_URL,
                 "imageReplaceMethod": "CENTER_INSIDE",
             }
-        }
+        },
+        {
+            "updatePageElementTransform": {
+                "objectId": google_id,
+                "transform": {
+                    "scaleX": 1,
+                    "scaleY": 1,
+                    "translateX": pt_to_emu(-17),
+                    "translateY": 0,
+                    "unit": "EMU",
+                },
+                "applyMode": "RELATIVE",
+            }
+        },
     ]
-    replaced = _find_raw_element(transport.data, google_id)
-    assert replaced["size"] == original_size
-    assert replaced["transform"] == original_transform
 
 
 @pytest.mark.asyncio
-async def test_replace_image_accepts_public_url_without_uploader(tmp_path: Path) -> None:
+async def test_replace_image_fetches_remote_dimensions_with_guarded_fetcher(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     transport, _, folder = await _workspace(tmp_path)
     client = SlidesClient(transport)
     image_id = _first_clean_id(folder, transport.data, "image")
     google_id = json.loads((folder / "id_mapping.json").read_text())[image_id]
 
+    calls: list[str] = []
+
+    def fake_dimensions(url: str) -> tuple[int, int]:
+        calls.append(url)
+        return (900, 600)
+
+    monkeypatch.setattr("slidesmith.engine.client.fetch_image_dimensions", fake_dimensions)
+
     await client.replace_image(folder, image_id, "https://example.com/new.png")
 
-    assert transport.batch_calls[-1]["requests"] == [
-        {
-            "replaceImage": {
-                "imageObjectId": google_id,
-                "url": "https://example.com/new.png",
-                "imageReplaceMethod": "CENTER_INSIDE",
-            }
+    assert calls == ["https://example.com/new.png"]
+    assert transport.batch_calls[-1]["requests"][0] == {
+        "replaceImage": {
+            "imageObjectId": google_id,
+            "url": "https://example.com/new.png",
+            "imageReplaceMethod": "CENTER_INSIDE",
         }
+    }
+
+
+@pytest.mark.asyncio
+async def test_replace_image_stretch_keeps_exact_old_box(tmp_path: Path) -> None:
+    transport, _, folder = await _workspace(tmp_path)
+    uploader = FakeUploader()
+    client = SlidesClient(transport, uploader)
+    image_id = _first_clean_id(folder, transport.data, "image")
+    google_id = json.loads((folder / "id_mapping.json").read_text())[image_id]
+    target = _find_raw_element(transport.data, google_id)
+    target["size"] = {
+        "width": {"magnitude": pt_to_emu(220), "unit": "EMU"},
+        "height": {"magnitude": pt_to_emu(124), "unit": "EMU"},
+    }
+    target["transform"] = {
+        "scaleX": 1,
+        "scaleY": 1,
+        "translateX": pt_to_emu(40),
+        "translateY": pt_to_emu(30),
+        "unit": "EMU",
+    }
+    _write_png(folder, size=(900, 600))
+
+    await client.replace_image(folder, image_id, "./assets/logo.png", fit="stretch")
+
+    transform = transport.batch_calls[-1]["requests"][1][
+        "updatePageElementTransform"
     ]
+    assert transform["objectId"] == google_id
+    assert transform["applyMode"] == "RELATIVE"
+    assert transform["transform"] == {
+        "scaleX": pytest.approx(220 / 186),
+        "scaleY": 1,
+        "translateX": pytest.approx(pt_to_emu(40 - (220 / 186) * 57)),
+        "translateY": 0,
+        "unit": "EMU",
+    }
+
+
+@pytest.mark.asyncio
+async def test_replace_image_dry_run_shows_geometry_and_requests_without_write(
+    tmp_path: Path,
+) -> None:
+    transport, _, folder = await _workspace(tmp_path)
+    uploader = FakeUploader()
+    client = SlidesClient(transport, uploader)
+    image_id = _first_clean_id(folder, transport.data, "image")
+    google_id = json.loads((folder / "id_mapping.json").read_text())[image_id]
+    target = _find_raw_element(transport.data, google_id)
+    target["size"] = {
+        "width": {"magnitude": pt_to_emu(220), "unit": "EMU"},
+        "height": {"magnitude": pt_to_emu(124), "unit": "EMU"},
+    }
+    target["transform"] = {
+        "scaleX": 1,
+        "scaleY": 1,
+        "translateX": pt_to_emu(40),
+        "translateY": pt_to_emu(30),
+        "unit": "EMU",
+    }
+    _write_png(folder, size=(900, 600))
+
+    preview = await client.replace_image(
+        folder, image_id, "./assets/logo.png", dry_run=True
+    )
+
+    assert transport.batch_calls == []
+    assert preview["dryRun"] is True
+    assert preview["geometry"] == {
+        "fit": "contain",
+        "x": 40,
+        "y": 30,
+        "w": 186,
+        "h": 124,
+        "unit": "PT",
+    }
+    assert [next(iter(request)) for request in preview["requests"]] == [
+        "replaceImage",
+        "updatePageElementTransform",
+    ]
+    assert preview["requests"][0]["replaceImage"]["imageObjectId"] == google_id
 
 
 @pytest.mark.asyncio
@@ -349,22 +464,36 @@ def test_positive_geometry_validation_applies_to_local_images() -> None:
 def test_replace_image_cli_accepts_folder_element_and_source(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    captured: dict[str, str] = {}
+    captured: dict[str, Any] = {}
 
     def fake_command(args: Any) -> None:
         captured.update(
             folder=args.folder,
             element_id=args.element_id,
             new_src=args.new_src,
+            fit=args.fit,
+            dry_run=args.dry_run,
         )
 
     monkeypatch.setattr(cli, "cmd_replace_image", fake_command)
-    cli.main(["replace-image", "deck-folder", "hero_image", "./hero.png"])
+    cli.main(
+        [
+            "replace-image",
+            "deck-folder",
+            "hero_image",
+            "./hero.png",
+            "--fit",
+            "stretch",
+            "--dry-run",
+        ]
+    )
 
     assert captured == {
         "folder": "deck-folder",
         "element_id": "hero_image",
         "new_src": "./hero.png",
+        "fit": "stretch",
+        "dry_run": True,
     }
 
 

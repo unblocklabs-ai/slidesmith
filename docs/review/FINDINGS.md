@@ -448,3 +448,17 @@ generation, contain math, and Stack flex layout.
 - [x] MEDIUM authored stretch images accepted zero or missing geometry. Every
   authored `<Image src>` now requires finite, strictly-positive `x`, `y`, `w`,
   and `h` at parser, diff, and request-generation boundaries.
+
+## M6 DOGFOOD R1 FIXES
+
+### [x] M6-R1 [HIGH] replace-image silently changed image geometry
+Resolution: replacement now reads the new image dimensions through the shared
+bounded SSRF-safe URL fetcher or local Pillow inspection, then emits
+`replaceImage(CENTER_INSIDE)` plus a relative transform that maps Google's
+centered fit onto explicit geometry. Default `--fit contain` preserves the old
+top-left while fitting the new aspect ratio within the old bounds; `--fit
+stretch` preserves the exact old box. `--dry-run` reports the computed geometry
+and both requests without upload or write. Authored create-contain remains a
+single `createImage` because its aspect-matched size and embedded transform
+already pin the intended visual frame; an offline regression now locks that
+contract. Cover/crop remains unsupported.

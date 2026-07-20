@@ -194,7 +194,12 @@ def cmd_replace_image(args: Any) -> None:
                 Path(args.folder),
                 args.element_id,
                 args.new_src,
+                fit=args.fit,
+                dry_run=args.dry_run,
             )
+            if response.get("dryRun"):
+                print(json.dumps(response, indent=2))
+                return
             for warning in response.get("warnings", []):
                 print(f"warning: {warning}", file=sys.stderr)
             print(f"Replaced image {args.element_id}.")
@@ -501,6 +506,20 @@ def main(argv: list[str] | None = None) -> None:
         "new_src",
         metavar="NEW_SRC",
         help="Local path, file:// URL, or public HTTP(S) image URL",
+    )
+    sri.add_argument(
+        "--fit",
+        choices=("stretch", "contain"),
+        default="contain",
+        help=(
+            "Geometry after replacement: aspect-correct top-left contain "
+            "(default), or preserve the exact old box with stretch"
+        ),
+    )
+    sri.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show the computed geometry and API requests without writing",
     )
     sri.set_defaults(func=cmd_replace_image)
 

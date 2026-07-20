@@ -131,8 +131,8 @@ vocabulary, one-shot Stack/Grid layout, QA judgment, and auth recovery.
   `h="auto"` text height, reusable `components.sml` + `<Use>` expansion, and
   `content-align-*` — the compiler does the coordinate math.
 - **Image authoring**: public URL or local-file `Image` creation with stretch or
-  contain fitting, Drive upload reuse caching, and geometry-preserving
-  `replace-image`; cover/crop stays explicitly unsupported.
+  contain fitting, Drive upload reuse caching, and explicit contain/stretch
+  geometry pinning for `replace-image`; cover/crop stays unsupported.
 - **Visual QA**: `check` downloads rendered slide PNGs, optionally creates a
   labeled two-column contact sheet with `--contact-sheet`, and runs geometry lint
   (overlap, out-of-bounds, likely text overflow) with a NEW / PRE-EXISTING /

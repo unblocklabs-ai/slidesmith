@@ -368,6 +368,16 @@ def test_contain_uses_stubbed_dimensions_and_anchors_top_left(
     assert _visual_geometry(request) == tuple(
         pt_to_emu(value) for value in expected_frame
     )
+    properties = request["createImage"]["elementProperties"]
+    assert properties["size"] == {
+        "width": {"magnitude": pt_to_emu(expected_frame[2]), "unit": "EMU"},
+        "height": {"magnitude": pt_to_emu(expected_frame[3]), "unit": "EMU"},
+    }
+    assert properties["transform"]["scaleX"] == 1
+    assert properties["transform"]["scaleY"] == 1
+    # An aspect-matched createImage box already pins the intended visual frame;
+    # Google may refactor size/transform values but does not re-fit the geometry.
+    assert list(request) == ["createImage"]
 
 
 def test_image_inside_stack_uses_container_position_and_flex_size() -> None:

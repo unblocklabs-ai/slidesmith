@@ -4,8 +4,8 @@
 
 - Added local-path and `file://` image authoring with push-time Drive upload.
 - Added `.assets.json` reuse keyed by resolved local path plus content SHA-256.
-- Added `slidesmith replace-image` for revision-locked, geometry-preserving
-  replacement from either local files or public URLs.
+- Added `slidesmith replace-image` for revision-locked replacement from either
+  local files or public URLs, with explicit contain/stretch geometry pinning.
 - Kept `fit="cover"` explicitly unsupported because Slides crop properties are
   read-only.
 

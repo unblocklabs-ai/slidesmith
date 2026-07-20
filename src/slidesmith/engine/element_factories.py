@@ -321,6 +321,7 @@ def _create_image_request(
     url: str,
     native_size: dict[str, float] | None = None,
     native_scale: dict[str, float] | None = None,
+    fit: str | None = None,
 ) -> dict[str, Any]:
     """Create a createImage request.
 
@@ -335,6 +336,7 @@ def _create_image_request(
         url: Image URL
         native_size: Native image dimensions {w, h} in EMU (from source style)
         native_scale: Original scale factors {x, y} (from source style)
+        fit: Authored fit mode, when this is a new source image
     """
     target_w_emu = pt_to_emu(position["w"])
     target_h_emu = pt_to_emu(position["h"])
@@ -369,6 +371,32 @@ def _create_image_request(
                     },
                 }
             }
+
+    if fit == "contain":
+        # createImage aspect-fits against elementProperties.size before applying
+        # the transform. The contain frame already matches the source aspect, so
+        # pass it as the intrinsic size instead of encoding it through unequal
+        # scales on a square base size.
+        return {
+            "createImage": {
+                "objectId": object_id,
+                "url": url,
+                "elementProperties": {
+                    "pageObjectId": slide_id,
+                    "size": {
+                        "width": {"magnitude": target_w_emu, "unit": "EMU"},
+                        "height": {"magnitude": target_h_emu, "unit": "EMU"},
+                    },
+                    "transform": {
+                        "scaleX": 1,
+                        "scaleY": 1,
+                        "translateX": pt_to_emu(position["x"]),
+                        "translateY": pt_to_emu(position["y"]),
+                        "unit": "EMU",
+                    },
+                },
+            }
+        }
 
     # Fallback: use standard base size approach (less accurate)
     base_size_emu = 3000024
@@ -430,6 +458,7 @@ def _create_element_requests(
                 slide_google_id,
                 position,
                 change.src,
+                fit=change.fit,
             )
         )
     elif shape_type in {"GROUP", "TABLE", "VIDEO", "SHEETS_CHART"}:

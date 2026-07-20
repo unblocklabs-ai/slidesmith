@@ -645,22 +645,34 @@ live account because offline tests inject a fake uploader.
 
 ### Replacing an existing image
 
-Replace the pixels of a pulled image without changing its page-element frame:
+Replace the pixels of a pulled image with explicit, previewable geometry:
 
 ```bash
 slidesmith replace-image <ID> hero_image ./assets/new-hero.png
 slidesmith replace-image <ID> hero_image https://example.com/new-hero.png
+slidesmith replace-image <ID> hero_image ./assets/new-hero.png --fit stretch
+slidesmith replace-image <ID> hero_image ./assets/new-hero.png --dry-run
 ```
 
 The command validates the clean SML ID against the freshly fetched deck and
-fails if the target is not an image. It emits one `replaceImage` request with
-`imageReplaceMethod="CENTER_INSIDE"`; because it does not send a size or
-transform update, the existing element position and size are preserved. A local
-replacement uses the same Drive upload and `.assets.json` reuse path. As with
-`createImage`, Slides fetches the URL once and stores its own copy. Some existing
-image effects may be removed by Google's replacement operation. Run it only on
-a clean workspace: the command refuses pending SML changes before its
-authoritative post-write refresh can overwrite them.
+fails if the target is not an image. The default `--fit contain` reads the new
+image dimensions, fits that aspect ratio inside the old bounds, and anchors the
+result at the old top-left `x`, `y`; one of `w` or `h` may therefore shrink.
+`--fit stretch` keeps the exact old `x`, `y`, `w`, and `h`, accepting image
+distortion. Both modes emit `replaceImage` with
+`imageReplaceMethod="CENTER_INSIDE"` followed by an explicit relative
+`updatePageElementTransform` that undoes Google's automatic centering and pins
+the selected geometry. `--dry-run` prints that geometry and both requests
+without uploading or writing.
+
+Remote dimensions use the same SSRF-guarded, redirect-validated, bounded fetcher
+as authored `fit="contain"`; local dimensions are read with Pillow before the
+existing Drive upload and `.assets.json` reuse path. As with `createImage`,
+Slides fetches the URL once and stores its own copy. Some existing image effects
+may be removed by Google's replacement operation. Run it only on a clean
+workspace: the command refuses pending SML changes before its authoritative
+post-write refresh can overwrite them. Cover/crop remains impossible because
+Google exposes image crop properties as read-only through this API.
 
 An `Image` inside `Stack` or `Grid` participates like any other child. Give it
 the required fixed `w`/`h` for that container axis, use a positive `flex` for

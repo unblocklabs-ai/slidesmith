@@ -15,8 +15,14 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from slidesmith.engine.assets import AssetCache, AssetUploader, image_source_kind
-from slidesmith.engine.bounds import Transform
+from slidesmith.engine.assets import (
+    AssetCache,
+    AssetUploader,
+    image_source_kind,
+    inspect_local_image,
+    resolve_local_image_path,
+)
+from slidesmith.engine.bounds import BoundingBox, Transform, get_bounds
 from slidesmith.engine.conflicts import (
     ConflictError,
     ensure_no_conflicts,
@@ -37,6 +43,7 @@ from slidesmith.engine.content_parser import (
 from slidesmith.engine.components import load_components
 from slidesmith.engine.content_requests import generate_batch_requests
 from slidesmith.engine.json_utils import read_json
+from slidesmith.engine.image_fetch import fetch_image_dimensions
 from slidesmith.engine.slide_processor import process_presentation, write_new_format
 from slidesmith.engine.push_progress import (
     SlideBatch,
@@ -46,6 +53,7 @@ from slidesmith.engine.push_progress import (
     write_progress_ledger,
 )
 from slidesmith.engine.transport import APIError, Transport
+from slidesmith.engine.units import pt_to_emu
 from slidesmith.engine.workspace_layout import (
     ID_MAPPING_FILE,
     PRESENTATION_FILE,
@@ -87,6 +95,60 @@ class PerSlideConflictError(ConflictError):
             f"slide {slide_index}/{total_slides:02d} failed: {cause}",
             conflicts=cause.conflicts,
         )
+
+
+def _replacement_geometry_requests(
+    object_id: str,
+    old: BoundingBox,
+    *,
+    pixel_width: int,
+    pixel_height: int,
+    fit: str,
+) -> tuple[BoundingBox, dict[str, Any]]:
+    """Compute a top-left target and undo Google's centered aspect fit."""
+    if old.w <= 0 or old.h <= 0:
+        raise ValueError(f"Image element {object_id!r} has non-positive geometry")
+    if pixel_width <= 0 or pixel_height <= 0:
+        raise ValueError("Replacement image has non-positive pixel dimensions")
+
+    image_aspect = pixel_width / pixel_height
+    old_aspect = old.w / old.h
+    if image_aspect > old_aspect:
+        fitted_w = old.w
+        fitted_h = old.w / image_aspect
+    else:
+        fitted_w = old.h * image_aspect
+        fitted_h = old.h
+
+    centered_x = old.x + (old.w - fitted_w) / 2
+    centered_y = old.y + (old.h - fitted_h) / 2
+    if fit == "contain":
+        target = BoundingBox(old.x, old.y, fitted_w, fitted_h)
+    else:
+        target = BoundingBox(old.x, old.y, old.w, old.h)
+
+    # replaceImage(CENTER_INSIDE) first produces the centered fitted rectangle.
+    # Pre-multiplying this relative affine transform maps that exact rectangle
+    # onto the requested top-left target, independent of Google's internal
+    # size/transform refactoring.
+    scale_x = target.w / fitted_w
+    scale_y = target.h / fitted_h
+    translate_x = target.x - scale_x * centered_x
+    translate_y = target.y - scale_y * centered_y
+    request = {
+        "updatePageElementTransform": {
+            "objectId": object_id,
+            "transform": {
+                "scaleX": scale_x,
+                "scaleY": scale_y,
+                "translateX": pt_to_emu(translate_x),
+                "translateY": pt_to_emu(translate_y),
+                "unit": "EMU",
+            },
+            "applyMode": "RELATIVE",
+        }
+    }
+    return target, request
 
 
 def _progress_slide_total(
@@ -717,9 +779,14 @@ class SlidesClient:
         folder_path: Path,
         element_id: str,
         new_source: str,
+        *,
+        fit: str = "contain",
+        dry_run: bool = False,
     ) -> dict[str, Any]:
-        """Replace one existing image while leaving its page geometry untouched."""
+        """Replace an image and explicitly pin its requested page geometry."""
         folder_path = Path(folder_path)
+        if fit not in {"contain", "stretch"}:
+            raise ValueError("replace-image --fit must be 'contain' or 'stretch'")
         metadata = read_json(folder_path / PRESENTATION_FILE, missing_ok=False)
         presentation_id = metadata.get("presentationId")
         if not isinstance(presentation_id, str) or not presentation_id:
@@ -747,18 +814,46 @@ class SlidesClient:
         if "image" not in target:
             raise ValueError(f"Element {element_id!r} is not an image")
 
-        url = await self._resolve_asset_source(folder_path, new_source)
-        request = {
+        pixel_width, pixel_height = self._replacement_image_dimensions(
+            folder_path, new_source
+        )
+        old_geometry = get_bounds(target)
+        geometry, pin_request = _replacement_geometry_requests(
+            google_id,
+            old_geometry,
+            pixel_width=pixel_width,
+            pixel_height=pixel_height,
+            fit=fit,
+        )
+        replace_request = {
             "replaceImage": {
                 "imageObjectId": google_id,
-                "url": url,
+                "url": new_source,
                 "imageReplaceMethod": "CENTER_INSIDE",
             }
         }
+        requests = [replace_request, pin_request]
+        if dry_run:
+            return {
+                "dryRun": True,
+                "geometry": {
+                    "fit": fit,
+                    "x": geometry.x,
+                    "y": geometry.y,
+                    "w": geometry.w,
+                    "h": geometry.h,
+                    "unit": "PT",
+                },
+                "requests": requests,
+            }
+
+        replace_request["replaceImage"]["url"] = await self._resolve_asset_source(
+            folder_path, new_source
+        )
         try:
             response = await transport.batch_update(
                 presentation_id,
-                [request],
+                requests,
                 required_revision_id=remote.revision_id,
             )
         except APIError as exc:
@@ -771,6 +866,16 @@ class SlidesClient:
 
         await refresh_after_success(transport, folder_path, presentation_id, response)
         return response
+
+    @staticmethod
+    def _replacement_image_dimensions(
+        folder_path: Path, source: str
+    ) -> tuple[int, int]:
+        """Read replacement pixels through the same bounded source paths as create."""
+        if image_source_kind(source) == "local":
+            path = resolve_local_image_path(folder_path, source)
+            return inspect_local_image(path, source=source)[:2]
+        return fetch_image_dimensions(source)
 
     async def _resolve_local_asset_requests(
         self,

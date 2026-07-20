@@ -203,7 +203,13 @@ def _parse_paragraph_runs(p_elem: ET.Element, element_id: str) -> list[ParsedRun
     """
     runs: list[ParsedRun] = []
 
-    if p_elem.text:
+    # Pretty-printers put indentation before the first <T> and in each <T>'s
+    # tail. Generator-emitted mixed content stays inline, so only newline-bearing
+    # whitespace in these between-element positions is formatting. Plain <P>
+    # text and <T> text are always significant, including outer spaces.
+    if p_elem.text and not (
+        len(p_elem) and _is_inter_element_formatting(p_elem.text)
+    ):
         runs.append(ParsedRun(text=p_elem.text))
 
     for child in p_elem:
@@ -224,10 +230,15 @@ def _parse_paragraph_runs(p_elem: ET.Element, element_id: str) -> list[ParsedRun
             )
         elif auto_text_type:
             runs.append(ParsedRun(text="", auto_text_type=auto_text_type))
-        if child.tail:
+        if child.tail and not _is_inter_element_formatting(child.tail):
             runs.append(ParsedRun(text=child.tail))
 
     return runs
+
+
+def _is_inter_element_formatting(text: str) -> bool:
+    """Return whether mixed-content whitespace came from line formatting."""
+    return not text.strip() and ("\n" in text or "\r" in text)
 
 
 def parse_element_classes(

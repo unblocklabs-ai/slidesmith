@@ -190,6 +190,20 @@ def cmd_replace_class(args: Any) -> None:
         print("Dry run: no files written.")
 
 
+def cmd_fmt(args: Any) -> None:
+    from slidesmith.engine.formatting import format_folder
+
+    result = format_folder(args.folder, check=args.check)
+    changed = len(result.changed_paths)
+    if args.check:
+        if changed:
+            print(f"{changed} content.sml file(s) would be reformatted.")
+            sys.exit(1)
+        print("All content.sml files are canonically formatted.")
+        return
+    print(f"Formatted {changed} content.sml file(s).")
+
+
 def cmd_check(args: Any) -> None:
     from slidesmith.engine.qa import (
         check_folder,
@@ -317,6 +331,18 @@ def main(argv: list[str] | None = None) -> None:
         help="Print replacement counts without writing files",
     )
     src.set_defaults(func=cmd_replace_class)
+
+    sf = sub.add_parser(
+        "fmt",
+        help="Canonically format content.sml files without changing semantics",
+    )
+    sf.add_argument("folder", help="Presentation folder created by pull")
+    sf.add_argument(
+        "--check",
+        action="store_true",
+        help="Exit with status 1 if any content.sml file needs formatting",
+    )
+    sf.set_defaults(func=cmd_fmt)
 
     sc = sub.add_parser(
         "check",

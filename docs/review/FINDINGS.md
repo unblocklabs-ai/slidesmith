@@ -359,6 +359,9 @@ Resolution: the source-versus-source-plus-delta heuristic is documented in the a
 ### [x] R3-8 [MEDIUM] Nested `autoText` was baked into static text on copy
 Resolution: the copy guard now recursively scans serialized descendants. Same-slide copies containing nested `autoText` use `duplicateObject`, while cross-slide copies fail with the same explicit preservation error as root-level `autoText`.
 
+### [x] R3-W1 [WISH] Format SML without risking mixed-content whitespace changes
+Resolution: newline-bearing indentation between mixed-content tags is now ignored by the parser without trimming plain `P` or `T` text. `slidesmith fmt <folder> [--check]` restores canonical generator formatting only after asserting identical parsed semantics, and generator-emitted files remain byte-for-byte unchanged.
+
 ## ROUND 4
 
 ### [x] R4-1 [HIGH] Partial element class removal silently left remote fields set

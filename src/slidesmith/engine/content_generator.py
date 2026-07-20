@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import re
 from typing import TYPE_CHECKING, Any
+from xml.etree.ElementTree import Element
 from xml.sax.saxutils import escape
 
 from slidesmith.engine.classes import ParagraphStyle, common_classes
@@ -62,6 +63,83 @@ def generate_slide_content(
     lines.append("</Slide>")
 
     return "\n".join(lines)
+
+
+def generate_canonical_slide_content(root: Element) -> str:
+    """Serialize an SML XML tree using generator-compatible formatting."""
+    if root.tag != "Slide":
+        raise ValueError("Invalid content.sml XML: expected a <Slide> root")
+    lines: list[str] = []
+    _generate_xml_element(root, lines, indent=0)
+    return "\n".join(lines)
+
+
+def _generate_xml_element(element: Element, lines: list[str], indent: int) -> None:
+    prefix = "  " * indent
+    opening = _xml_opening(element)
+
+    if element.tag == "P":
+        lines.append(f"{prefix}{_serialize_xml_paragraph(element)}")
+        return
+
+    children = list(element)
+    if not children and element.tag != "Slide":
+        lines.append(f"{prefix}{opening} />")
+        return
+
+    lines.append(f"{prefix}{opening}>")
+    for child in children:
+        _generate_xml_element(child, lines, indent + 1)
+    lines.append(f"{prefix}</{element.tag}>")
+
+
+def _serialize_xml_paragraph(paragraph: Element) -> str:
+    opening = _xml_opening(paragraph)
+    children = list(paragraph)
+    if not children and not paragraph.text:
+        return f"{opening} />"
+    if not children:
+        return f"{opening}>{escape(paragraph.text or '')}</P>"
+
+    content: list[str] = []
+    if paragraph.text and not _is_xml_formatting(paragraph.text):
+        content.append(escape(paragraph.text))
+    for child in children:
+        attrs = _xml_attributes(child)
+        attr_text = f" {attrs}" if attrs else ""
+        content.append(
+            f"<{child.tag}{attr_text}>{escape(child.text or '')}</{child.tag}>"
+        )
+        if child.tail and not _is_xml_formatting(child.tail):
+            content.append(escape(child.tail))
+    return f"{opening}>{''.join(content)}</P>"
+
+
+def _xml_opening(element: Element) -> str:
+    attrs = _xml_attributes(element)
+    attr_text = f" {attrs}" if attrs else ""
+    return f"<{element.tag}{attr_text}"
+
+
+def _xml_attributes(element: Element) -> str:
+    preferred = {
+        "Slide": ("id",),
+        "P": ("class",),
+        "T": ("class", "auto-text"),
+    }.get(element.tag, ("id", "x", "y", "w", "h", "class"))
+    names = [name for name in preferred if name in element.attrib]
+    names.extend(name for name in element.attrib if name not in names)
+    return " ".join(
+        f'{name}="{_escape_xml_attribute(element.attrib[name])}"' for name in names
+    )
+
+
+def _escape_xml_attribute(value: str) -> str:
+    return escape(value, {'"': "&quot;"})
+
+
+def _is_xml_formatting(text: str) -> bool:
+    return not text.strip() and ("\n" in text or "\r" in text)
 
 
 def _generate_node(

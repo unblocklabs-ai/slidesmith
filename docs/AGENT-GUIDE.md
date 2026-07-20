@@ -117,6 +117,29 @@ tags fall back to a rectangle when created, so do not guess tag names.
 XML rules still apply: escape `&`, `<`, and `>` in text; quote attributes; keep
 `T` inside `P`; and do not put layout containers inside `P` or `T`.
 
+## Formatting SML safely
+
+Use the local-only formatter instead of a generic XML pretty-printer:
+
+```bash
+slidesmith fmt <ID>
+slidesmith fmt <ID> --check
+```
+
+`fmt` rewrites every `slides/NN/content.sml` with Slidesmith's canonical
+two-space indentation while keeping each `P` and its `T` runs inline. It first
+parses every file, regenerates all prospective output, and asserts that parsing
+before and after produces identical slide semantics before writing anything.
+Generator-emitted files are already canonical, so formatting them is a
+byte-for-byte no-op. `--check` performs the same validation without writing and
+exits with status 1 when any file would be reformatted.
+
+Whitespace in a plain `P` or inside a `T` run is text content, including
+intentional leading and trailing spaces. Only newline-bearing indentation between
+child tags is formatting. A generic XML formatter can move indentation into mixed
+`P`/`T` content; run `slidesmith fmt` to normalize such a file safely before
+reviewing its diff.
+
 ## Class vocabulary
 
 The accepted vocabulary below is derived from the parsing functions in

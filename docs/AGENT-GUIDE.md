@@ -308,6 +308,38 @@ unchanged and names the affected element where applicable. This command does
 not call Google APIs or run a diff; inspect the result with
 `slidesmith diff <ID>` and push it separately.
 
+## Authoring images from URLs
+
+Create an image with an HTTP or HTTPS `src`, an authored point-valued frame,
+and optional `fit="stretch|contain"`:
+
+```xml
+<Image id="hero_image" src="https://picsum.photos/1200/675"
+       x="48" y="72" w="624" h="351" fit="contain" />
+```
+
+`stretch` is the default Google Slides API behavior: the image fills the
+authored box and may be distorted. `contain` preserves the source aspect ratio.
+During diff generation Slidesmith downloads the image without credentials,
+reads its pixel dimensions, and shrinks either the authored width or height.
+The resulting frame stays anchored at the authored top-left `x`, `y` position.
+
+Google's `cropProperties` are **READ-ONLY via the API**, so `fit="cover"` is
+impossible. Slidesmith rejects `cover` instead of pretending it can create that
+result. Crop the source image before authoring when a cover treatment is needed.
+
+The `createImage` API requires a publicly fetchable URL. The image must be less
+than 50 MB and less than 25 megapixels. A URL following the
+`https://picsum.photos/<width>/<height>` pattern, such as the example above, is
+useful for testing. Private URLs, local files, data URLs, and URLs requiring an
+authorization header are not supported.
+
+An `Image` inside `Stack` or `Grid` participates like any other child. Give it
+the required fixed `w`/`h` for that container axis, use a positive `flex` for
+Stack main-axis sizing, or let Grid assign its cell frame. The container removes
+`flex` and writes the computed absolute image geometry before diffing; `contain`
+then shrinks one axis within that computed frame.
+
 ## Copying pulled elements
 
 To copy a pulled element, repeat it with the same `id`, set the copy's `x` and

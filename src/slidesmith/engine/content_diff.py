@@ -11,9 +11,13 @@ For copies, calculates translation from original position to apply to children.
 
 from __future__ import annotations
 
+from io import BytesIO
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
+
+import httpx
+from PIL import Image
 
 from slidesmith.engine.classes import Fill, ParagraphStyle, PropertyState, Stroke, TextStyle
 from slidesmith.engine.content_parser import (
@@ -129,6 +133,10 @@ class Change:
 
     # Element tag (for creates/copies)
     tag: str | None = None
+
+    # Authored Image CREATE metadata. Pulled images do not populate these.
+    src: str | None = None
+    fit: str | None = None
 
 
 @dataclass
@@ -427,7 +435,7 @@ def diff_presentation(
                         target_id=elem_id,
                         slide_index=slide_idx,
                         parent_id=edited_elem.parent_id,
-                        new_position=_get_position(edited_elem),
+                        new_position=_get_create_position(edited_elem),
                         new_text=edited_elem.paragraphs
                         if edited_elem.paragraphs
                         else None,
@@ -437,6 +445,8 @@ def diff_presentation(
                         if edited_elem.paragraph_styles
                         else None,
                         tag=edited_elem.tag,
+                        src=edited_elem.src,
+                        fit=edited_elem.fit,
                     )
                 )
 
@@ -953,6 +963,52 @@ def _get_position(elem: ParsedElement) -> dict[str, float] | None:
         "w": elem.w or 0,
         "h": elem.h or 0,
     }
+
+
+def _get_create_position(elem: ParsedElement) -> dict[str, float] | None:
+    """Resolve authored CREATE geometry, including Image contain fitting."""
+    position = _get_position(elem)
+    if elem.tag != "Image" or elem.fit != "contain":
+        return position
+    if position is None or not elem.src:
+        return position
+
+    width = position["w"]
+    height = position["h"]
+    if width <= 0 or height <= 0:
+        raise ValueError(
+            f"Image element '{elem.clean_id}' with fit='contain' requires "
+            "positive w and h"
+        )
+
+    pixel_width, pixel_height = _fetch_image_dimensions(elem.src)
+    if pixel_width <= 0 or pixel_height <= 0:
+        raise ValueError(
+            f"Could not determine positive pixel dimensions for Image element "
+            f"'{elem.clean_id}' from {elem.src!r}"
+        )
+
+    image_aspect = pixel_width / pixel_height
+    frame_aspect = width / height
+    contained = dict(position)
+    if image_aspect > frame_aspect:
+        contained["h"] = width / image_aspect
+    elif image_aspect < frame_aspect:
+        contained["w"] = height * image_aspect
+    return contained
+
+
+def _fetch_image_dimensions(url: str) -> tuple[int, int]:
+    """Download an authored image without credentials and return pixel dimensions."""
+    try:
+        response = httpx.get(url, timeout=10.0, follow_redirects=True)
+        response.raise_for_status()
+        with Image.open(BytesIO(response.content)) as image:
+            return image.size
+    except (httpx.HTTPError, OSError) as exc:
+        raise ValueError(
+            f"Could not fetch image dimensions from {url!r} for fit='contain': {exc}"
+        ) from exc
 
 
 def _is_copy_by_missing_dimensions(elem: ParsedElement) -> bool:

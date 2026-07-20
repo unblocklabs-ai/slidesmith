@@ -9,6 +9,7 @@ from __future__ import annotations
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from defusedxml import ElementTree as DefusedET
 from defusedxml.common import DefusedXmlException
@@ -85,6 +86,11 @@ class ParsedElement:
     w: float | None = None
     h: float | None = None
 
+    # Authored image source and fit mode. Pulled images omit both and retain
+    # their existing styles.json-backed representation.
+    src: str | None = None
+    fit: str | None = None
+
     # Text content (list of paragraph texts)
     paragraphs: list[str] = field(default_factory=list)
 
@@ -158,6 +164,8 @@ def _parse_element(elem: ET.Element, parent_id: str | None) -> ParsedElement:
     w = _parse_float(elem.get("w"), clean_id, "w")
     h = _parse_float(elem.get("h"), clean_id, "h")
 
+    src, fit = _parse_image_authoring(elem, clean_id)
+
     # Parse the class attribute into typed styles (fails loudly on unknown classes)
     styles = parse_element_classes(elem.get("class"), clean_id, elem.tag)
 
@@ -187,6 +195,8 @@ def _parse_element(elem: ET.Element, parent_id: str | None) -> ParsedElement:
         y=y,
         w=w,
         h=h,
+        src=src,
+        fit=fit,
         paragraphs=paragraphs,
         runs=runs,
         paragraph_styles=paragraph_styles,
@@ -194,6 +204,54 @@ def _parse_element(elem: ET.Element, parent_id: str | None) -> ParsedElement:
         children=children,
         parent_id=parent_id,
     )
+
+
+def _parse_image_authoring(
+    elem: ET.Element,
+    element_id: str,
+) -> tuple[str | None, str | None]:
+    """Parse authored Image-only source metadata without changing pulled images."""
+    src = elem.get("src")
+    fit = elem.get("fit")
+
+    if elem.tag != "Image":
+        if src is not None or fit is not None:
+            attribute = "src" if src is not None else "fit"
+            raise ValueError(
+                f"Invalid '{attribute}' attribute on <{elem.tag}> element "
+                f"'{element_id}': only <Image> supports src and fit"
+            )
+        return None, None
+
+    # Pulled images intentionally have neither attribute; their content URL
+    # and copy-time data continue to live in styles.json.
+    if src is None:
+        if fit is not None:
+            raise ValueError(
+                f"Invalid fit on Image element '{element_id}': fit requires src"
+            )
+        return None, None
+
+    try:
+        parsed = urlsplit(src)
+    except ValueError as exc:
+        raise ValueError(
+            f"Invalid src on Image element '{element_id}': expected an "
+            f"http(s) URL, got {src!r}"
+        ) from exc
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
+        raise ValueError(
+            f"Invalid src on Image element '{element_id}': expected an "
+            f"http(s) URL, got {src!r}"
+        )
+
+    resolved_fit = fit or "stretch"
+    if resolved_fit not in {"stretch", "contain"}:
+        raise ValueError(
+            f"Invalid fit {resolved_fit!r} on Image element '{element_id}': "
+            "expected 'stretch' or 'contain'"
+        )
+    return src, resolved_fit
 
 
 def _parse_paragraph_runs(p_elem: ET.Element, element_id: str) -> list[ParsedRun]:

@@ -410,7 +410,20 @@ def _create_element_requests(
 
     if shape_type == "LINE":
         requests.append(_create_line_request(new_object_id, slide_google_id, position))
-    elif shape_type in {"IMAGE", "GROUP", "TABLE", "VIDEO", "SHEETS_CHART"}:
+    elif shape_type == "IMAGE":
+        if not change.src:
+            raise ValueError(
+                f"Creating <{tag}> requires an http(s) src URL"
+            )
+        requests.append(
+            _create_image_request(
+                new_object_id,
+                slide_google_id,
+                position,
+                change.src,
+            )
+        )
+    elif shape_type in {"GROUP", "TABLE", "VIDEO", "SHEETS_CHART"}:
         raise ValueError(
             f"Creating <{tag}> requires source-specific data and is not supported"
         )
@@ -425,7 +438,7 @@ def _create_element_requests(
         )
 
     # Apply class-derived element styling (shape fill/outline or line stroke)
-    if change.new_styles:
+    if change.new_styles and shape_type != "IMAGE":
         if shape_type == "LINE":
             line_request = _create_class_line_style_request(
                 new_object_id, change.new_styles.stroke

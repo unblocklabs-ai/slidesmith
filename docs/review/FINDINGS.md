@@ -419,3 +419,14 @@ Resolution: repeated `--swap OLD=NEW` flags, optionally combined with positional
 
 ### [x] R2D-W4 [WISH] Create a whole-deck contact sheet during visual QA
 Resolution: `slidesmith check <folder> --contact-sheet` now composes downloaded slide PNGs into a labeled two-column `.qa/contact-sheet.png`; combining it with `--no-thumbnails` fails with a specific actionable error.
+
+## ROUND 4-DOGFOOD
+
+### [x] R4D-1 [HIGH] Authored Image elements could not be created from URLs
+Resolution: `<Image src="https://..." ... fit="stretch|contain"/>` now validates
+HTTP(S) sources, carries image metadata through CREATE diffs, and emits
+`createImage` with the authored EMU geometry. Stretch remains the default;
+contain fetches pixel dimensions during diff, preserves aspect ratio by shrinking
+one axis from the top-left anchor, and works after Stack/Grid layout assignment.
+Offline contracts stub dimension lookup and cover parsing, validation, request
+generation, contain math, and Stack flex layout.

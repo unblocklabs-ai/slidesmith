@@ -20,6 +20,13 @@ slidesmith diff <ID>     # prints the batchUpdate requests, no API call
 slidesmith push <ID>     # applies them to the same deck
 ```
 
+The default push is one atomic, deck-wide `batchUpdate`. For large decks, use
+`slidesmith push <ID> --per-slide` to send one revision-locked batch per
+changed slide with progress and a `.push-progress.json` resume ledger. This
+mode is resumable with `--per-slide --resume`, but it is intentionally **not
+atomic across the whole deck**: if slide 12 fails, earlier slide batches have
+already committed and the command stops at slide 12.
+
 For local deck-wide restyles, use `slidesmith replace-class <ID> OLD NEW`, or
 repeat `--swap OLD=NEW` to apply several replacements together:
 
@@ -59,9 +66,10 @@ vocabulary, one-shot Stack/Grid layout, QA judgment, and auth recovery.
   style updates, and `diff --summary` for a compact review (plain `diff`
   keeps exact request JSON).
 - **Safe concurrent pushes**: three-way conflict guard against the live deck,
-  `writeControl` revision locking, atomic batches, post-push workspace
-  refresh, and **push persistence verification** — a warning whenever Google
-  silently drops or normalizes a property you sent.
+  `writeControl` revision locking, atomic deck-wide batches by default, an
+  opt-in resumable per-slide multi-batch mode, post-push workspace refresh,
+  and **push persistence verification** — a warning whenever Google silently
+  drops or normalizes a property you sent.
 - **Layout authoring**: one-shot `Stack`/`Grid` containers, `flex`,
   `h="auto"` text height, reusable `components.sml` + `<Use>` expansion, and
   `content-align-*` — the compiler does the coordinate math.

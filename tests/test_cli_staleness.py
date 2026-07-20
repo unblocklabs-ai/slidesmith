@@ -122,6 +122,23 @@ def test_unhandled_cli_error_exits_one(
     assert capsys.readouterr().err == "error: unexpected top-level failure\n"
 
 
+def test_resume_without_per_slide_errors_before_authentication(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(
+        cli,
+        "_token",
+        lambda *_args: pytest.fail("invalid flag combination must not authenticate"),
+    )
+
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main(["push", "deck", "--resume"])
+
+    assert excinfo.value.code == 1
+    assert capsys.readouterr().err == "error: --resume requires --per-slide\n"
+
+
 def test_diff_stdout_stays_json_and_stderr_maps_object_ids(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

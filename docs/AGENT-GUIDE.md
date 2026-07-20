@@ -43,6 +43,30 @@ uses a revision lock for the write, and refreshes the local projection after a
 successful batch. Use `push --force` only when the user explicitly accepts
 overwriting concurrent edits to touched properties.
 
+Plain `push` is atomic across the deck because it sends one `batchUpdate`. For
+a large push where resumability matters more than deck-wide atomicity, use:
+
+```bash
+slidesmith push <ID> --per-slide
+# If a later slide fails after earlier slides committed:
+slidesmith push <ID> --per-slide --resume
+```
+
+Per-slide mode partitions the generated request stream by target slide and
+sends one revision-locked `batchUpdate` per changed slide in slide order,
+refreshing the required revision between writes. It reports progress such as
+`slide 03/24 ✓ (7 changes)`. If a slide fails or conflicts, Slidesmith stops
+there and records each successful slide index plus its local content hash in
+`<ID>/.push-progress.json`. `--resume` skips only the matching successful
+prefix; if a recorded slide's SML or shared `components.sml` changed, that
+slide is not skipped. The ledger is removed only after every slide succeeds
+and the normal one-time post-push refresh and persistence verification finish.
+`--resume` is invalid without `--per-slide`.
+
+This is a deliberate atomicity tradeoff: earlier slide batches remain applied
+when a later slide fails. Do not use `--per-slide` when the deck must change as
+one all-or-nothing operation; use plain `push` instead.
+
 Add `--contact-sheet` to plain `check` to compose the downloaded PNGs into a
 labeled two-column overview at `<ID>/.qa/contact-sheet.png`. It is useful for a
 quick whole-deck visual scan. It requires those downloads and therefore cannot

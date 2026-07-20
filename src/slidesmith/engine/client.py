@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import re
 import zipfile
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +37,13 @@ from slidesmith.engine.components import load_components
 from slidesmith.engine.content_requests import generate_batch_requests
 from slidesmith.engine.json_utils import read_json
 from slidesmith.engine.slide_processor import process_presentation, write_new_format
+from slidesmith.engine.push_progress import (
+    SlideBatch,
+    clear_progress_ledger,
+    load_progress_ledger,
+    partition_requests_by_slide,
+    write_progress_ledger,
+)
 from slidesmith.engine.transport import APIError, Transport
 from slidesmith.engine.workspace_layout import (
     ID_MAPPING_FILE,
@@ -51,6 +59,68 @@ from slidesmith.engine.workspace_layout import (
     pull_timestamp,
     refresh_after_success,
 )
+
+
+class PerSlidePushError(RuntimeError):
+    """A per-slide batch failed after earlier slide batches may have committed."""
+
+    def __init__(self, slide_index: str, total_slides: int, cause: Exception) -> None:
+        self.slide_index = slide_index
+        self.total_slides = total_slides
+        self.cause = cause
+        super().__init__(
+            f"slide {slide_index}/{total_slides:02d} failed: {cause}"
+        )
+
+
+class PerSlideConflictError(ConflictError):
+    """A conflict tied to one resumable slide batch."""
+
+    def __init__(
+        self, slide_index: str, total_slides: int, cause: ConflictError
+    ) -> None:
+        self.slide_index = slide_index
+        self.total_slides = total_slides
+        self.cause = cause
+        super().__init__(
+            f"slide {slide_index}/{total_slides:02d} failed: {cause}",
+            conflicts=cause.conflicts,
+        )
+
+
+def _progress_slide_total(
+    intended_slides: dict[str, list[Any]], batches: list[SlideBatch]
+) -> int:
+    numeric_indices = [
+        int(slide_index)
+        for slide_index in intended_slides
+        if slide_index.isdigit()
+    ]
+    numeric_indices.extend(
+        int(batch.slide_index)
+        for batch in batches
+        if batch.slide_index.isdigit()
+    )
+    return max(numeric_indices, default=max(len(intended_slides), len(batches)))
+
+
+def _report_progress(
+    progress: Callable[[str, str], None] | None,
+    event: str,
+    batch: SlideBatch,
+    total_slides: int,
+    detail: str | None = None,
+) -> None:
+    if progress is None:
+        return
+    prefix = f"slide {batch.slide_index}/{total_slides:02d}"
+    if event == "start":
+        message = f"{prefix} …"
+    elif event == "success":
+        message = f"{prefix} ✓ ({len(batch.requests)} changes)"
+    else:
+        message = f"{prefix} ✓ ({detail})"
+    progress(event, message)
 
 
 def _pristine_element_metadata(
@@ -475,7 +545,15 @@ class SlidesClient:
         )
         return diff_result, requests
 
-    async def push(self, folder_path: Path, *, force: bool = False) -> dict[str, Any]:
+    async def push(
+        self,
+        folder_path: Path,
+        *,
+        force: bool = False,
+        per_slide: bool = False,
+        resume: bool = False,
+        progress: Callable[[str, str], None] | None = None,
+    ) -> dict[str, Any]:
         """Apply content changes to the presentation, guarded against
         concurrent human edits (contract C5).
 
@@ -502,6 +580,9 @@ class SlidesClient:
         """
         folder_path = Path(folder_path)
 
+        if resume and not per_slide:
+            raise ValueError("--resume requires --per-slide")
+
         # 1. Load the presentation identity and pending local diff.
         metadata = read_json(folder_path / PRESENTATION_FILE, missing_ok=True)
         presentation_id = metadata.get("presentationId")
@@ -511,6 +592,8 @@ class SlidesClient:
         diff_result, requests = self.diff_with_result(folder_path)
 
         if not requests:
+            if per_slide:
+                clear_progress_ledger(folder_path)
             return {"replies": [], "message": "No changes detected."}
 
         intended_slides = self._read_current_slides(folder_path)
@@ -524,6 +607,20 @@ class SlidesClient:
             if change.change_type in {ChangeType.CREATE, ChangeType.COPY}
         }
         transport = self._require_transport()
+
+        if per_slide:
+            return await self._push_per_slide(
+                folder_path=folder_path,
+                presentation_id=presentation_id,
+                diff_result=diff_result,
+                requests=requests,
+                intended_slides=intended_slides,
+                intended_change_keys=intended_change_keys,
+                create_copy_targets=create_copy_targets,
+                force=force,
+                resume=resume,
+                progress=progress,
+            )
 
         if force:
             warning = (
@@ -600,6 +697,149 @@ class SlidesClient:
                 create_copy_targets,
                 response,
             )
+        return response
+
+    async def _push_per_slide(
+        self,
+        *,
+        folder_path: Path,
+        presentation_id: str,
+        diff_result: DiffResult,
+        requests: list[dict[str, Any]],
+        intended_slides: dict[str, list[Any]],
+        intended_change_keys: set[tuple[str, ChangeType]],
+        create_copy_targets: set[tuple[str, str]],
+        force: bool,
+        resume: bool,
+        progress: Callable[[str, str], None] | None,
+    ) -> dict[str, Any]:
+        """Apply the generated deck diff as ordered, resumable slide batches."""
+        metadata = read_json(folder_path / PRESENTATION_FILE, missing_ok=True)
+        id_mapping = read_json(folder_path / ID_MAPPING_FILE, missing_ok=True)
+        slide_id_mapping = self._build_slide_id_mapping(
+            id_mapping, metadata.get("slideOrder")
+        )
+        base_raw = self._read_base_raw(folder_path)
+        batches = partition_requests_by_slide(
+            requests,
+            diff_result,
+            id_mapping,
+            slide_id_mapping,
+            base_raw or {},
+            folder_path,
+        )
+        total_slides = _progress_slide_total(intended_slides, batches)
+        recorded = (
+            load_progress_ledger(folder_path, presentation_id) if resume else {}
+        )
+        succeeded: dict[str, str] = {}
+        if not resume:
+            write_progress_ledger(folder_path, presentation_id, succeeded)
+        skipping_prefix = resume
+        response: dict[str, Any] = {"replies": []}
+        transport = self._require_transport()
+
+        warning: str | None = None
+        if base_raw is None:
+            warning = (
+                "no pristine base snapshot found "
+                f"({PRISTINE_DIR}/{PRISTINE_BASE_FILE}); this folder was "
+                "pulled by an older slidesmith. Remote-change detection "
+                "skipped for this push -- re-pull to re-enable the guard."
+            )
+
+        for batch in batches:
+            if (
+                skipping_prefix
+                and recorded.get(batch.slide_index) == batch.content_hash
+            ):
+                succeeded[batch.slide_index] = batch.content_hash
+                write_progress_ledger(folder_path, presentation_id, succeeded)
+                _report_progress(
+                    progress,
+                    "skipped",
+                    batch,
+                    total_slides,
+                    "already pushed",
+                )
+                continue
+            skipping_prefix = False
+            _report_progress(progress, "start", batch, total_slides)
+
+            try:
+                remote = await transport.get_presentation(presentation_id)
+                required_revision = remote.revision_id
+                if not force:
+                    if base_raw is not None:
+                        ensure_no_conflicts(
+                            base_raw,
+                            remote.data,
+                            batch.requests,
+                            id_mapping,
+                        )
+                batch_response = await transport.batch_update(
+                    presentation_id,
+                    batch.requests,
+                    required_revision_id=required_revision,
+                )
+            except APIError as exc:
+                if exc.status_code == 400 and "revision" in str(exc).lower():
+                    conflict = ConflictError(
+                        "push aborted: the deck changed mid-push (someone edited "
+                        "it between our conflict check and our write). "
+                        "Re-pull and retry."
+                    )
+                    write_progress_ledger(folder_path, presentation_id, succeeded)
+                    raise PerSlideConflictError(
+                        batch.slide_index, total_slides, conflict
+                    ) from exc
+                write_progress_ledger(folder_path, presentation_id, succeeded)
+                raise PerSlidePushError(
+                    batch.slide_index, total_slides, exc
+                ) from exc
+            except ConflictError as exc:
+                write_progress_ledger(folder_path, presentation_id, succeeded)
+                raise PerSlideConflictError(
+                    batch.slide_index, total_slides, exc
+                ) from exc
+            except Exception as exc:
+                write_progress_ledger(folder_path, presentation_id, succeeded)
+                raise PerSlidePushError(
+                    batch.slide_index, total_slides, exc
+                ) from exc
+
+            response["replies"].extend(batch_response.get("replies", []))
+            if batch_response.get("warnings"):
+                response.setdefault("warnings", []).extend(
+                    batch_response["warnings"]
+                )
+            succeeded[batch.slide_index] = batch.content_hash
+            write_progress_ledger(folder_path, presentation_id, succeeded)
+            _report_progress(progress, "success", batch, total_slides)
+
+        if diff_result.warnings:
+            response.setdefault("warnings", []).extend(diff_result.warnings)
+        if warning is not None:
+            response.setdefault("warnings", []).append(warning)
+        if force:
+            response.setdefault("warnings", []).append(
+                "push --force --per-slide: conflict guard bypassed; "
+                "per-slide revision locks remain enabled, but concurrent human "
+                "edits already present on touched properties will be overwritten"
+            )
+
+        refreshed = await refresh_after_success(
+            transport, folder_path, presentation_id, response
+        )
+        if refreshed:
+            self._append_persistence_warning(
+                folder_path,
+                intended_slides,
+                intended_change_keys,
+                create_copy_targets,
+                response,
+            )
+            clear_progress_ledger(folder_path)
         return response
 
     def _append_persistence_warning(

@@ -136,14 +136,27 @@ def cmd_push(args: Any) -> None:
     from slidesmith.engine.conflicts import ConflictError
     from slidesmith.engine.transport import GoogleSlidesTransport
 
+    if args.resume and not args.per_slide:
+        raise ValueError("--resume requires --per-slide")
+
     _warn_if_stale(args.folder)
     token = _token("slide.push", str(args.folder))
 
     async def run() -> None:
         transport = GoogleSlidesTransport(token)
         try:
+            def progress(event: str, message: str) -> None:
+                if event == "start":
+                    print(message, end="\r", flush=True)
+                else:
+                    print(message, flush=True)
+
             resp = await SlidesClient(transport).push(
-                Path(args.folder), force=args.force
+                Path(args.folder),
+                force=args.force,
+                per_slide=args.per_slide,
+                resume=args.resume,
+                progress=progress if args.per_slide else None,
             )
             for warning in resp.get("warnings", []):
                 print(f"warning: {warning}", file=sys.stderr)
@@ -350,9 +363,25 @@ def main(argv: list[str] | None = None) -> None:
         "--force",
         action="store_true",
         help=(
-            "Bypass the conflict guard and revision lock: push even if the "
-            "elements being changed were also edited in Google Slides "
-            "(their remote edits are overwritten; a warning is logged)"
+            "Bypass the conflict guard (and the deck-wide revision lock for a "
+            "default push): push even if touched elements were also edited in "
+            "Google Slides; --per-slide keeps its per-slide revision locks"
+        ),
+    )
+    spu.add_argument(
+        "--per-slide",
+        action="store_true",
+        help=(
+            "Push one revision-locked batch per changed slide with progress and "
+            "a resume ledger (earlier slides remain applied if a later one fails)"
+        ),
+    )
+    spu.add_argument(
+        "--resume",
+        action="store_true",
+        help=(
+            "With --per-slide, skip ledger entries whose slide content still "
+            "matches and continue from the first unfinished slide"
         ),
     )
     spu.set_defaults(func=cmd_push)

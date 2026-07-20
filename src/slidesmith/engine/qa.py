@@ -12,13 +12,19 @@ from defusedxml import ElementTree as DefusedET
 from PIL import Image, ImageDraw, ImageFont
 
 from slidesmith.engine.bounds import BoundingBox
-from slidesmith.engine.content_parser import ParsedElement, ParsedRun, parse_all_slides
+from slidesmith.engine.content_parser import (
+    QA_ACCEPT_CLASS_PREFIX,
+    ParsedElement,
+    ParsedRun,
+    parse_all_slides,
+)
 from slidesmith.engine.json_utils import read_json
 from slidesmith.engine.layout import ApproximateTextMeasurer, TextMeasurer
 
 OVERLAP_THRESHOLD = 0.15
 TEXT_OVERFLOW_TOLERANCE = 1.10
 QA_BASELINE_FILE = "qa-baseline.json"
+ACCEPTED_FINDINGS_FILE = "accepted.json"
 CONTACT_SHEET_COLUMNS = 2
 CONTACT_SHEET_PADDING = 12
 CONTACT_SHEET_GAP = 12
@@ -128,7 +134,80 @@ class Finding:
 
 def _finding_key(finding: Finding) -> tuple[str, tuple[str, ...], int]:
     """Stable identity for comparing lint results across workspace refreshes."""
-    return finding.rule, finding.element_ids, finding.slide_number
+    return finding.rule, tuple(sorted(finding.element_ids)), finding.slide_number
+
+
+def finding_id(finding: Finding) -> str:
+    """Return the stable, CLI-facing identity for a QA finding."""
+    element_ids = ",".join(sorted(finding.element_ids))
+    return f"{finding.rule}:{finding.slide_number}:{element_ids}"
+
+
+def _accepted_path(folder: Path) -> Path:
+    return folder / ".qa" / ACCEPTED_FINDINGS_FILE
+
+
+def _read_accepted_findings(folder: Path) -> dict[str, dict[str, Any]]:
+    path = _accepted_path(folder)
+    data = read_json(path, missing_ok=True)
+    raw_accepted = data.get("accepted", {})
+    if not isinstance(raw_accepted, dict):
+        raise ValueError(f"Expected an accepted object in {path}")
+    return {
+        str(identity): value
+        for identity, value in raw_accepted.items()
+        if isinstance(value, dict)
+    }
+
+
+def _write_accepted_findings(
+    folder: Path, accepted: dict[str, dict[str, Any]]
+) -> Path:
+    path = _accepted_path(folder)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {"version": 1, "accepted": dict(sorted(accepted.items()))},
+            indent=2,
+            ensure_ascii=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+def _acceptance_record(finding: Finding) -> dict[str, Any]:
+    return {
+        "rule": finding.rule,
+        "slide": finding.slide_number,
+        "elementIds": sorted(finding.element_ids),
+    }
+
+
+def _sugar_accepted_ids(folder: Path, findings: list[Finding]) -> set[str]:
+    """Match qa-accept-* element classes to current findings."""
+    signals: set[tuple[str, str, int]] = set()
+    for content_path in sorted((folder / "slides").glob("*/content.sml")):
+        slide_number = int(content_path.parent.name)
+        root = DefusedET.fromstring(content_path.read_text(encoding="utf-8"))
+        for element in root.iter():
+            element_id = element.get("id")
+            if not element_id:
+                continue
+            for class_name in element.get("class", "").split():
+                if class_name.startswith(QA_ACCEPT_CLASS_PREFIX):
+                    rule = class_name.removeprefix(QA_ACCEPT_CLASS_PREFIX)
+                    signals.add((rule.replace("-", "_").upper(), element_id, slide_number))
+
+    return {
+        finding_id(finding)
+        for finding in findings
+        if any(
+            (finding.rule, element_id, finding.slide_number) in signals
+            for element_id in finding.element_ids
+        )
+    }
 
 
 def _finding_to_dict(finding: Finding) -> dict[str, Any]:
@@ -290,16 +369,27 @@ def print_report(
     output: Callable[[str], None] = print,
     *,
     baseline: list[Finding] | None = None,
+    accepted_ids: set[str] | None = None,
 ) -> None:
     """Print findings in a stable, agent-readable two-line format."""
+    accepted_ids = accepted_ids or set()
+    accepted_count = sum(finding_id(item) in accepted_ids for item in findings)
+    active_count = len(findings) - accepted_count
     if baseline is None:
         if not findings:
             output("QA clean: no issues found.")
             return
 
-        output(f"QA found {len(findings)} issue(s):")
+        output(f"QA found {active_count} issue(s):")
         for finding in findings:
-            _print_finding(finding, "CURRENT", output)
+            _print_finding(
+                finding,
+                "CURRENT",
+                output,
+                accepted=finding_id(finding) in accepted_ids,
+            )
+        if accepted_count:
+            output(f"QA accepted: {accepted_count} finding(s).")
         return
 
     baseline_by_key = {_finding_key(item): item for item in baseline}
@@ -309,29 +399,44 @@ def print_report(
         item for item in findings if _finding_key(item) in baseline_by_key
     ]
     resolved = [item for item in baseline if _finding_key(item) not in current_keys]
+    active_new = [item for item in new if finding_id(item) not in accepted_ids]
+    active_pre_existing = [
+        item for item in pre_existing if finding_id(item) not in accepted_ids
+    ]
 
     output(
-        f"{len(findings)} findings ({len(new)} new, "
-        f"{len(pre_existing)} pre-existing, {len(resolved)} resolved; "
+        f"{active_count} findings ({len(active_new)} new, "
+        f"{len(active_pre_existing)} pre-existing, {len(resolved)} resolved; "
         "NEW = since last pull)"
     )
     for finding in findings:
         label = "PRE-EXISTING" if _finding_key(finding) in baseline_by_key else "NEW"
-        _print_finding(finding, label, output)
+        _print_finding(
+            finding,
+            label,
+            output,
+            accepted=finding_id(finding) in accepted_ids,
+        )
     for finding in resolved:
         _print_finding(finding, "RESOLVED", output)
+    if accepted_count:
+        output(f"QA accepted: {accepted_count} finding(s).")
 
 
 def _print_finding(
     finding: Finding,
     label: str,
     output: Callable[[str], None],
+    *,
+    accepted: bool = False,
 ) -> None:
     """Print one labeled finding and its suggested fix."""
     ids = ", ".join(finding.element_ids)
+    accepted_label = "[ACCEPTED] " if accepted else ""
     output(
-        f"[{label}] [{finding.severity}] {finding.rule} "
-        f"slide {finding.slide_number:02d} ({ids}): {finding.description}"
+        f"{accepted_label}[{label}] [{finding.severity}] {finding.rule} "
+        f"slide {finding.slide_number:02d} ({ids}) "
+        f"[id: {finding_id(finding)}]: {finding.description}"
     )
     output(f"  Suggested fix: {finding.suggested_fix}")
 
@@ -342,13 +447,38 @@ def check_folder(
     strict: bool = False,
     output: Callable[[str], None] = print,
     text_measurer: TextMeasurer | None = None,
+    accept: Sequence[str] = (),
+    unaccept: Sequence[str] = (),
 ) -> int:
     """Lint and report a folder, returning its CLI exit code."""
     folder_path = Path(folder)
     findings = lint_folder(folder_path, text_measurer=text_measurer)
+    findings_by_id = {finding_id(finding): finding for finding in findings}
+    accepted = _read_accepted_findings(folder_path)
+    original_accepted = dict(accepted)
+
+    for identity in _sugar_accepted_ids(folder_path, findings):
+        accepted[identity] = _acceptance_record(findings_by_id[identity])
+    for identity in accept:
+        finding = findings_by_id.get(identity)
+        if finding is None:
+            raise ValueError(
+                f"Cannot accept unknown current finding ID '{identity}'"
+            )
+        accepted[identity] = _acceptance_record(finding)
+    for identity in unaccept:
+        accepted.pop(identity, None)
+
+    if accepted != original_accepted:
+        _write_accepted_findings(folder_path, accepted)
+
     baseline = _read_qa_baseline(folder_path)
-    print_report(findings, output, baseline=baseline)
-    return 1 if strict and findings else 0
+    accepted_ids = set(accepted)
+    print_report(findings, output, baseline=baseline, accepted_ids=accepted_ids)
+    active_findings = [
+        finding for finding in findings if finding_id(finding) not in accepted_ids
+    ]
+    return 1 if strict and active_findings else 0
 
 
 def _find_overlaps(

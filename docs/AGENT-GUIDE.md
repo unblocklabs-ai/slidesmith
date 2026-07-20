@@ -425,6 +425,31 @@ ledger. Later checks label current findings `NEW` (since the last pull) or
 counts. Findings introduced by an edit therefore stay `NEW` after push until the
 next explicit pull establishes a new reference point. Findings are warnings by
 default; `--strict` exits 1 when any current finding exists.
+Each current finding line includes a stable ID in the exact form
+`RULE:slide:sorted-element-id[,sorted-element-id...]`. The numeric slide has no
+zero padding, and element IDs are sorted lexically, so finding-list and SML
+element order do not change the ID. Accept an intentional finding locally with
+`slidesmith check <ID> --no-thumbnails --accept <finding-id>`; reverse that with
+`--unaccept <finding-id>`. These flags may each be repeated, but cannot be mixed
+in one command. `--accept` must name a current finding; `--unaccept` is
+idempotent.
+
+Local acceptances are stored in `<ID>/.qa/accepted.json` as a versioned
+`accepted` object keyed by the stable finding ID. They stay in that workspace
+across later pulls and checks, but do not travel with a fresh pull into a new
+folder. Accepted findings still print with `[ACCEPTED]`; the active finding
+summary and `--strict` exit status exclude them, and a separate `QA accepted:`
+tally reports their count.
+
+To carry the intent in committed SML, add `qa-accept-<lowercase-rule>` to any
+element involved in the finding, for example `qa-accept-out-of-bounds`. The
+next check matches that element and rule and creates the same accepted.json
+entry. The class remains one-shot authoring sugar: the SML parser removes every
+`qa-accept-*` token before typed style comparison and request generation, so it
+is never sent to Google and may disappear when a push or pull regenerates SML.
+If the class remains in local SML, remove it before using `--unaccept`, or a
+later check will accept the finding again.
+
 They are prompts for judgment, not automatic proof of a defect. Decorative
 bleed is intentional when the element is clearly non-content (for example, a
 large accent circle crossing one edge), the visible crop matches the design,

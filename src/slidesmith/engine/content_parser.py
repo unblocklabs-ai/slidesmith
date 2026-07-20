@@ -30,6 +30,8 @@ from slidesmith.engine.classes import (
 )
 from slidesmith.engine.layout import compile_layout
 
+QA_ACCEPT_CLASS_PREFIX = "qa-accept-"
+
 
 @dataclass
 class ElementStyles:
@@ -262,7 +264,11 @@ def parse_element_classes(
     if class_str is None:
         return None
 
-    classes = parse_class_string(class_str)
+    classes = [
+        cls
+        for cls in parse_class_string(class_str)
+        if not cls.startswith(QA_ACCEPT_CLASS_PREFIX)
+    ]
     validate_mutually_exclusive_classes(classes, element_id)
 
     fill_classes: list[str] = []

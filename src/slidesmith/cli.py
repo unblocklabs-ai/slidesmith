@@ -239,7 +239,12 @@ def cmd_check(args: Any) -> None:
         if args.contact_sheet:
             print(create_contact_sheet(qa_dir, downloaded_paths))
 
-    exit_code = check_folder(folder, strict=args.strict)
+    exit_code = check_folder(
+        folder,
+        strict=args.strict,
+        accept=args.accept,
+        unaccept=args.unaccept,
+    )
     if exit_code:
         sys.exit(exit_code)
 
@@ -363,6 +368,21 @@ def main(argv: list[str] | None = None) -> None:
         "--contact-sheet",
         action="store_true",
         help="Compose downloaded thumbnails into .qa/contact-sheet.png",
+    )
+    acceptance = sc.add_mutually_exclusive_group()
+    acceptance.add_argument(
+        "--accept",
+        action="append",
+        default=[],
+        metavar="FINDING_ID",
+        help="Accept a current finding by its stable ID; may be repeated",
+    )
+    acceptance.add_argument(
+        "--unaccept",
+        action="append",
+        default=[],
+        metavar="FINDING_ID",
+        help="Remove an accepted finding by its stable ID; may be repeated",
     )
     sc.set_defaults(func=cmd_check)
 

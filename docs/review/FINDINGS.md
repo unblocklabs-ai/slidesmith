@@ -362,6 +362,9 @@ Resolution: the copy guard now recursively scans serialized descendants. Same-sl
 ### [x] R3-W1 [WISH] Format SML without risking mixed-content whitespace changes
 Resolution: newline-bearing indentation between mixed-content tags is now ignored by the parser without trimming plain `P` or `T` text. `slidesmith fmt <folder> [--check]` restores canonical generator formatting only after asserting identical parsed semantics, and generator-emitted files remain byte-for-byte unchanged.
 
+### [x] R3-W2 [WISH] Persist intentional-design QA acceptances
+Resolution: `check --accept/--unaccept` stores stable rule+slide+sorted-element-ID identities in workspace-local `.qa/accepted.json`; accepted findings remain visible but do not affect strict exit status. A deck-committed `qa-accept-<rule>` element class creates the same entry on check and is stripped at the SML parser boundary before request generation.
+
 ## ROUND 4
 
 ### [x] R4-1 [HIGH] Partial element class removal silently left remote fields set

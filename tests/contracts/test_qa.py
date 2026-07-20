@@ -22,6 +22,7 @@ from slidesmith.engine.qa import (
     CONTACT_SHEET_PADDING,
     check_folder,
     create_contact_sheet,
+    finding_id,
     lint_folder,
     record_qa_baseline,
 )
@@ -302,6 +303,91 @@ def test_check_labels_new_pre_existing_and_resolved_findings(
     )
     assert any(line.startswith("[NEW] [WARNING] OVERLAP") for line in output)
     assert any(line.startswith("[RESOLVED] [WARNING] OUT_OF_BOUNDS") for line in output)
+
+
+def test_cli_accept_and_unaccept_round_trip_through_workspace_sidecar(
+    qa_folder: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _replace_slides(
+        qa_folder,
+        '<Rect id="outside" x="700" y="10" w="30" h="30" />',
+    )
+    identity = "OUT_OF_BOUNDS:1:outside"
+
+    cli.main(
+        ["check", str(qa_folder), "--no-thumbnails", "--accept", identity]
+    )
+
+    accepted_path = qa_folder / ".qa" / "accepted.json"
+    assert json.loads(accepted_path.read_text(encoding="utf-8")) == {
+        "version": 1,
+        "accepted": {
+            identity: {
+                "rule": "OUT_OF_BOUNDS",
+                "slide": 1,
+                "elementIds": ["outside"],
+            }
+        },
+    }
+    assert "[ACCEPTED]" in capsys.readouterr().out
+
+    cli.main(
+        ["check", str(qa_folder), "--no-thumbnails", "--unaccept", identity]
+    )
+
+    assert json.loads(accepted_path.read_text(encoding="utf-8")) == {
+        "version": 1,
+        "accepted": {},
+    }
+    output = capsys.readouterr().out
+    assert "[ACCEPTED]" not in output
+    assert "QA found 1 issue(s)" in output
+
+
+def test_accepted_identity_survives_finding_and_element_order_changes(
+    qa_folder: Path,
+) -> None:
+    first = '<Rect id="left" x="10" y="10" w="100" h="100" />'
+    second = '<Rect id="right" x="90" y="10" w="100" h="100" />'
+    _replace_slides(qa_folder, first + second)
+    finding = lint_folder(qa_folder)[0]
+    assert finding_id(finding) == "OVERLAP:1:left,right"
+    assert check_folder(qa_folder, accept=[finding_id(finding)]) == 0
+
+    _replace_slides(qa_folder, second + first)
+    reordered = lint_folder(qa_folder)[0]
+    assert reordered.element_ids == ("right", "left")
+    assert finding_id(reordered) == finding_id(finding)
+
+    output: list[str] = []
+    assert check_folder(qa_folder, strict=True, output=output.append) == 0
+    assert any(line.startswith("[ACCEPTED]") for line in output)
+    assert output[-1] == "QA accepted: 1 finding(s)."
+
+
+def test_qa_accept_class_creates_sidecar_and_never_reaches_api_requests(
+    qa_folder: Path,
+) -> None:
+    _replace_slides(
+        qa_folder,
+        '<Rect id="outside" x="700" y="10" w="30" h="30" '
+        'class="qa-accept-out-of-bounds" />',
+    )
+
+    output: list[str] = []
+    assert check_folder(qa_folder, strict=True, output=output.append) == 0
+
+    identity = "OUT_OF_BOUNDS:1:outside"
+    accepted = json.loads(
+        (qa_folder / ".qa" / "accepted.json").read_text(encoding="utf-8")
+    )
+    assert identity in accepted["accepted"]
+    assert any(line.startswith("[ACCEPTED]") for line in output)
+
+    requests = SlidesClient().diff(qa_folder)
+    assert requests
+    assert "qa-accept-" not in json.dumps(requests)
 
 
 def _qa_cycle5_presentation() -> dict[str, Any]:

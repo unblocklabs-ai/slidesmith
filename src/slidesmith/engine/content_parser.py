@@ -29,6 +29,7 @@ from slidesmith.engine.classes import (
     parse_text_style_classes,
     validate_mutually_exclusive_classes,
 )
+from slidesmith.engine.components import ComponentLibrary, load_components
 from slidesmith.engine.layout import compile_layout
 from slidesmith.engine.image_fetch import validate_public_image_url
 
@@ -119,7 +120,11 @@ class ParsedElement:
         return self.x is not None
 
 
-def parse_slide_content(content: str) -> list[ParsedElement]:
+def parse_slide_content(
+    content: str,
+    *,
+    components: ComponentLibrary | None = None,
+) -> list[ParsedElement]:
     """Parse a slide's content.sml into structured elements.
 
     Args:
@@ -131,7 +136,7 @@ def parse_slide_content(content: str) -> list[ParsedElement]:
     if not content.strip():
         return []
 
-    content = compile_layout(content)
+    content = compile_layout(content, components=components)
 
     try:
         root = DefusedET.fromstring(content)
@@ -494,6 +499,7 @@ def parse_all_slides(slides_dir: str) -> dict[str, list[ParsedElement]]:
         Dictionary mapping slide index (e.g., "01") to list of ParsedElement
     """
     slides_path = Path(slides_dir)
+    components = load_components(slides_path.parent)
     result: dict[str, list[ParsedElement]] = {}
 
     for slide_folder in sorted(slides_path.iterdir()):
@@ -501,6 +507,8 @@ def parse_all_slides(slides_dir: str) -> dict[str, list[ParsedElement]]:
             content_file = slide_folder / "content.sml"
             if content_file.exists():
                 content = content_file.read_text(encoding="utf-8")
-                result[slide_folder.name] = parse_slide_content(content)
+                result[slide_folder.name] = parse_slide_content(
+                    content, components=components
+                )
 
     return result

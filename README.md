@@ -63,8 +63,8 @@ vocabulary, one-shot Stack/Grid layout, QA judgment, and auth recovery.
   refresh, and **push persistence verification** — a warning whenever Google
   silently drops or normalizes a property you sent.
 - **Layout authoring**: one-shot `Stack`/`Grid` containers, `flex`,
-  `h="auto"` text height, and `content-align-*` — the compiler does the
-  coordinate math.
+  `h="auto"` text height, reusable `components.sml` + `<Use>` expansion, and
+  `content-align-*` — the compiler does the coordinate math.
 - **Visual QA**: `check` downloads rendered slide PNGs, optionally creates a
   labeled two-column contact sheet with `--contact-sheet`, and runs geometry lint
   (overlap, out-of-bounds, likely text overflow) with a NEW / PRE-EXISTING /

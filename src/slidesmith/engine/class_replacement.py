@@ -10,6 +10,7 @@ from os import replace as replace_file
 from pathlib import Path
 
 from slidesmith.engine.content_parser import parse_element_classes, parse_slide_content
+from slidesmith.engine.components import load_components
 
 @dataclass(frozen=True)
 class ClassReplacementResult:
@@ -58,6 +59,7 @@ def replace_classes(
         seen_old.add(old_class)
 
     folder = Path(folder_path)
+    components = load_components(folder)
     content_paths = sorted((folder / "slides").glob("*/content.sml"))
     if not content_paths:
         raise ValueError(f"No content.sml files found under {folder / 'slides'}")
@@ -68,7 +70,7 @@ def replace_classes(
     for content_path in content_paths:
         content = content_path.read_text(encoding="utf-8")
         updated, per_swap_counts = _replace_in_content(content, swaps)
-        parse_slide_content(updated)
+        parse_slide_content(updated, components=components)
         replacements[content_path] = updated
         counts[content_path.parent.name] = sum(per_swap_counts.values())
         for swap, count in per_swap_counts.items():

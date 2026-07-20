@@ -77,6 +77,7 @@ uncommitted SML edits first.
 ├── id_mapping.json         clean SML IDs -> Google object IDs
 ├── styles.json             pulled style details used by diff and QA
 ├── roles.json              optional local semantic roles keyed by clean ID
+├── components.sml          optional reusable authoring-only component definitions
 ├── slides/NN/content.sml   one XML document per slide
 ├── .pristine/              baseline used by diff and conflict detection
 ├── .raw/                   optional raw pull response
@@ -452,8 +453,92 @@ the source image when exact fidelity matters.
 
 ## Layout authoring
 
-`Stack`, `Grid`, and `TextBox h="auto"` are authoring conveniences compiled to
-absolute SML during `diff` or `push`.
+Components, `Stack`, `Grid`, and `TextBox h="auto"` are authoring conveniences
+compiled to absolute SML during `diff`, `push`, or offline QA.
+
+### Reusable components
+
+Define reusable bodies in the optional workspace file `<ID>/components.sml`.
+The file is an XML document with one `Components` root and one or more named
+`Component` children. A component body is normal SML: shapes, text, groups,
+classes, and nested `Stack`/`Grid` containers are valid. A component cannot
+contain another `Use` in this version.
+
+```xml
+<Components>
+  <Component name="stat-card">
+    <RoundRect id="card" x="0" y="0" w="200" h="120"
+               class="fill-{{accent|#f5f7fa}} stroke-none" />
+    <TextBox id="title" x="12" y="10" w="176" h="24">
+      <P>{{title}}</P>
+    </TextBox>
+    <TextBox id="value" x="12" y="48" w="176" h="40"
+             class="text-size-28 bold">
+      <P>{{value}}</P>
+    </TextBox>
+  </Component>
+</Components>
+```
+
+`{{slot}}` is required. `{{slot|default}}` supplies an inline default and makes
+that occurrence optional. Placeholders work in element text and attribute
+values, including class strings. Values come from attributes on `Use`; XML
+escaping still applies at the use site. List the loaded definitions and the
+slots derived from their bodies with:
+
+```bash
+slidesmith components <ID>
+```
+
+Use a component from a slide like this:
+
+```xml
+<Use id="revenue" component="stat-card" title="Revenue" value="$4.2M"
+     accent="#5df2b2" x="60" y="200" w="200" h="120" />
+```
+
+Component geometry uses **position-only translation, never scaling**. Author
+the body at its final point dimensions relative to a `(0,0)` origin. For a
+top-level `Use`, Slidesmith adds the authored `x` and `y` to every expanded body
+coordinate. The `Use`'s `w` and `h` are its layout footprint; they do not resize
+or distort the body. This rule keeps existing point geometry exact and avoids
+implicit aspect-ratio decisions. If a different size is needed, define another
+component or parameterize body dimensions with slots.
+
+A `Use` inside `Stack` or `Grid` is one child. It omits `x` and `y`, supplies
+the same `w`/`h` or `flex` data any other child would, and receives its computed
+origin from the container before its body expands:
+
+```xml
+<Stack direction="row" x="36" y="80" w="648" h="120" gap="18">
+  <Use id="revenue" component="stat-card" title="Revenue" value="$4.2M"
+       w="200" h="120" />
+  <Use id="margin" component="stat-card" title="Margin" value="34%"
+       flex="1" h="120" />
+</Stack>
+```
+
+Expanded IDs use the deterministic prefix `<Use-id>__`: `card` above becomes
+`revenue__card`. Every descendant ID is prefixed, so repeated component
+instances cannot collide. If `Use` omits `id`, Slidesmith uses
+`use_<component-name>_<1-based-document-occurrence>` as the prefix. Explicit
+`Use` IDs must be unique within the slide.
+
+Compilation is interleaved with layout rather than a blind before/after pass.
+For a nested `Use`, the parent Stack/Grid first computes the Use frame; then
+Slidesmith clones the component, interpolates slots, prefixes IDs, compiles any
+Stack/Grid or `h="auto"` inside the relative body, translates the resulting
+absolute elements by the Use origin, and splices them into the slide. Parsing,
+diffing, QA, and request generation see only those plain absolute elements.
+Google never sees `Use`, `Component`, layout containers, roles, or
+`qa-accept-*` classes. Pull generation never emits `Use`, and a later pull does
+not reconstruct component intent.
+
+Unknown component names, missing required slots, duplicate Use IDs, malformed
+placeholders, and malformed `components.sml` fail loudly. Errors name the
+offending Use/component (and the components file where applicable). A workspace
+with no `components.sml` and a slide with no authoring constructs stays on the
+strict byte-identical passthrough path.
 
 ### Stack
 
@@ -522,10 +607,11 @@ Element '<id>' inside Stack cannot declare x or y; its container assigns the pos
 
 This catches ambiguous intent instead of silently ignoring coordinates.
 
-Layout is one-shot. Containers are flattened, `flex` is removed, and `h="auto"`
-becomes a numeric height. No container becomes a Slides object. After push and a
-later pull, only absolute elements remain; layout intent is not reconstructed.
-Keep reusable authoring intent elsewhere if it must survive a re-pull.
+Layout is one-shot. Components are spliced, containers are flattened, `flex` is
+removed, and `h="auto"` becomes a numeric height. No authoring construct becomes
+a Slides object. After push and a later pull, only absolute elements remain;
+layout intent is not reconstructed. Keep `components.sml` under version control
+when reusable authoring intent must survive a re-pull.
 
 ## QA and intentional bleed
 

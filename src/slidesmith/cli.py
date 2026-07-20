@@ -239,6 +239,16 @@ def cmd_fmt(args: Any) -> None:
     print(f"Formatted {changed} content.sml file(s).")
 
 
+def cmd_components(args: Any) -> None:
+    from slidesmith.engine.components import load_components
+
+    library = load_components(args.folder)
+    for name in sorted(library.definitions):
+        definition = library.definitions[name]
+        slots = ", ".join(slot.name for slot in definition.slots) or "(no slots)"
+        print(f"{name}: {slots}")
+
+
 def cmd_check(args: Any) -> None:
     from slidesmith.engine.qa import (
         check_folder,
@@ -425,6 +435,13 @@ def main(argv: list[str] | None = None) -> None:
         help="Exit with status 1 if any content.sml file needs formatting",
     )
     sf.set_defaults(func=cmd_fmt)
+
+    sco = sub.add_parser(
+        "components",
+        help="List reusable components and their derived slots (local only)",
+    )
+    sco.add_argument("folder", help="Presentation folder containing components.sml")
+    sco.set_defaults(func=cmd_components)
 
     sc = sub.add_parser(
         "check",

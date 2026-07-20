@@ -12,12 +12,14 @@ from pathlib import Path
 from typing import Callable, Iterator, Protocol, Sequence
 
 from slidesmith.engine.class_replacement import _start_tag_spans
+from slidesmith.engine.components import load_components
 from slidesmith.engine.content_parser import (
     ParsedElement,
     parse_element_classes,
     parse_slide_content,
 )
 from slidesmith.engine.json_utils import read_json
+from slidesmith.engine.layout import compile_layout
 
 ROLES_FILE = "roles.json"
 
@@ -413,6 +415,7 @@ def apply_to_elements(
 
     parsed_query = parse_query(query) if isinstance(query, str) else query
     folder = Path(folder_path)
+    components = load_components(folder)
     roles = _read_roles(folder)
     slides = _read_slides(folder)
     matches: list[SelectorMatch] = []
@@ -446,6 +449,13 @@ def apply_to_elements(
         selected_ids = {
             match.element.clean_id for match in matches_by_slide.get(slide.index, [])
         }
+        expanded_ids = selected_ids - set(_classes_by_id(slide.content))
+        if expanded_ids and (additions or removals):
+            element_id = sorted(expanded_ids)[0]
+            raise ValueError(
+                f"Cannot mutate classes on component-expanded element '{element_id}'; "
+                "edit components.sml or parameterize its class with a slot"
+            )
         updated, changed_ids = _mutate_element_classes(
             slide.content,
             selected_ids,
@@ -454,7 +464,7 @@ def apply_to_elements(
         )
         # This is the existing parser and class-conflict validator used by diff.
         # Validate all prospective files before the first disk write.
-        parse_slide_content(updated)
+        parse_slide_content(updated, components=components)
         if updated != slide.content:
             pending[slide.path] = updated
         mutated_ids_by_slide[slide.index].update(changed_ids)
@@ -520,6 +530,7 @@ def _read_slides(folder: Path) -> list[_SlideDocument]:
     paths = sorted((folder / "slides").glob("*/content.sml"))
     if not paths:
         raise ValueError(f"No content.sml files found under {folder / 'slides'}")
+    components = load_components(folder)
     slides: list[_SlideDocument] = []
     for path in paths:
         try:
@@ -529,7 +540,8 @@ def _read_slides(folder: Path) -> list[_SlideDocument]:
                 f"Invalid slide folder '{path.parent.name}': expected a numeric index"
             ) from exc
         content = path.read_text(encoding="utf-8")
-        roots = parse_slide_content(content)
+        compiled = compile_layout(content, components=components)
+        roots = parse_slide_content(compiled)
         slides.append(
             _SlideDocument(
                 index=path.parent.name,
@@ -537,7 +549,7 @@ def _read_slides(folder: Path) -> list[_SlideDocument]:
                 path=path,
                 content=content,
                 elements=tuple(_walk_elements(roots)),
-                classes_by_id=_classes_by_id(content),
+                classes_by_id=_classes_by_id(compiled),
             )
         )
     return slides

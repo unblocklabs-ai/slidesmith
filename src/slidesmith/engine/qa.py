@@ -18,8 +18,13 @@ from slidesmith.engine.content_parser import (
     ParsedRun,
     parse_all_slides,
 )
+from slidesmith.engine.components import load_components
 from slidesmith.engine.json_utils import read_json
-from slidesmith.engine.layout import ApproximateTextMeasurer, TextMeasurer
+from slidesmith.engine.layout import (
+    ApproximateTextMeasurer,
+    TextMeasurer,
+    compile_layout,
+)
 
 OVERLAP_THRESHOLD = 0.15
 TEXT_OVERFLOW_TOLERANCE = 1.10
@@ -188,9 +193,13 @@ def _acceptance_record(finding: Finding) -> dict[str, Any]:
 def _sugar_accepted_ids(folder: Path, findings: list[Finding]) -> set[str]:
     """Match qa-accept-* element classes to current findings."""
     signals: set[tuple[str, str, int]] = set()
+    components = load_components(folder)
     for content_path in sorted((folder / "slides").glob("*/content.sml")):
         slide_number = int(content_path.parent.name)
-        root = DefusedET.fromstring(content_path.read_text(encoding="utf-8"))
+        content = compile_layout(
+            content_path.read_text(encoding="utf-8"), components=components
+        )
+        root = DefusedET.fromstring(content)
         for element in root.iter():
             element_id = element.get("id")
             if not element_id:

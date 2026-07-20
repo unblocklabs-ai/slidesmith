@@ -32,6 +32,7 @@ from slidesmith.engine.content_parser import (
     flatten_elements,
     parse_slide_content,
 )
+from slidesmith.engine.components import load_components
 from slidesmith.engine.content_requests import generate_batch_requests
 from slidesmith.engine.json_utils import read_json
 from slidesmith.engine.slide_processor import process_presentation, write_new_format
@@ -670,6 +671,7 @@ class SlidesClient:
     def _read_current_slides(self, folder_path: Path) -> dict[str, list[Any]]:
         """Read current slide content files."""
         slides_dir = folder_path / SLIDES_DIR
+        components = load_components(folder_path)
         result: dict[str, list[Any]] = {}
 
         if not slides_dir.exists():
@@ -680,7 +682,9 @@ class SlidesClient:
                 content_file = slide_folder / "content.sml"
                 if content_file.exists():
                     content = content_file.read_text(encoding="utf-8")
-                    result[slide_folder.name] = parse_slide_content(content)
+                    result[slide_folder.name] = parse_slide_content(
+                        content, components=components
+                    )
 
         return result
 

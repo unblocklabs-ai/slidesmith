@@ -19,14 +19,17 @@ from __future__ import annotations
 import math
 import re
 import xml.etree.ElementTree as ET
-from dataclasses import dataclass
-from typing import Protocol
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Protocol
 
 from defusedxml import ElementTree as DefusedET
 from defusedxml.common import DefusedXmlException
 
 from slidesmith.engine.classes import parse_class_string, parse_text_style_classes
 from slidesmith.engine.units import format_pt
+
+if TYPE_CHECKING:
+    from slidesmith.engine.components import ComponentLibrary
 
 
 class TextMeasurer(Protocol):
@@ -101,15 +104,26 @@ class _Frame:
     h: float
 
 
+@dataclass
+class _UseState:
+    count: int = 0
+    prefixes: set[str] = field(default_factory=set)
+
+
 _AUTHORING_MARKER = re.compile(
-    r"<(?:Stack|Grid)\b|<TextBox\b[^>]*\bh\s*=\s*(['\"])auto\1",
+    r"<(?:Stack|Grid|Use)\b|<TextBox\b[^>]*\bh\s*=\s*(['\"])auto\1",
     re.DOTALL,
 )
 _DEFAULT_MEASURER = ApproximateTextMeasurer()
 
 
-def compile_layout(content: str, text_measurer: TextMeasurer | None = None) -> str:
-    """Compile Stack, Grid, and TextBox ``h=\"auto\"`` authoring syntax.
+def compile_layout(
+    content: str,
+    text_measurer: TextMeasurer | None = None,
+    *,
+    components: ComponentLibrary | None = None,
+) -> str:
+    """Compile components, Stack, Grid, and ``h=\"auto\"`` authoring syntax.
 
     The transform is pure: it parses a new XML tree and returns a new string.
     Content with no authoring constructs is returned directly, byte-for-byte,
@@ -119,6 +133,7 @@ def compile_layout(content: str, text_measurer: TextMeasurer | None = None) -> s
         return content
 
     measurer = text_measurer or _DEFAULT_MEASURER
+    use_state = _UseState()
     wrapped = False
     try:
         root = DefusedET.fromstring(content)
@@ -138,16 +153,26 @@ def compile_layout(content: str, text_measurer: TextMeasurer | None = None) -> s
         return content
 
     if root.tag in {"Stack", "Grid"}:
-        compiled_roots = _compile_container(root, None, measurer)
+        compiled_roots = _compile_container(
+            root, None, measurer, components, use_state
+        )
+        return "".join(ET.tostring(node, encoding="unicode") for node in compiled_roots)
+    if root.tag == "Use":
+        compiled_roots = _expand_use(root, _read_frame(root), measurer, components, use_state)
         return "".join(ET.tostring(node, encoding="unicode") for node in compiled_roots)
 
-    _compile_children(root, measurer)
+    _compile_children(root, measurer, components, use_state)
     if wrapped:
         return "".join(ET.tostring(node, encoding="unicode") for node in root)
     return ET.tostring(root, encoding="unicode")
 
 
-def _compile_children(parent: ET.Element, measurer: TextMeasurer) -> None:
+def _compile_children(
+    parent: ET.Element,
+    measurer: TextMeasurer,
+    components: ComponentLibrary | None,
+    use_state: _UseState,
+) -> None:
     if parent.tag == "TextBox" and parent.get("h") == "auto":
         _resolve_auto_height(parent, measurer)
 
@@ -158,7 +183,15 @@ def _compile_children(parent: ET.Element, measurer: TextMeasurer) -> None:
     compiled: list[ET.Element] = []
     for child in children:
         if child.tag in {"Stack", "Grid"}:
-            replacements = _compile_container(child, None, measurer)
+            replacements = _compile_container(
+                child, None, measurer, components, use_state
+            )
+            _carry_tail(child, replacements)
+            compiled.extend(replacements)
+        elif child.tag == "Use":
+            replacements = _expand_use(
+                child, _read_frame(child), measurer, components, use_state
+            )
             _carry_tail(child, replacements)
             compiled.extend(replacements)
         else:
@@ -166,7 +199,7 @@ def _compile_children(parent: ET.Element, measurer: TextMeasurer) -> None:
                 _resolve_auto_height(child, measurer)
             # Paragraph and text-run nodes cannot contain layout elements.
             if child.tag not in {"P", "T"}:
-                _compile_children(child, measurer)
+                _compile_children(child, measurer, components, use_state)
             compiled.append(child)
     parent[:] = compiled
 
@@ -175,17 +208,21 @@ def _compile_container(
     container: ET.Element,
     assigned_frame: _Frame | None,
     measurer: TextMeasurer,
+    components: ComponentLibrary | None,
+    use_state: _UseState,
 ) -> list[ET.Element]:
     frame = assigned_frame or _read_frame(container)
     if container.tag == "Stack":
-        return _compile_stack(container, frame, measurer)
-    return _compile_grid(container, frame, measurer)
+        return _compile_stack(container, frame, measurer, components, use_state)
+    return _compile_grid(container, frame, measurer, components, use_state)
 
 
 def _compile_stack(
     stack: ET.Element,
     frame: _Frame,
     measurer: TextMeasurer,
+    components: ComponentLibrary | None,
+    use_state: _UseState,
 ) -> list[ET.Element]:
     label = _element_label(stack)
     direction = stack.get("direction", "row")
@@ -290,7 +327,11 @@ def _compile_stack(
             if is_row
             else _Frame(cross_origin, cursor, cross_size, main_size)
         )
-        compiled.extend(_compile_container_child(child, child_frame, measurer))
+        compiled.extend(
+            _compile_container_child(
+                child, child_frame, measurer, components, use_state
+            )
+        )
         cursor += main_size + spacing
 
     return compiled
@@ -300,6 +341,8 @@ def _compile_grid(
     grid: ET.Element,
     frame: _Frame,
     measurer: TextMeasurer,
+    components: ComponentLibrary | None,
+    use_state: _UseState,
 ) -> list[ET.Element]:
     label = _element_label(grid)
     columns_float = _required_number_attr(grid, "columns", "Grid")
@@ -355,7 +398,11 @@ def _compile_grid(
             cell_width,
             row_heights[row],
         )
-        compiled.extend(_compile_container_child(child, child_frame, measurer))
+        compiled.extend(
+            _compile_container_child(
+                child, child_frame, measurer, components, use_state
+            )
+        )
     return compiled
 
 
@@ -363,14 +410,80 @@ def _compile_container_child(
     child: ET.Element,
     frame: _Frame,
     measurer: TextMeasurer,
+    components: ComponentLibrary | None,
+    use_state: _UseState,
 ) -> list[ET.Element]:
     if child.tag in {"Stack", "Grid"}:
-        return _compile_container(child, frame, measurer)
+        return _compile_container(child, frame, measurer, components, use_state)
+    if child.tag == "Use":
+        return _expand_use(child, frame, measurer, components, use_state)
 
     _write_frame(child, frame)
     child.attrib.pop("flex", None)
-    _compile_children(child, measurer)
+    _compile_children(child, measurer, components, use_state)
     return [child]
+
+
+def _expand_use(
+    use: ET.Element,
+    frame: _Frame,
+    measurer: TextMeasurer,
+    components: ComponentLibrary | None,
+    use_state: _UseState,
+) -> list[ET.Element]:
+    use_state.count += 1
+    component_name = use.get("component", "")
+    authored_id = use.get("id")
+    use_label = f"Use '{authored_id}'" if authored_id else f"Use #{use_state.count}"
+    if not component_name:
+        raise ValueError(f"{use_label}: missing required 'component' attribute")
+    definition = components.get(component_name) if components is not None else None
+    if definition is None:
+        raise ValueError(f"{use_label}: unknown component '{component_name}'")
+
+    id_prefix = authored_id or f"use_{component_name}_{use_state.count}"
+    if id_prefix in use_state.prefixes:
+        raise ValueError(
+            f"{use_label}: duplicate Use id prefix '{id_prefix}'; Use ids must be unique"
+        )
+    use_state.prefixes.add(id_prefix)
+
+    values = dict(use.attrib)
+    values.pop("component", None)
+    roots = definition.instantiate(
+        values,
+        id_prefix=id_prefix,
+        use_label=use_label,
+    )
+    compiled: list[ET.Element] = []
+    try:
+        for root in roots:
+            if root.tag in {"Stack", "Grid"}:
+                compiled.extend(
+                    _compile_container(
+                        root, None, measurer, components, use_state
+                    )
+                )
+            else:
+                _compile_children(root, measurer, components, use_state)
+                compiled.append(root)
+    except ValueError as exc:
+        raise ValueError(
+            f"{use_label} of component '{component_name}': {exc}"
+        ) from exc
+
+    for root in compiled:
+        _translate_tree(root, frame.x, frame.y)
+    return compiled
+
+
+def _translate_tree(root: ET.Element, offset_x: float, offset_y: float) -> None:
+    """Translate component-authored absolute coordinates from a 0,0 origin."""
+    for element in root.iter():
+        if value := element.get("x"):
+            element.set("x", format_pt(_parse_number(value, element, "x") + offset_x))
+        if value := element.get("y"):
+            element.set("y", format_pt(_parse_number(value, element, "y") + offset_y))
 
 
 def _authored_grid_height(
@@ -490,7 +603,7 @@ def _carry_tail(source: ET.Element, replacements: list[ET.Element]) -> None:
 
 def _tree_needs_layout(root: ET.Element) -> bool:
     return any(
-        element.tag in {"Stack", "Grid"}
+        element.tag in {"Stack", "Grid", "Use"}
         or (element.tag == "TextBox" and element.get("h") == "auto")
         for element in root.iter()
     )

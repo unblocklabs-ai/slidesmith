@@ -10,6 +10,7 @@ from defusedxml import ElementTree as DefusedET
 from defusedxml.common import DefusedXmlException
 
 from slidesmith.engine.content_generator import generate_canonical_slide_content
+from slidesmith.engine.components import ComponentLibrary, load_components
 from slidesmith.engine.content_parser import parse_slide_content
 
 
@@ -21,9 +22,11 @@ class FormatResult:
     changed_paths: tuple[Path, ...]
 
 
-def format_slide_content(content: str) -> str:
+def format_slide_content(
+    content: str, *, components: ComponentLibrary | None = None
+) -> str:
     """Canonicalize one SML document without changing parsed semantics."""
-    before = parse_slide_content(content)
+    before = parse_slide_content(content, components=components)
     try:
         root = DefusedET.fromstring(content)
     except (ET.ParseError, DefusedXmlException):
@@ -39,7 +42,7 @@ def format_slide_content(content: str) -> str:
         root = slide_root
 
     formatted = generate_canonical_slide_content(root)
-    after = parse_slide_content(formatted)
+    after = parse_slide_content(formatted, components=components)
     assert before == after, "SML formatter changed parsed semantics"
     return formatted
 
@@ -47,6 +50,7 @@ def format_slide_content(content: str) -> str:
 def format_folder(folder: str | Path, *, check: bool = False) -> FormatResult:
     """Format every ``slides/NN/content.sml`` in a presentation folder."""
     root = Path(folder)
+    components = load_components(root)
     paths = tuple(sorted((root / "slides").glob("*/content.sml")))
     if not paths:
         raise ValueError(f"No content.sml files found under {root / 'slides'}")
@@ -54,7 +58,7 @@ def format_folder(folder: str | Path, *, check: bool = False) -> FormatResult:
     pending: list[tuple[Path, str]] = []
     for path in paths:
         content = path.read_text(encoding="utf-8")
-        formatted = format_slide_content(content)
+        formatted = format_slide_content(content, components=components)
         if formatted != content:
             pending.append((path, formatted))
 

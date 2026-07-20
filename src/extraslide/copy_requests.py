@@ -53,6 +53,8 @@ def _create_copy_requests(
     allocate_object_id: Callable[[str, set[str]], str],
     unique_suffix: Callable[[], str],
     warnings: list[str],
+    pristine_element_types: dict[str, str] | None = None,
+    pristine_element_parents: dict[str, str | None] | None = None,
 ) -> list[dict[str, Any]]:
     """Create requests to copy an element.
 
@@ -97,7 +99,7 @@ def _create_copy_requests(
     )
     reserved_ids.add(new_object_id)
 
-    if _contains_auto_text(change.new_runs, change.children):
+    if _uses_duplicate_object(change):
         if source_google_id is None:
             raise ValueError(
                 f"Cannot preserve autoText on copy '{change.source_id}': "
@@ -112,13 +114,16 @@ def _create_copy_requests(
                 "the Slides API can only duplicate a page element on its source slide"
             )
         object_ids = {source_google_id: new_object_id}
-        _map_duplicate_descendants(
+        removed_descendant_ids = _map_duplicate_descendants(
+            source_google_id,
             change.children or [],
             id_mapping or {},
             object_ids,
             new_object_id,
             reserved_ids,
             allocate_object_id,
+            pristine_element_types or {},
+            pristine_element_parents or {},
         )
         requests.append(
             {
@@ -160,6 +165,13 @@ def _create_copy_requests(
             id_mapping or {},
             object_ids,
             requests,
+            change.translation or {"dx": 0, "dy": 0},
+            change.source_id or change.target_id,
+            warnings,
+        )
+        requests.extend(
+            {"deleteObject": {"objectId": object_id}}
+            for object_id in removed_descendant_ids
         )
         return requests
 
@@ -188,37 +200,108 @@ def _create_copy_requests(
 
 
 def _map_duplicate_descendants(
+    source_google_id: str,
     children: list[dict[str, Any]],
     id_mapping: dict[str, str],
     object_ids: dict[str, str],
     id_prefix: str,
     reserved_ids: set[str],
     allocate_object_id: Callable[[str, set[str]], str],
-    depth: int = 0,
-) -> None:
-    """Populate duplicateObject mappings for every serialized descendant."""
-    for index, child in enumerate(children):
-        clean_id = str(child.get("id", ""))
-        source_google_id = id_mapping.get(clean_id)
-        if source_google_id is None:
-            raise ValueError(
-                f"Cannot preserve edits on copied child '{clean_id}': "
-                "source Google object ID is missing"
+    pristine_element_types: dict[str, str],
+    pristine_element_parents: dict[str, str | None],
+) -> list[str]:
+    """Map the pristine source subtree and return removed copied descendants."""
+    authored_source_ids: set[str] = set()
+
+    def collect_authored(authored_children: list[dict[str, Any]]) -> None:
+        for child in authored_children:
+            clean_id = str(child.get("id", ""))
+            child_source_id = id_mapping.get(clean_id)
+            if child_source_id is None:
+                raise ValueError(
+                    f"Cannot preserve edits on copied child '{clean_id}': "
+                    "source Google object ID is missing"
+                )
+            authored_source_ids.add(child_source_id)
+            collect_authored(child.get("children", []))
+
+    collect_authored(children)
+
+    pristine_children: dict[str, list[str]] = {}
+    for child_source_id, parent_source_id in pristine_element_parents.items():
+        if parent_source_id is not None:
+            pristine_children.setdefault(parent_source_id, []).append(child_source_id)
+
+    mapped_source_ids: set[str] = set()
+
+    def map_pristine_children(
+        parent_source_id: str,
+        parent_new_id: str,
+        depth: int,
+    ) -> None:
+        for index, child_source_id in enumerate(
+            sorted(pristine_children.get(parent_source_id, []))
+        ):
+            new_object_id = allocate_object_id(
+                f"{parent_new_id}_c{depth}_{index}", reserved_ids
             )
-        new_object_id = allocate_object_id(
-            f"{id_prefix}_c{depth}_{index}", reserved_ids
-        )
-        reserved_ids.add(new_object_id)
-        object_ids[source_google_id] = new_object_id
-        _map_duplicate_descendants(
-            child.get("children", []),
-            id_mapping,
-            object_ids,
-            new_object_id,
-            reserved_ids,
-            allocate_object_id,
-            depth + 1,
-        )
+            reserved_ids.add(new_object_id)
+            object_ids[child_source_id] = new_object_id
+            mapped_source_ids.add(child_source_id)
+            map_pristine_children(child_source_id, new_object_id, depth + 1)
+
+    map_pristine_children(source_google_id, id_prefix, 0)
+
+    # Old workspaces can lack the raw pristine tree. Preserve the previous
+    # authored-descendant mapping behavior as a compatibility fallback.
+    def map_authored_children(
+        authored_children: list[dict[str, Any]],
+        parent_new_id: str,
+        depth: int,
+    ) -> None:
+        for index, child in enumerate(authored_children):
+            clean_id = str(child.get("id", ""))
+            child_source_id = id_mapping.get(clean_id)
+            if child_source_id is None:
+                raise ValueError(
+                    f"Cannot preserve edits on copied child '{clean_id}': "
+                    "source Google object ID is missing"
+                )
+            if child_source_id in object_ids:
+                child_new_id = object_ids[child_source_id]
+            else:
+                child_new_id = allocate_object_id(
+                    f"{parent_new_id}_c{depth}_{index}", reserved_ids
+                )
+                reserved_ids.add(child_new_id)
+                object_ids[child_source_id] = child_new_id
+            mapped_source_ids.add(child_source_id)
+            map_authored_children(
+                child.get("children", []), child_new_id, depth + 1
+            )
+
+    map_authored_children(children, id_prefix, 0)
+
+    removed_source_ids = mapped_source_ids - authored_source_ids
+
+    def has_removed_group_ancestor(child_source_id: str) -> bool:
+        seen: set[str] = set()
+        parent_source_id = pristine_element_parents.get(child_source_id)
+        while parent_source_id and parent_source_id not in seen:
+            if (
+                parent_source_id in removed_source_ids
+                and pristine_element_types.get(parent_source_id) == "GROUP"
+            ):
+                return True
+            seen.add(parent_source_id)
+            parent_source_id = pristine_element_parents.get(parent_source_id)
+        return False
+
+    return [
+        object_ids[child_source_id]
+        for child_source_id in sorted(removed_source_ids)
+        if not has_removed_group_ancestor(child_source_id)
+    ]
 
 
 def _duplicate_paragraph_style_requests(
@@ -257,8 +340,11 @@ def _apply_duplicate_descendant_edits(
     id_mapping: dict[str, str],
     object_ids: dict[str, str],
     requests: list[dict[str, Any]],
+    translation: dict[str, float],
+    copy_source_id: str,
+    warnings: list[str],
 ) -> None:
-    """Replay authored text and paragraph deltas on mapped copied children."""
+    """Replay authored descendant deltas and report positional ambiguity."""
     for child in children:
         clean_id = str(child.get("id", ""))
         source_google_id = id_mapping.get(clean_id)
@@ -268,6 +354,12 @@ def _apply_duplicate_descendant_edits(
                 f"Cannot preserve edits on copied child '{clean_id}': "
                 "duplicateObject descendant mapping is missing"
             )
+        _warn_for_ambiguous_child_position(
+            child,
+            translation,
+            copy_source_id,
+            warnings,
+        )
         new_text = child.get("text", [])
         new_runs = child.get("runs", [])
         old_text = child.get("sourceText", [])
@@ -296,6 +388,9 @@ def _apply_duplicate_descendant_edits(
             id_mapping,
             object_ids,
             requests,
+            translation,
+            copy_source_id,
+            warnings,
         )
 
 
@@ -505,15 +600,11 @@ def _create_children_from_data(
                 and abs(child_orig_pos.get("y", 0) - source_position.get("y", 0))
                 <= 0.01
             ):
-                warnings.append(
-                    f"copy '{copy_source_id}' child '{source_id}': "
-                    f"authored position ({_format_number(child_orig_pos.get('x', 0))}, "
-                    f"{_format_number(child_orig_pos.get('y', 0))}) matches neither "
-                    f"the source position ({_format_number(source_position.get('x', 0))}, "
-                    f"{_format_number(source_position.get('y', 0))}) nor the translated "
-                    f"copy position ({_format_number(expected_final_x)}, "
-                    f"{_format_number(expected_final_y)}); Slidesmith applied the parent "
-                    "translation, so verify the copied child position"
+                _warn_for_ambiguous_child_position(
+                    child_data,
+                    translation,
+                    copy_source_id,
+                    warnings,
                 )
         if child_orig_pos:
             abs_position = {
@@ -570,6 +661,48 @@ def _contains_auto_text(
     return any(
         _contains_auto_text(child.get("runs"), child.get("children"))
         for child in children or []
+    )
+
+
+def _uses_duplicate_object(change: Change) -> bool:
+    """Return whether a copy must preserve dynamic autoText by duplication."""
+    return _contains_auto_text(change.new_runs, change.children)
+
+
+def _warn_for_ambiguous_child_position(
+    child: dict[str, Any],
+    translation: dict[str, float],
+    copy_source_id: str,
+    warnings: list[str],
+) -> None:
+    """Apply the R3-7 warning contract to either copy implementation path."""
+    position = child.get("position", {})
+    source_position = child.get("sourcePosition", {})
+    if not (position and source_position):
+        return
+
+    expected_final_x = source_position.get("x", 0) + translation.get("dx", 0)
+    expected_final_y = source_position.get("y", 0) + translation.get("dy", 0)
+    matches_source = (
+        abs(position.get("x", 0) - source_position.get("x", 0)) <= 0.01
+        and abs(position.get("y", 0) - source_position.get("y", 0)) <= 0.01
+    )
+    matches_translation = (
+        abs(position.get("x", 0) - expected_final_x) <= 0.01
+        and abs(position.get("y", 0) - expected_final_y) <= 0.01
+    )
+    if matches_source or matches_translation:
+        return
+
+    warnings.append(
+        f"copy '{copy_source_id}' child '{child.get('id', '')}': "
+        f"authored position ({_format_number(position.get('x', 0))}, "
+        f"{_format_number(position.get('y', 0))}) matches neither "
+        f"the source position ({_format_number(source_position.get('x', 0))}, "
+        f"{_format_number(source_position.get('y', 0))}) nor the translated "
+        f"copy position ({_format_number(expected_final_x)}, "
+        f"{_format_number(expected_final_y)}); Slidesmith applied the parent "
+        "translation, so verify the copied child position"
     )
 
 

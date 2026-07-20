@@ -13,7 +13,7 @@ from typing import Any
 
 from extraslide.class_style_requests import _create_class_style_requests
 from extraslide.content_diff import Change, ChangeType, DiffResult, ParagraphClassUpdate
-from extraslide.copy_requests import _create_copy_requests
+from extraslide.copy_requests import _create_copy_requests, _uses_duplicate_object
 from extraslide.element_factories import (
     _create_element_requests,
     _create_move_request,
@@ -258,8 +258,10 @@ def _emit_copy_requests(
     diff_result: DiffResult,
     reserved_object_ids: set[str],
     unique_suffix: Callable[[], str],
+    pristine_element_types: dict[str, str] | None,
+    pristine_element_parents: dict[str, str | None] | None,
 ) -> None:
-    """Emit reconstructed copies after modifications are complete."""
+    """Emit copies in the ordering selected by the batch orchestrator."""
     for change in copies:
         if not (change.source_id and change.slide_index):
             continue
@@ -279,6 +281,8 @@ def _emit_copy_requests(
                     allocate_object_id=_allocate_create_object_id,
                     unique_suffix=unique_suffix,
                     warnings=diff_result.warnings,
+                    pristine_element_types=pristine_element_types,
+                    pristine_element_parents=pristine_element_parents,
                 )
             )
 
@@ -317,6 +321,16 @@ def generate_batch_requests(
     reserved_object_ids = set(id_mapping.values()) | set(slide_ids.values())
     id_allocator = IdAllocator()
     buckets = _bucket_changes(diff_result.changes)
+    duplicate_copies = [
+        change
+        for change in buckets[ChangeType.COPY]
+        if _uses_duplicate_object(change)
+    ]
+    recreated_copies = [
+        change
+        for change in buckets[ChangeType.COPY]
+        if not _uses_duplicate_object(change)
+    ]
 
     _emit_new_slide_requests(
         requests,
@@ -325,6 +339,20 @@ def generate_batch_requests(
         slide_ids,
         reserved_object_ids,
         id_allocator.unique_suffix,
+    )
+    # duplicateObject must observe the pristine source subtree. Text/style
+    # deltas for the copy are also based on that pristine state, and deleting
+    # either child of a two-child group can collapse the source group entirely.
+    _emit_copy_requests(
+        requests,
+        duplicate_copies,
+        id_mapping,
+        slide_ids,
+        diff_result,
+        reserved_object_ids,
+        id_allocator.unique_suffix,
+        pristine_element_types,
+        pristine_element_parents,
     )
     _emit_delete_requests(
         requests,
@@ -351,12 +379,14 @@ def generate_batch_requests(
     )
     _emit_copy_requests(
         requests,
-        buckets[ChangeType.COPY],
+        recreated_copies,
         id_mapping,
         slide_ids,
         diff_result,
         reserved_object_ids,
         id_allocator.unique_suffix,
+        pristine_element_types,
+        pristine_element_parents,
     )
     _emit_create_requests(
         requests,

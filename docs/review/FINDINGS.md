@@ -372,3 +372,11 @@ Resolution: `duplicateObject.objectIds` now maps every serialized descendant to 
 
 ### [x] R4-4 [MEDIUM] Legacy geometry enrichment omitted composed parent transforms
 Resolution: `_enrich_pristine_geometry` now walks the raw group hierarchy and backfills each descendant's composed `parentTransform` with `setdefault`, matching current style extraction without overwriting persisted values.
+
+## ROUND 5
+
+### [x] R5-1 [HIGH] duplicateObject copies ran after source-subtree mutations
+Resolution: COPY changes that preserve `autoText` through `duplicateObject` now run in a dedicated early bucket before DELETE, MOVE, TEXT, STYLE, and PARAGRAPH_STYLE mutations. The duplicate and its pristine-based replay requests therefore observe the intact source subtree, including when a source child or the original group is removed.
+
+### [x] R5-2 [MEDIUM] duplicateObject mapped only authored descendants
+Resolution: duplicate copies now allocate deterministic `objectIds` for every descendant in the pristine source tree. Descendants omitted from the authored copy are deleted by their mapped copy IDs after replay completes, and ambiguous authored child positions emit the same R3-7 warning as recreated copies.

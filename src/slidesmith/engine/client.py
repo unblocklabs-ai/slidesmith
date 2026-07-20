@@ -70,6 +70,17 @@ from slidesmith.engine.workspace_layout import (
 )
 
 
+PERSISTENCE_GEOMETRY_TOLERANCE_PT = 0.02
+GOOGLE_DEFAULT_TEXT_LAYOUT_CLASSES = frozenset(
+    {
+        "content-align-top",
+        "text-align-left",
+        "leading-100",
+        "spacing-collapse-lists",
+    }
+)
+
+
 class PerSlidePushError(RuntimeError):
     """A per-slide batch failed after earlier slide batches may have committed."""
 
@@ -359,6 +370,60 @@ def _normalized_persistence_detail(
             )
 
     return None
+
+
+def _is_normalized_persistence_change(
+    change: Change,
+    remote_elements: dict[tuple[str, str], ParsedElement],
+    intended_elements: dict[tuple[str, str], ParsedElement],
+    *,
+    newly_created: bool,
+) -> bool:
+    """Return whether a refresh difference is known Google normalization."""
+    if change.change_type == ChangeType.MOVE:
+        old = change.old_position
+        new = change.new_position
+        if old is None or new is None or set(old) != set(new):
+            return False
+        return all(
+            abs(float(new[key]) - float(old[key]))
+            < PERSISTENCE_GEOMETRY_TOLERANCE_PT
+            for key in new
+        )
+
+    if not newly_created:
+        return False
+
+    if change.change_type == ChangeType.STYLE_UPDATE:
+        key = (change.slide_index or "", change.target_id)
+        remote_element = remote_elements.get(key)
+        intended_element = intended_elements.get(key)
+        if remote_element is None or intended_element is None:
+            return False
+        sent = _format_changed_element_style_classes(change, intended_element)
+        remote = _format_changed_element_style_classes(change, remote_element)
+        return sent == "(none)" and _only_default_text_layout_classes(remote)
+
+    if change.change_type == ChangeType.PARAGRAPH_STYLE_UPDATE:
+        for update in change.paragraph_style_updates or []:
+            sent = _paragraph_style_classes(update.new_styles)
+            remote = _paragraph_style_classes(update.old_styles)
+            if sent or not remote or not remote <= GOOGLE_DEFAULT_TEXT_LAYOUT_CLASSES:
+                return False
+        return bool(change.paragraph_style_updates)
+
+    return False
+
+
+def _only_default_text_layout_classes(value: str) -> bool:
+    classes = set(value.split())
+    return bool(classes) and classes <= GOOGLE_DEFAULT_TEXT_LAYOUT_CLASSES
+
+
+def _paragraph_style_classes(styles: Any) -> set[str]:
+    if styles is None or styles.paragraph_style is None:
+        return set()
+    return set(styles.paragraph_style.to_classes())
 
 
 def _enrich_pristine_geometry(
@@ -1068,19 +1133,32 @@ class SlidesClient:
             if (change.target_id, change.change_type) in intended_change_keys
             or (change.slide_index or "", change.target_id) in create_copy_targets
         ]
-        if not unpersisted:
+        remote_elements = _index_parsed_elements(refreshed_slides)
+        intended_elements = _index_parsed_elements(intended_slides)
+        meaningful = [
+            change
+            for change in unpersisted
+            if not _is_normalized_persistence_change(
+                change,
+                remote_elements,
+                intended_elements,
+                newly_created=(
+                    change.slide_index or "", change.target_id
+                )
+                in create_copy_targets,
+            )
+        ]
+        if not meaningful:
             return
 
         changes = sorted(
-            unpersisted,
+            meaningful,
             key=lambda change: (
                 change.slide_index or "",
                 change.target_id,
                 change.change_type.value,
             ),
         )
-        remote_elements = _index_parsed_elements(refreshed_slides)
-        intended_elements = _index_parsed_elements(intended_slides)
         details = ", ".join(
             _normalized_persistence_detail(
                 change,

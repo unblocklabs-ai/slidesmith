@@ -305,6 +305,61 @@ def test_check_labels_new_pre_existing_and_resolved_findings(
     assert any(line.startswith("[RESOLVED] [WARNING] OUT_OF_BOUNDS") for line in output)
 
 
+def test_push_preflight_block_aborts_before_auth_on_new_overflow(
+    qa_folder: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    record_qa_baseline(qa_folder)
+    _replace_slides(
+        qa_folder,
+        '<Rect id="new_overflow" x="700" y="10" w="30" h="30" />',
+    )
+    monkeypatch.setattr(
+        cli,
+        "_token",
+        lambda *_args: pytest.fail("blocked preflight must not authenticate"),
+    )
+
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main(["push", str(qa_folder), "--preflight=block"])
+
+    assert excinfo.value.code == 1
+    captured = capsys.readouterr()
+    assert "[NEW] [WARNING] OUT_OF_BOUNDS" in captured.err
+    assert "push preflight blocked: 1 new finding(s)" in captured.err
+
+
+def test_push_preflight_warn_reports_and_proceeds_with_per_slide(
+    qa_folder: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    record_qa_baseline(qa_folder)
+    _replace_slides(
+        qa_folder,
+        '<Rect id="new_overflow" x="700" y="10" w="30" h="30" />',
+    )
+    runs: list[None] = []
+
+    def record_run(coroutine: Any) -> None:
+        coroutine.close()
+        runs.append(None)
+
+    monkeypatch.setattr(cli, "_warn_if_stale", lambda _folder: None)
+    monkeypatch.setattr(cli, "_token", lambda *_args: "token")
+    monkeypatch.setattr(cli.asyncio, "run", record_run)
+
+    cli.main(
+        ["push", str(qa_folder), "--per-slide", "--preflight=warn"]
+    )
+
+    assert runs == [None]
+    captured = capsys.readouterr()
+    assert "[NEW] [WARNING] OUT_OF_BOUNDS" in captured.err
+    assert "push preflight warning: 1 new finding(s); proceeding" in captured.err
+
+
 def test_cli_accept_and_unaccept_round_trip_through_workspace_sidecar(
     qa_folder: Path,
     capsys: pytest.CaptureFixture[str],

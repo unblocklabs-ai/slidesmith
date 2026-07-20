@@ -53,6 +53,8 @@ a large push where resumability matters more than deck-wide atomicity, use:
 slidesmith push <ID> --per-slide
 # If a later slide fails after earlier slides committed:
 slidesmith push <ID> --per-slide --resume
+# Optional offline geometry gate (also works with --per-slide):
+slidesmith push <ID> --preflight=block
 ```
 
 Per-slide mode partitions the generated request stream by target slide and
@@ -65,6 +67,13 @@ prefix; if a recorded slide's SML or shared `components.sml` changed, that
 slide is not skipped. The ledger is removed only after every slide succeeds
 and the normal one-time post-push refresh and persistence verification finish.
 `--resume` is invalid without `--per-slide`.
+
+`--preflight=off|warn|block` controls an offline geometry-lint pass before any
+authentication or API call. `off` is the default. `warn` prints the normal QA
+report and proceeds when active findings are `NEW` relative to
+`.pristine/qa-baseline.json`; `block` prints the report and exits 1 instead.
+Pre-existing and accepted findings do not block. The same gate runs once before
+a deck-wide or `--per-slide` push.
 
 This is a deliberate atomicity tradeoff: earlier slide batches remain applied
 when a later slide fails. Do not use `--per-slide` when the deck must change as
@@ -86,6 +95,13 @@ without a cheap refreshed value, the detail keeps the generic
 `title (style update)` form. Either warning means Google accepted the batch but
 normalized or dropped an authored value. Treat the refreshed SML as
 authoritative and choose a supported alternative.
+
+Persistence verification intentionally suppresses two always-normalized cases:
+geometry differences smaller than 0.02 pt on every changed box field, and
+Google's injected default text-layout classes (`content-align-top`,
+`text-align-left`, `leading-100`, and `spacing-collapse-lists`) on newly created
+elements. Differences at or above 0.02 pt and any meaningful text, geometry, or
+style drop still warn.
 
 Visual work is iterative: edit, `diff`, run the offline check, `push`, then run
 plain `check` and inspect the new thumbnails. Repeat that push-then-check loop
@@ -197,10 +213,10 @@ and-expression = primary, { "AND", primary } ;
 primary        = predicate | "(", or-expression, ")" ;
 
 predicate      = "tag", "=", value
-               | "class", "~=", value
+               | "class", ("=" | "~="), value
                | "role", "=", value
-               | "id", "~=", value
-               | "text", "~=", value
+               | "id", ("=" | "~="), value
+               | "text", ("=" | "^=" | "$=" | "~="), value
                | "slide", "=", positive-integer
                | "slide", "in", slide-set
                | geometry-field, comparison, number ;
@@ -212,15 +228,26 @@ comparison     = ">" | ">=" | "<" | "<=" | "=" ;
 value          = bare-value | quoted-value ;
 ```
 
+| Predicate | Operators | Meaning |
+| --- | --- | --- |
+| `tag`, `role` | `=` | Exact, case-sensitive value |
+| `class` | `=`, `~=` | Exact class-token membership (`~=` retained for compatibility) |
+| `id` | `=`, `~=` | Exact ID or case-sensitive substring |
+| `text` | `=`, `^=`, `$=`, `~=` | Case-insensitive full text, prefix, suffix, or substring |
+| `slide` | `=`, `in` | One slide, comma list, or inclusive `2..6` range |
+| `x`, `y`, `w`, `h` | `=`, `<`, `<=`, `>`, `>=` | Point-valued geometry comparison |
+
 Whitespace is allowed between tokens. `AND` binds more tightly than `OR`; use
 parentheses to override precedence. Keywords and predicate names are
 case-insensitive. Tags, roles, class membership, and ID substrings are
-case-sensitive; `text~=` is case-insensitive and searches the element's
-concatenated paragraph text. `class~=` tests exact membership on the element's
+case-sensitive; every text operator is case-insensitive and uses the element's
+concatenated paragraph text. `class=` and `class~=` test exact membership on the element's
 own `class` attribute (it is not a glob and does not inspect `P` or `T`
 classes). Slide ranges are inclusive. Geometry uses the parsed element's
 absolute point-valued box; a predicate does not match when that dimension is
 absent. Quote a value with single or double quotes when it contains whitespace.
+Run `slidesmith select --help` or `slidesmith apply --help` for this complete
+grammar and examples.
 
 Roles deliberately live in the workspace sidecar `roles.json`, keyed by clean
 element ID, instead of in SML. Pull and post-push refresh replace only generated
@@ -247,7 +274,7 @@ semantic restyling, then extract a theme from the strongest design slides:
 slidesmith apply source-deck 'slide=1 AND id~=hero_title' --set-role title
 slidesmith apply target-deck 'slide in 4..24 AND id~=title' --set-role title
 slidesmith theme extract source-deck --from-slides 1-3 -o theme.json
-slidesmith theme apply target-deck theme.json --to-slides 4-24 --map-colors --dry-run
+slidesmith theme apply target-deck theme.json --to-slides 4-24 --map-colors --dry-run --verbose
 slidesmith theme apply target-deck theme.json --to-slides 4-24 --map-colors
 slidesmith diff target-deck --summary
 ```
@@ -328,6 +355,9 @@ All prospective target files pass through the normal SML parser and its
 mutually-exclusive-class checks before the first write; files commit together
 with rollback on I/O failure. `--dry-run` performs the same extraction,
 transformation, and validation and prints identical counts without writes.
+Add `--verbose` to print each affected element's slide, ID, and class/color
+transition. Colors outside the distance threshold are also listed as kept with
+their nearest theme color and the beyond-threshold reason.
 Theme apply never changes text nodes, `x/y/w/h`, element IDs, or tree structure.
 
 The semantic boundary is important: role-aware restyling requires roles already

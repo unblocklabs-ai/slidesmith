@@ -22,6 +22,8 @@ import httpx
 import pytest
 
 from slidesmith.engine.client import ConflictError, SlidesClient
+from slidesmith.engine.content_diff import ChangeType
+from slidesmith.engine.content_parser import ParsedElement, parse_slide_content
 from slidesmith.engine.transport import (
     APIError,
     GoogleSlidesTransport,
@@ -496,6 +498,75 @@ async def test_push_without_remote_divergence_returns_no_warning(
     recolor_e121_locally(ws.folder, "#00ff00")
 
     response = await ws.client.push(ws.folder)
+
+    assert "warnings" not in response
+
+
+@pytest.mark.parametrize(
+    ("remote_x", "warns"),
+    [(99.981, False), (99.9, True)],
+)
+def test_persistence_warning_suppresses_only_sub_point_zero_two_geometry_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    remote_x: float,
+    warns: bool,
+) -> None:
+    folder = tmp_path / "deck"
+    folder.mkdir()
+    (folder / "id_mapping.json").write_text("{}", encoding="utf-8")
+    intended = ParsedElement("box", "Rect", x=100, y=20, w=30, h=40)
+    remote = ParsedElement("box", "Rect", x=remote_x, y=20, w=30, h=40)
+    client = SlidesClient()
+    monkeypatch.setattr(
+        client,
+        "_read_pristine",
+        lambda _folder: ({"01": [remote]}, {}),
+    )
+    response: dict[str, Any] = {}
+
+    client._append_persistence_warning(
+        folder,
+        {"01": [intended]},
+        {("box", ChangeType.MOVE)},
+        set(),
+        response,
+    )
+
+    assert ("warnings" in response) is warns
+
+
+def test_persistence_warning_ignores_created_text_layout_defaults(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    folder = tmp_path / "deck"
+    folder.mkdir()
+    (folder / "id_mapping.json").write_text("{}", encoding="utf-8")
+    intended = parse_slide_content(
+        '<Slide id="s1"><TextBox id="new_box" x="10" y="20" w="100" h="30">'
+        "<P>Authored</P></TextBox></Slide>"
+    )
+    remote = parse_slide_content(
+        '<Slide id="s1"><TextBox id="new_box" x="10" y="20" w="100" h="30" '
+        'class="content-align-top text-align-left leading-100 '
+        'spacing-collapse-lists"><P>Authored</P></TextBox></Slide>'
+    )
+    client = SlidesClient()
+    monkeypatch.setattr(
+        client,
+        "_read_pristine",
+        lambda _folder: ({"01": remote}, {}),
+    )
+    response: dict[str, Any] = {}
+
+    client._append_persistence_warning(
+        folder,
+        {"01": intended},
+        {("new_box", ChangeType.CREATE)},
+        {("01", "new_box")},
+        response,
+    )
 
     assert "warnings" not in response
 

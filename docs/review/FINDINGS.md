@@ -451,6 +451,12 @@ generation, contain math, and Stack flex layout.
 
 ## M6 DOGFOOD R1 FIXES
 
+- [x] Selector text/id exact and anchored operators prevent accidental over-match; `=` is valid for text, ID, and class.
+- [x] `select --help` and `apply --help` expose the complete selector grammar and examples.
+- [x] Theme `--dry-run --verbose` reports per-element class/color decisions and retained beyond-threshold colors.
+- [x] Push `--preflight=off|warn|block` gates new offline QA findings and supports per-slide pushes.
+- [x] Persistence warnings suppress sub-0.02pt geometry drift and created-element default text-layout normalization while preserving meaningful warnings.
+
 ### [x] M6-R1 [HIGH] replace-image silently changed image geometry
 Resolution: replacement now reads the new image dimensions through the shared
 bounded SSRF-safe URL fetcher or local Pillow inspection, then emits

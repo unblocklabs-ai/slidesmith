@@ -175,11 +175,21 @@ def test_theme_apply_cli_dry_run_counts_without_writes(
             "2",
             "--map-colors",
             "--dry-run",
+            "--verbose",
         ]
     )
 
     assert _snapshot(folder) == before
     output = capsys.readouterr().out
+    assert "Slide 02 element target_title:" in output
+    assert "classes:" in output
+    assert "Slide 02 element body:" in output
+    assert "color: fill-#122334 -> fill-#112233" in output
+    assert "Slide 02 element alert:" in output
+    assert (
+        "fill-#ff0000 kept (nearest theme color #445566 beyond threshold)"
+        in output
+    )
     assert "Slide 02: 1 role restyle(s)" in output
     assert output.endswith("Dry run: no files written.\n")
 

@@ -66,6 +66,7 @@ class _BinaryQuery:
 @dataclass(frozen=True)
 class _StringPredicate:
     field: str
+    comparison: str
     value: str
 
     def matches(self, context: QueryContext) -> bool:
@@ -77,9 +78,22 @@ class _StringPredicate:
         if self.field == "role":
             return context.role == self.value
         if self.field == "id":
-            return self.value in element.clean_id
-        text = "".join(element.paragraphs)
-        return self.value.casefold() in text.casefold()
+            return _match_string(element.clean_id, self.comparison, self.value)
+        return _match_string(
+            "".join(element.paragraphs).casefold(),
+            self.comparison,
+            self.value.casefold(),
+        )
+
+
+def _match_string(actual: str, comparison: str, expected: str) -> bool:
+    if comparison == "=":
+        return actual == expected
+    if comparison == "^=":
+        return actual.startswith(expected)
+    if comparison == "$=":
+        return actual.endswith(expected)
+    return expected in actual
 
 
 @dataclass(frozen=True)
@@ -113,7 +127,14 @@ class _GeometryPredicate:
 def _tokenize(query: str) -> list[_Token]:
     tokens: list[_Token] = []
     position = 0
-    two_character = {"~=": "TILDE_EQ", ">=": "GE", "<=": "LE", "..": "RANGE"}
+    two_character = {
+        "~=": "TILDE_EQ",
+        "^=": "CARET_EQ",
+        "$=": "DOLLAR_EQ",
+        ">=": "GE",
+        "<=": "LE",
+        "..": "RANGE",
+    }
     one_character = {
         "(": "LPAREN",
         ")": "RPAREN",
@@ -161,7 +182,7 @@ def _tokenize(query: str) -> list[_Token]:
         while (
             position < len(query)
             and not query[position].isspace()
-            and query[position] not in "(),<>=~\"'"
+            and query[position] not in "(),<>=~^$\"'"
             and query[position : position + 2] != ".."
         ):
             position += 1
@@ -231,10 +252,18 @@ class _QueryParser:
         field = field_token.value.lower()
         if field in {"tag", "role"}:
             self._expect("EQ", f"expected '=' after {field}")
-            return _StringPredicate(field, self._parse_value(field))
-        if field in {"class", "id", "text"}:
-            self._expect("TILDE_EQ", f"expected '~=' after {field}")
-            return _StringPredicate(field, self._parse_value(field))
+            return _StringPredicate(field, "=", self._parse_value(field))
+        if field == "class":
+            comparison = self._parse_string_comparison(field, {"=", "~="})
+            return _StringPredicate(field, comparison, self._parse_value(field))
+        if field == "id":
+            comparison = self._parse_string_comparison(field, {"=", "~="})
+            return _StringPredicate(field, comparison, self._parse_value(field))
+        if field == "text":
+            comparison = self._parse_string_comparison(
+                field, {"=", "^=", "$=", "~="}
+            )
+            return _StringPredicate(field, comparison, self._parse_value(field))
         if field == "slide":
             return self._parse_slide_predicate()
         if field in {"w", "h", "x", "y"}:
@@ -244,6 +273,22 @@ class _QueryParser:
             f"{field_token.value!r}; expected tag, class, role, id, text, slide, w, h, x, or y",
             field_token,
         )
+
+    def _parse_string_comparison(
+        self, field: str, allowed: set[str]
+    ) -> str:
+        comparisons = {
+            "EQ": "=",
+            "TILDE_EQ": "~=",
+            "CARET_EQ": "^=",
+            "DOLLAR_EQ": "$=",
+        }
+        comparison = comparisons.get(self.current.kind)
+        if comparison not in allowed:
+            expected = ", ".join(repr(value) for value in sorted(allowed))
+            self._error(f"expected {expected} after {field}")
+        self._advance()
+        return comparison
 
     def _parse_value(self, field: str) -> str:
         token = self.current

@@ -44,6 +44,7 @@ class ThemeApplyResult:
     """Counts for one validated theme application."""
 
     slide_counts: dict[str, dict[str, int]]
+    previews: tuple[ThemeElementPreview, ...] = ()
 
     @property
     def role_restyles(self) -> int:
@@ -60,6 +61,17 @@ class ThemeApplyResult:
     @property
     def changed_slides(self) -> int:
         return sum(values["changed"] > 0 for values in self.slide_counts.values())
+
+
+@dataclass(frozen=True)
+class ThemeElementPreview:
+    """One element-level theme change or retained off-theme color."""
+
+    slide_index: str
+    element_id: str
+    old_classes: tuple[str, ...]
+    new_classes: tuple[str, ...]
+    color_notes: tuple[str, ...]
 
 
 def parse_slide_spec(value: str | None) -> set[int] | None:
@@ -327,6 +339,7 @@ def apply_theme(
 
     pending: dict[Path, str] = {}
     slide_counts: dict[str, dict[str, int]] = {}
+    previews: list[ThemeElementPreview] = []
     for slide in target_slides:
         raw_ids = _raw_element_ids(slide.content)
         expanded_role_ids = {
@@ -341,13 +354,17 @@ def apply_theme(
                 f"Cannot role-restyle component-expanded element '{element_id}'; "
                 "edit components.sml or parameterize its class with a slot"
             )
-        updated, counts = _apply_to_content(
+        updated, counts, element_previews = _apply_to_content(
             slide.content,
             roles=roles,
             role_classes=role_classes,
             primary_font=primary_font,
             palette=palette if map_colors else (),
             color_distance_threshold=color_distance_threshold,
+        )
+        previews.extend(
+            ThemeElementPreview(slide.index, element_id, old, new, notes)
+            for element_id, old, new, notes in element_previews
         )
         # The normal parser owns class-scope and conflict validation. Validate every
         # prospective target before committing any of them.
@@ -358,7 +375,7 @@ def apply_theme(
 
     if not dry_run:
         _commit_text_files(pending)
-    return ThemeApplyResult(slide_counts)
+    return ThemeApplyResult(slide_counts, tuple(previews))
 
 
 def _primary_font_class(
@@ -450,11 +467,18 @@ def _apply_to_content(
     primary_font: str | None,
     palette: Sequence[str],
     color_distance_threshold: float,
-) -> tuple[str, dict[str, int]]:
+) -> tuple[
+    str,
+    dict[str, int],
+    list[tuple[str, tuple[str, ...], tuple[str, ...], tuple[str, ...]]],
+]:
     text_ids = _text_element_ids(content)
     pieces: list[str] = []
     cursor = 0
     counts = {"roleRestyles": 0, "fontChanges": 0, "colorChanges": 0, "changed": 0}
+    previews: list[
+        tuple[str, tuple[str, ...], tuple[str, ...], tuple[str, ...]]
+    ] = []
     changed_tags = 0
     for start, end, tag_name in _start_tag_spans(content):
         pieces.append(content[cursor:start])
@@ -503,25 +527,39 @@ def _apply_to_content(
 
         if palette:
             mapped: list[str] = []
+            color_notes: list[str] = []
             for class_name in new_classes:
-                replacement = _map_color_class(
+                replacement, note = _map_color_class_detail(
                     class_name,
                     palette,
                     threshold=color_distance_threshold,
                 )
                 if replacement != class_name:
                     counts["colorChanges"] += 1
+                if note is not None:
+                    color_notes.append(note)
                 mapped.append(replacement)
             new_classes = mapped
+        else:
+            color_notes = []
 
         if new_classes != old_classes:
             start_tag = _replace_class_attribute(start_tag, class_attribute, new_classes)
             changed_tags += 1
+        if element_id is not None and (new_classes != old_classes or color_notes):
+            previews.append(
+                (
+                    element_id,
+                    tuple(old_classes),
+                    tuple(new_classes),
+                    tuple(color_notes),
+                )
+            )
         pieces.append(start_tag)
         cursor = end
     pieces.append(content[cursor:])
     counts["changed"] = changed_tags
-    return "".join(pieces), counts
+    return "".join(pieces), counts, previews
 
 
 def _is_font_family_class(class_name: str) -> bool:
@@ -541,25 +579,29 @@ def _dedupe(values: Sequence[str]) -> list[str]:
     return result
 
 
-def _map_color_class(
+def _map_color_class_detail(
     class_name: str,
     palette: Sequence[str],
     *,
     threshold: float,
-) -> str:
+) -> tuple[str, str | None]:
     match = _COLOR_CLASS.fullmatch(class_name)
     if match is None:
-        return class_name
+        return class_name, None
     source = match.group("color").lower()
     if source in palette:
-        return class_name
+        return class_name, None
     nearest = min(palette, key=lambda candidate: _rgb_distance(source, candidate))
     if _rgb_distance(source, nearest) > threshold:
-        return class_name
-    return (
+        return (
+            class_name,
+            f"{class_name} kept (nearest theme color {nearest} beyond threshold)",
+        )
+    replacement = (
         f"{match.group('use')}-{nearest}"
         f"{match.group('alpha') or ''}"
     )
+    return replacement, f"color: {class_name} -> {replacement}"
 
 
 def _rgb_distance(first: str, second: str) -> float:

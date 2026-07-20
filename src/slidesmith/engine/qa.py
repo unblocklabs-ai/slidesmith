@@ -490,6 +490,31 @@ def check_folder(
     return 1 if strict and active_findings else 0
 
 
+def push_preflight(
+    folder: str | Path,
+    *,
+    output: Callable[[str], None] = print,
+) -> int:
+    """Report offline QA and return the number of active findings new since pull."""
+    folder_path = Path(folder)
+    findings = lint_folder(folder_path)
+    baseline = _read_qa_baseline(folder_path) or []
+    accepted_ids = set(_read_accepted_findings(folder_path))
+    accepted_ids.update(_sugar_accepted_ids(folder_path, findings))
+    print_report(
+        findings,
+        output,
+        baseline=baseline,
+        accepted_ids=accepted_ids,
+    )
+    baseline_keys = {_finding_key(finding) for finding in baseline}
+    return sum(
+        _finding_key(finding) not in baseline_keys
+        and finding_id(finding) not in accepted_ids
+        for finding in findings
+    )
+
+
 def _find_overlaps(
     siblings: list[ParsedElement],
     slide_number: int,

@@ -14,6 +14,31 @@ from typing import Any
 from slidesmith.engine.json_utils import read_json
 
 
+SELECTOR_GRAMMAR = """Selector grammar:
+  tag=VALUE                 exact element tag
+  role=VALUE                exact local role
+  class=VALUE               exact class token (class~=VALUE is retained)
+  id=VALUE                  exact element ID
+  id~=VALUE                 element ID substring
+  text=VALUE                exact full text (case-insensitive)
+  text^=VALUE               text starts with VALUE (case-insensitive)
+  text$=VALUE               text ends with VALUE (case-insensitive)
+  text~=VALUE               text substring (case-insensitive)
+  slide=3                   one slide
+  slide in 1,3,5            slide list
+  slide in 2..6             inclusive slide range
+  x=PT  y<PT  w>=PT  h<=PT  geometry comparisons: =, <, <=, >, >=
+
+Combine predicates with AND, OR, and parentheses. AND binds before OR.
+Quote values containing spaces, for example text="verified result".
+
+Examples:
+  slide=3 AND text^=Summary
+  (role=title OR class=title) AND text$="Q4 results"
+  id=hero_image OR (tag=Image AND w>=300)
+"""
+
+
 def _presentation_id(url_or_id: str) -> str:
     m = re.search(r"/presentation/d/([a-zA-Z0-9_-]+)", url_or_id)
     presentation_id = m.group(1) if m else url_or_id
@@ -139,6 +164,25 @@ def cmd_push(args: Any) -> None:
 
     if args.resume and not args.per_slide:
         raise ValueError("--resume requires --per-slide")
+
+    if args.preflight != "off":
+        from slidesmith.engine.qa import push_preflight
+
+        new_findings = push_preflight(
+            args.folder,
+            output=lambda message: print(message, file=sys.stderr),
+        )
+        if new_findings and args.preflight == "block":
+            print(
+                f"push preflight blocked: {new_findings} new finding(s)",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        if new_findings:
+            print(
+                f"push preflight warning: {new_findings} new finding(s); proceeding",
+                file=sys.stderr,
+            )
 
     _warn_if_stale(args.folder)
     token = _token("slide.push", str(args.folder))
@@ -319,6 +363,16 @@ def cmd_theme_apply(args: Any) -> None:
         map_colors=args.map_colors,
         dry_run=args.dry_run,
     )
+    if args.verbose:
+        for preview in result.previews:
+            print(f"Slide {preview.slide_index} element {preview.element_id}:")
+            if preview.old_classes != preview.new_classes:
+                print(
+                    f"  classes: {' '.join(preview.old_classes) or '(none)'} -> "
+                    f"{' '.join(preview.new_classes) or '(none)'}"
+                )
+            for note in preview.color_notes:
+                print(f"  {note}")
     for slide_index, counts in result.slide_counts.items():
         print(
             f"Slide {slide_index}: {counts['roleRestyles']} role restyle(s), "
@@ -494,6 +548,15 @@ def main(argv: list[str] | None = None) -> None:
             "matches and continue from the first unfinished slide"
         ),
     )
+    spu.add_argument(
+        "--preflight",
+        choices=("off", "warn", "block"),
+        default="off",
+        help=(
+            "Offline geometry lint before push: off (default), warn and proceed, "
+            "or block on findings new since the workspace baseline"
+        ),
+    )
     spu.set_defaults(func=cmd_push)
 
     sri = sub.add_parser(
@@ -551,6 +614,8 @@ def main(argv: list[str] | None = None) -> None:
     ss = sub.add_parser(
         "select",
         help="Select SML elements with a semantic query (local only)",
+        epilog=SELECTOR_GRAMMAR,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     ss.add_argument("folder", help="Presentation folder created by pull")
     ss.add_argument("query", help="Semantic element query")
@@ -559,6 +624,8 @@ def main(argv: list[str] | None = None) -> None:
     sap = sub.add_parser(
         "apply",
         help="Mutate elements selected by a semantic query (local only)",
+        epilog=SELECTOR_GRAMMAR,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     sap.add_argument("folder", help="Presentation folder created by pull")
     sap.add_argument("query", help="Semantic element query")
@@ -646,6 +713,11 @@ def main(argv: list[str] | None = None) -> None:
         "--dry-run",
         action="store_true",
         help="Print validated change counts without writing files",
+    )
+    stha.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Print per-element class and color decisions",
     )
     stha.set_defaults(func=cmd_theme_apply)
 

@@ -53,10 +53,19 @@ def query_context() -> QueryContext:
         ("tag=Image", False),
         ("class~=text-size-53", True),
         ("class~=text-size-5", False),
+        ("class=text-size-53", True),
         ("role=subtitle", True),
         ("role=title", False),
+        ("id=mission_title", True),
+        ("id=mission", False),
         ("id~=mission", True),
         ("id~=Mission", False),
+        ('text="Mission DONE"', True),
+        ("text=Mission", False),
+        ("text^=Mission", True),
+        ("text^=DONE", False),
+        ("text$=DONE", True),
+        ("text$=Mission", False),
         ("text~=done", True),
         ("text~=missing", False),
         ("slide=3", True),
@@ -83,6 +92,22 @@ def test_and_or_parentheses_and_precedence(query_context: QueryContext) -> None:
 
 def test_quoted_predicate_value(query_context: QueryContext) -> None:
     assert parse_query('text~="mission done"').matches(query_context)
+
+
+def test_exact_text_does_not_overmatch_longer_text(query_context: QueryContext) -> None:
+    assert not parse_query("text=verified").matches(query_context)
+    verified_context = QueryContext(
+        slide_number=1,
+        element=ParsedElement(
+            clean_id="status",
+            tag="TextBox",
+            paragraphs=["verified result"],
+        ),
+        classes=frozenset(),
+        role=None,
+    )
+    assert not parse_query("text=verified").matches(verified_context)
+    assert parse_query("text~=verified").matches(verified_context)
 
 
 @pytest.mark.parametrize(
@@ -162,6 +187,42 @@ def test_cli_malformed_query_is_one_line_without_traceback(
     assert captured.out == ""
     assert captured.err.startswith("error: Query parse error at column 5:")
     assert "Traceback" not in captured.err
+
+
+@pytest.mark.parametrize("command", ["select", "apply"])
+def test_selector_command_help_prints_full_grammar(
+    command: str,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main([command, "--help"])
+    assert excinfo.value.code == 0
+    output = capsys.readouterr().out
+    for expected in (
+        "tag=VALUE",
+        "role=VALUE",
+        "class=VALUE",
+        "class~=VALUE",
+        "id=VALUE",
+        "id~=VALUE",
+        "text=VALUE",
+        "text^=VALUE",
+        "text$=VALUE",
+        "text~=VALUE",
+        "AND",
+        "OR",
+        "parentheses",
+        'text="verified result"',
+        "slide=3",
+        "slide in 1,3,5",
+        "slide in 2..6",
+        "x=PT",
+        "y<PT",
+        "w>=PT",
+        "h<=PT",
+        "Examples:",
+    ):
+        assert expected in output
 
 
 def test_select_match_set_on_golden_fixture_includes_nested_elements(

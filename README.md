@@ -20,6 +20,11 @@ slidesmith diff <ID>     # prints the batchUpdate requests, no API call
 slidesmith push <ID>     # applies them to the same deck
 ```
 
+Use `push --preflight=warn` to report new offline geometry findings and proceed,
+or `push --preflight=block` to abort before authentication when an edit adds a
+finding relative to the pull-time baseline. The default is `off`; the option
+also works with `--per-slide`.
+
 Author images from public URLs or workspace-local files. Local files are
 uploaded at push time to the authenticated user's own Google Drive, made
 link-readable so Slides can fetch them, and reused through `<ID>/.assets.json`
@@ -68,7 +73,7 @@ Transfer a design language from representative slides into another local deck:
 
 ```bash
 slidesmith theme extract source-deck --from-slides 1-3 -o theme.json
-slidesmith theme apply target-deck theme.json --to-slides 4-24 --map-colors --dry-run
+slidesmith theme apply target-deck theme.json --to-slides 4-24 --map-colors --dry-run --verbose
 slidesmith theme apply target-deck theme.json --to-slides 4-24 --map-colors
 ```
 
@@ -79,6 +84,9 @@ the extracted primary font family, and optionally maps only nearby RGB colors
 to the theme palette. It is an atomic, conflict-validated, style-only operation:
 text and geometry are never changed. Role-aware restyling requires `roles.json`;
 without roles, font unification and `--map-colors` still work.
+Verbose dry-run output lists each element's class/color changes and explains
+when an off-theme color is kept because its nearest palette color is beyond the
+mapping threshold.
 
 For reusable visual structure, copy a single-slide selection into an
 origin-relative snippet and paste it as new elements in another deck:
@@ -125,8 +133,10 @@ vocabulary, one-shot Stack/Grid layout, QA judgment, and auth recovery.
 - **Safe concurrent pushes**: three-way conflict guard against the live deck,
   `writeControl` revision locking, atomic deck-wide batches by default, an
   opt-in resumable per-slide multi-batch mode, post-push workspace refresh,
-  and **push persistence verification** — a warning whenever Google silently
-  drops or normalizes a property you sent.
+  optional `off|warn|block` offline geometry preflight, and **push persistence
+  verification** — a warning whenever Google meaningfully drops a property you
+  sent. Sub-0.02pt geometry drift and Google's default text-layout classes on
+  newly created elements are documented normalization exceptions.
 - **Layout authoring**: one-shot `Stack`/`Grid` containers, `flex`,
   `h="auto"` text height, reusable `components.sml` + `<Use>` expansion, and
   `content-align-*` — the compiler does the coordinate math.
@@ -143,7 +153,9 @@ vocabulary, one-shot Stack/Grid layout, QA judgment, and auth recovery.
   role styles safely; `snippet copy/paste` reuses bounded visual structures with
   explicit role-to-content mapping.
 - **Semantic selectors**: local-only `select` / atomic `apply` target elements
-  by role, tag, class, ID, text, slide, and geometry without ID-level scripting.
+  by role, tag, class, ID, text, slide, and geometry without ID-level scripting;
+  text supports exact/prefix/suffix/substring operators and IDs support exact
+  or substring matching. Both command help pages include the full grammar.
 - **Agent-grade errors and auth**: loud, named errors for unknown or
   conflicting classes; dual-store sessions (Keychain + 0600 file) so
   subprocess agents can authenticate; `auth doctor` for self-rescue.

@@ -404,3 +404,9 @@ Resolution: successful post-push refreshes now diff remote truth against the pre
 
 ### [x] R2D-W2 [WISH] Replace one class across the whole deck locally
 Resolution: `slidesmith replace-class <folder> OLD NEW [--dry-run]` now validates through the canonical parser, detects scoped conflicts atomically, and reports per-slide and total replacement counts.
+
+### [x] R2D-W3 [WISH] Apply coordinated class replacements atomically
+Resolution: repeated `--swap OLD=NEW` flags, optionally combined with positional `OLD NEW`, now validate the combined post-replacement class sets before any write and report per-swap plus per-slide counts.
+
+### [x] R2D-W4 [WISH] Create a whole-deck contact sheet during visual QA
+Resolution: `slidesmith check <folder> --contact-sheet` now composes downloaded slide PNGs into a labeled two-column `.qa/contact-sheet.png`; combining it with `--no-thumbnails` fails with a specific actionable error.

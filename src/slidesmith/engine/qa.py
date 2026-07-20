@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from collections.abc import Iterator
 from typing import Any, Callable
 
 from defusedxml import ElementTree as DefusedET
+from PIL import Image, ImageDraw, ImageFont
 
 from slidesmith.engine.bounds import BoundingBox
 from slidesmith.engine.content_parser import ParsedElement, ParsedRun, parse_all_slides
@@ -18,14 +19,21 @@ from slidesmith.engine.layout import ApproximateTextMeasurer, TextMeasurer
 OVERLAP_THRESHOLD = 0.15
 TEXT_OVERFLOW_TOLERANCE = 1.10
 QA_BASELINE_FILE = "qa-baseline.json"
+CONTACT_SHEET_COLUMNS = 2
+CONTACT_SHEET_PADDING = 12
+CONTACT_SHEET_GAP = 12
+CONTACT_SHEET_LABEL_HEIGHT = 24
 
 
-async def download_thumbnails(transport: Any, folder: Path, qa_dir: Path) -> None:
+async def download_thumbnails(
+    transport: Any, folder: Path, qa_dir: Path
+) -> list[Path]:
     """Download each materialized slide thumbnail in numeric slide order."""
     metadata = read_json(folder / "presentation.json", missing_ok=False)
     id_mapping = read_json(folder / "id_mapping.json", missing_ok=False)
     presentation_id = metadata["presentationId"]
     content_paths = (folder / "slides").glob("*/content.sml")
+    output_paths: list[Path] = []
     for content_path in sorted(
         content_paths, key=lambda path: int(path.parent.name)
     ):
@@ -40,7 +48,70 @@ async def download_thumbnails(transport: Any, folder: Path, qa_dir: Path) -> Non
         )
         output_path = qa_dir / f"slide-{slide_number}.png"
         output_path.write_bytes(png)
+        output_paths.append(output_path)
         print(output_path, flush=True)
+    return output_paths
+
+
+def create_contact_sheet(
+    qa_dir: str | Path,
+    thumbnail_paths: Sequence[Path] | None = None,
+) -> Path:
+    """Compose downloaded slide PNGs into a labeled two-column contact sheet."""
+    qa_path = Path(qa_dir)
+    selected_paths = sorted(
+        thumbnail_paths if thumbnail_paths is not None else qa_path.glob("slide-*.png"),
+        key=lambda path: int(path.stem.removeprefix("slide-")),
+    )
+    if not selected_paths:
+        raise ValueError(f"No slide thumbnails found in {qa_path}")
+
+    thumbnails: list[tuple[Path, Image.Image]] = []
+    sheet: Image.Image | None = None
+    try:
+        for path in selected_paths:
+            with Image.open(path) as source:
+                thumbnails.append((path, source.convert("RGB")))
+
+        max_width = max(image.width for _, image in thumbnails)
+        max_height = max(image.height for _, image in thumbnails)
+        cell_width = max_width + 2 * CONTACT_SHEET_PADDING
+        cell_height = (
+            max_height + CONTACT_SHEET_LABEL_HEIGHT + 2 * CONTACT_SHEET_PADDING
+        )
+        rows = (len(thumbnails) + CONTACT_SHEET_COLUMNS - 1) // CONTACT_SHEET_COLUMNS
+        sheet_width = (
+            CONTACT_SHEET_COLUMNS * cell_width
+            + (CONTACT_SHEET_COLUMNS - 1) * CONTACT_SHEET_GAP
+        )
+        sheet_height = rows * cell_height + (rows - 1) * CONTACT_SHEET_GAP
+        sheet = Image.new("RGB", (sheet_width, sheet_height), "white")
+        draw = ImageDraw.Draw(sheet)
+        font = ImageFont.load_default()
+
+        for index, (path, thumbnail) in enumerate(thumbnails):
+            row, column = divmod(index, CONTACT_SHEET_COLUMNS)
+            cell_x = column * (cell_width + CONTACT_SHEET_GAP)
+            cell_y = row * (cell_height + CONTACT_SHEET_GAP)
+            slide_number = int(path.stem.removeprefix("slide-"))
+            draw.text(
+                (cell_x + CONTACT_SHEET_PADDING, cell_y + CONTACT_SHEET_PADDING),
+                f"Slide {slide_number}",
+                fill="black",
+                font=font,
+            )
+            image_x = cell_x + CONTACT_SHEET_PADDING + (max_width - thumbnail.width) // 2
+            image_y = cell_y + CONTACT_SHEET_PADDING + CONTACT_SHEET_LABEL_HEIGHT
+            sheet.paste(thumbnail, (image_x, image_y))
+
+        output_path = qa_path / "contact-sheet.png"
+        sheet.save(output_path, format="PNG")
+        return output_path
+    finally:
+        if sheet is not None:
+            sheet.close()
+        for _, thumbnail in thumbnails:
+            thumbnail.close()
 
 
 @dataclass(frozen=True)

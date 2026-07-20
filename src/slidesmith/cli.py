@@ -163,14 +163,26 @@ def cmd_push(args: Any) -> None:
 
 
 def cmd_replace_class(args: Any) -> None:
-    from slidesmith.engine.class_replacement import replace_class
+    from slidesmith.engine.class_replacement import replace_classes
 
-    result = replace_class(
+    positional = (args.old_class, args.new_class)
+    if (args.old_class is None) != (args.new_class is None):
+        raise ValueError("Positional class replacement requires both OLD and NEW")
+    swaps = [positional] if args.old_class is not None else []
+    for value in args.swap:
+        if "=" not in value:
+            raise ValueError(f"--swap must use OLD=NEW syntax, got '{value}'")
+        old_class, new_class = value.split("=", 1)
+        swaps.append((old_class, new_class))
+
+    result = replace_classes(
         args.folder,
-        args.old_class,
-        args.new_class,
+        swaps,
         dry_run=args.dry_run,
     )
+    if args.swap:
+        for (old_class, new_class), count in result.swap_counts.items():
+            print(f"Swap {old_class}={new_class}: {count} replacement(s)")
     for slide_index, count in result.counts.items():
         print(f"Slide {slide_index}: {count} replacement(s)")
     print(f"Total: {result.total} replacement(s)")
@@ -179,9 +191,17 @@ def cmd_replace_class(args: Any) -> None:
 
 
 def cmd_check(args: Any) -> None:
-    from slidesmith.engine.qa import check_folder, download_thumbnails
+    from slidesmith.engine.qa import (
+        check_folder,
+        create_contact_sheet,
+        download_thumbnails,
+    )
 
     folder = Path(args.folder)
+    if args.contact_sheet and args.no_thumbnails:
+        raise ValueError(
+            "--contact-sheet requires thumbnail downloads; remove --no-thumbnails"
+        )
     _warn_if_stale(folder)
     if not args.no_thumbnails:
         from slidesmith.engine.transport import GoogleSlidesTransport
@@ -194,14 +214,16 @@ def cmd_check(args: Any) -> None:
         qa_dir = folder / ".qa"
         qa_dir.mkdir(parents=True, exist_ok=True)
 
-        async def run() -> None:
+        async def run() -> list[Path]:
             transport = GoogleSlidesTransport(token)
             try:
-                await download_thumbnails(transport, folder, qa_dir)
+                return await download_thumbnails(transport, folder, qa_dir)
             finally:
                 await transport.close()
 
-        asyncio.run(run())
+        downloaded_paths = asyncio.run(run())
+        if args.contact_sheet:
+            print(create_contact_sheet(qa_dir, downloaded_paths))
 
     exit_code = check_folder(folder, strict=args.strict)
     if exit_code:
@@ -276,8 +298,19 @@ def main(argv: list[str] | None = None) -> None:
         help="Replace a class across all content.sml files (local only)",
     )
     src.add_argument("folder", help="Presentation folder created by pull")
-    src.add_argument("old_class", metavar="OLD", help="Class token to replace")
-    src.add_argument("new_class", metavar="NEW", help="Replacement class token")
+    src.add_argument(
+        "old_class", metavar="OLD", nargs="?", help="Class token to replace"
+    )
+    src.add_argument(
+        "new_class", metavar="NEW", nargs="?", help="Replacement class token"
+    )
+    src.add_argument(
+        "--swap",
+        action="append",
+        default=[],
+        metavar="OLD=NEW",
+        help="Additional class swap; may be repeated",
+    )
     src.add_argument(
         "--dry-run",
         action="store_true",
@@ -299,6 +332,11 @@ def main(argv: list[str] | None = None) -> None:
         "--strict",
         action="store_true",
         help="Exit with status 1 when geometry findings are reported",
+    )
+    sc.add_argument(
+        "--contact-sheet",
+        action="store_true",
+        help="Compose downloaded thumbnails into .qa/contact-sheet.png",
     )
     sc.set_defaults(func=cmd_check)
 

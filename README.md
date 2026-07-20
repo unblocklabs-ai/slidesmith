@@ -20,10 +20,23 @@ slidesmith diff <ID>     # prints the batchUpdate requests, no API call
 slidesmith push <ID>     # applies them to the same deck
 ```
 
-For local deck-wide restyles, use `slidesmith replace-class <ID> OLD NEW`
-(`--dry-run` reports per-slide counts without writing). The command validates
-the replacement against the real SML class parser; review it with `diff` and
-push separately.
+For local deck-wide restyles, use `slidesmith replace-class <ID> OLD NEW`, or
+repeat `--swap OLD=NEW` to apply several replacements together:
+
+```bash
+slidesmith replace-class <ID> --swap font-family-arial=font-family-inter \
+  --swap text-color-#333333=text-color-#111111 --dry-run
+```
+
+Positional and `--swap` forms can be combined. All swaps are validated as one
+atomic change against the real SML class parser, with per-swap and per-slide
+counts; `--dry-run` performs the same work without writing. Review the result
+with `diff` and push separately.
+
+After pushing, `slidesmith check <ID> --contact-sheet` downloads the slide PNGs
+and combines them into a labeled two-column image at
+`<ID>/.qa/contact-sheet.png`. Contact sheets require thumbnail downloads, so
+they cannot be combined with `--no-thumbnails`.
 
 Auth is zero-config if you already use gogcli: slidesmith reads the OAuth
 client from `~/Library/Application Support/gogcli/credentials.json` (or
@@ -52,10 +65,12 @@ vocabulary, one-shot Stack/Grid layout, QA judgment, and auth recovery.
 - **Layout authoring**: one-shot `Stack`/`Grid` containers, `flex`,
   `h="auto"` text height, and `content-align-*` — the compiler does the
   coordinate math.
-- **Visual QA**: `check` downloads rendered slide PNGs and runs geometry lint
+- **Visual QA**: `check` downloads rendered slide PNGs, optionally creates a
+  labeled two-column contact sheet with `--contact-sheet`, and runs geometry lint
   (overlap, out-of-bounds, likely text overflow) with a NEW / PRE-EXISTING /
   RESOLVED ledger keyed to your last pull.
-- **Bulk restyles**: `replace-class` swaps validated classes deck-wide.
+- **Bulk restyles**: `replace-class` swaps one or more validated classes
+  deck-wide as a single atomic operation.
 - **Agent-grade errors and auth**: loud, named errors for unknown or
   conflicting classes; dual-store sessions (Keychain + 0600 file) so
   subprocess agents can authenticate; `auth doctor` for self-rescue.
@@ -66,7 +81,7 @@ vocabulary, one-shot Stack/Grid layout, QA judgment, and auth recovery.
 Production-hardened through six adversarial review rounds (110 findings fixed
 — see `docs/review/FINDINGS.md`) and three live dogfood campaigns in which
 agent designers built new slides, executed deck-wide restyles, and shipped
-freeform polish on a real presentation. 323 tests; `scripts/lint.sh` clean.
+freeform polish on a real presentation. 330 tests; `scripts/lint.sh` clean.
 See the [agent guide](docs/AGENT-GUIDE.md) for the supported class vocabulary
 and the complete edit/diff/push/check loop.
 

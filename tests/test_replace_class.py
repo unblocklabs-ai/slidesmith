@@ -7,7 +7,8 @@ from pathlib import Path
 import pytest
 
 from slidesmith import cli
-from slidesmith.engine.class_replacement import replace_class
+from slidesmith.engine import class_replacement
+from slidesmith.engine.class_replacement import replace_class, replace_classes
 
 
 def _workspace(tmp_path: Path) -> Path:
@@ -110,3 +111,127 @@ def test_replace_class_reports_conflict_with_element_name(
     assert "text-size-24" in message
     assert "remove one" in message
     assert path.read_bytes() == before
+
+
+def test_replace_class_multi_swap_reports_per_swap_and_slide_counts(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    folder = _workspace(tmp_path)
+
+    cli.main(
+        [
+            "replace-class",
+            str(folder),
+            "--swap",
+            "font-family-arial=font-family-inter",
+            "--swap",
+            "bold=italic",
+        ]
+    )
+
+    assert capsys.readouterr().out == (
+        "Swap font-family-arial=font-family-inter: 4 replacement(s)\n"
+        "Swap bold=italic: 1 replacement(s)\n"
+        "Slide 01: 4 replacement(s)\n"
+        "Slide 02: 1 replacement(s)\n"
+        "Total: 5 replacement(s)\n"
+    )
+
+
+def test_replace_class_bad_swap_among_good_swaps_writes_nothing(
+    tmp_path: Path,
+) -> None:
+    folder = _workspace(tmp_path)
+    paths = sorted((folder / "slides").glob("*/content.sml"))
+    before = {path: path.read_bytes() for path in paths}
+
+    with pytest.raises(ValueError, match="Unrecognized class 'fontish-inter'"):
+        replace_classes(
+            folder,
+            [
+                ("font-family-arial", "font-family-inter"),
+                ("bold", "fontish-inter"),
+                ("italic", "underline"),
+            ],
+        )
+
+    assert {path: path.read_bytes() for path in paths} == before
+
+
+def test_replace_class_combined_swaps_detect_cross_swap_conflict(
+    tmp_path: Path,
+) -> None:
+    folder = _workspace(tmp_path)
+    path = folder / "slides" / "01" / "content.sml"
+    path.write_text(
+        path.read_text(encoding="utf-8").replace(" bold", " bold italic"),
+        encoding="utf-8",
+    )
+    before = path.read_bytes()
+    swaps = [("bold", "text-size-18"), ("italic", "text-size-24")]
+
+    for swap in swaps:
+        replace_classes(folder, [swap], dry_run=True)
+
+    with pytest.raises(ValueError) as excinfo:
+        replace_classes(folder, swaps)
+
+    message = str(excinfo.value)
+    assert "text-size-18" in message
+    assert "text-size-24" in message
+    assert "remove one" in message
+    assert path.read_bytes() == before
+
+
+def test_replace_class_combines_positional_and_flag_swaps(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    folder = _workspace(tmp_path)
+
+    cli.main(
+        [
+            "replace-class",
+            str(folder),
+            "font-family-arial",
+            "font-family-inter",
+            "--swap",
+            "bold=italic",
+            "--dry-run",
+        ]
+    )
+
+    output = capsys.readouterr().out
+    assert "Swap font-family-arial=font-family-inter: 4 replacement(s)" in output
+    assert "Swap bold=italic: 1 replacement(s)" in output
+    assert output.endswith("Total: 5 replacement(s)\nDry run: no files written.\n")
+
+
+def test_replace_class_rolls_back_a_mid_commit_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    folder = _workspace(tmp_path)
+    paths = sorted((folder / "slides").glob("*/content.sml"))
+    before = {path: path.read_bytes() for path in paths}
+    real_replace = class_replacement.replace_file
+    calls = 0
+
+    def fail_second_replace(source: Path, destination: Path) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("simulated commit failure")
+        real_replace(source, destination)
+
+    monkeypatch.setattr(class_replacement, "replace_file", fail_second_replace)
+
+    with pytest.raises(OSError, match="simulated commit failure"):
+        replace_classes(
+            folder,
+            [("font-family-arial", "font-family-inter")],
+        )
+
+    assert {path: path.read_bytes() for path in paths} == before
+    assert not list((folder / "slides").rglob("*.tmp"))

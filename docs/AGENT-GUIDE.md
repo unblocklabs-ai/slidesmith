@@ -23,6 +23,7 @@ slidesmith diff <ID> --summary
 slidesmith check <ID> --no-thumbnails
 slidesmith push <ID>
 slidesmith check <ID>
+slidesmith check <ID> --contact-sheet
 ```
 
 `diff` is local-only and prints the exact request list plus a stderr legend from
@@ -37,6 +38,11 @@ re-fetches the remote deck, aborts if a locally touched object changed remotely,
 uses a revision lock for the write, and refreshes the local projection after a
 successful batch. Use `push --force` only when the user explicitly accepts
 overwriting concurrent edits to touched properties.
+
+Add `--contact-sheet` to plain `check` to compose the downloaded PNGs into a
+labeled two-column overview at `<ID>/.qa/contact-sheet.png`. It is useful for a
+quick whole-deck visual scan. It requires those downloads and therefore cannot
+be used with `--no-thumbnails`.
 
 After a successful refresh, `push` compares the intended local changes with the
 remote-truth projection. A warning such as `warning: 1 change(s) did not persist
@@ -252,15 +258,26 @@ slidesmith replace-class <ID> font-family-arial font-family-inter --dry-run
 slidesmith replace-class <ID> font-family-arial font-family-inter
 ```
 
-The command covers element, `P`, and `T` class attributes, prints a replacement
-count for every slide plus a total, and preserves the surrounding SML formatting.
+For a coordinated restyle, repeat `--swap OLD=NEW`; positional `OLD NEW` can
+also be combined with additional flags:
+
+```bash
+slidesmith replace-class <ID> \
+  --swap font-family-arial=font-family-inter \
+  --swap text-color-#333333=text-color-#111111 --dry-run
+slidesmith replace-class <ID> bold font-weight-700 \
+  --swap text-size-18=text-size-20
+```
+
+The command covers element, `P`, and `T` class attributes, prints per-swap and
+per-slide counts plus a total, and preserves the surrounding SML formatting.
 `--dry-run` performs the same validation and counting without writing files.
-`NEW` is validated by the real class parser before any file is considered, and
-all prospective slide contents are parsed before any write. An unknown class or
-a mutually exclusive family conflict therefore fails atomically with the
-existing error that names the affected element. This command does not call
-Google APIs or run a diff; inspect the result with `slidesmith diff <ID>` and
-push it separately.
+Every `NEW` and all combined prospective slide contents are validated by the
+real class parser before any write. An unknown class, a conflict created only by
+the combination of swaps, or another failure therefore leaves every slide
+unchanged and names the affected element where applicable. This command does
+not call Google APIs or run a diff; inspect the result with
+`slidesmith diff <ID>` and push it separately.
 
 ## Copying pulled elements
 

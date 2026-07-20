@@ -11,15 +11,25 @@ from typing import Any
 
 import httpx
 import pytest
+from PIL import Image
 
+from slidesmith import cli
+from slidesmith.engine import qa as qa_engine
 from slidesmith.engine.client import SlidesClient
-from slidesmith.engine.qa import check_folder, lint_folder, record_qa_baseline
+from slidesmith.engine.qa import (
+    CONTACT_SHEET_GAP,
+    CONTACT_SHEET_LABEL_HEIGHT,
+    CONTACT_SHEET_PADDING,
+    check_folder,
+    create_contact_sheet,
+    lint_folder,
+    record_qa_baseline,
+)
 from slidesmith.engine.transport import (
     GoogleSlidesTransport,
     PresentationData,
     Transport,
 )
-from slidesmith import cli
 from slidesmith.workspace import materialize
 
 GOLDEN = (
@@ -427,6 +437,70 @@ def test_cli_no_thumbnails_uses_no_auth_or_transport(
     cli.main(["check", str(qa_folder), "--no-thumbnails"])
 
     assert "no issues found" in capsys.readouterr().out
+    assert not (qa_folder / ".qa").exists()
+
+
+def test_contact_sheet_dimensions_and_slide_labels(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    qa_dir = tmp_path / ".qa"
+    qa_dir.mkdir()
+    for slide_number, size, color in (
+        (1, (100, 50), "red"),
+        (2, (80, 60), "green"),
+        (3, (120, 40), "blue"),
+    ):
+        Image.new("RGB", size, color).save(qa_dir / f"slide-{slide_number:02}.png")
+
+    labels: list[str] = []
+    real_draw = qa_engine.ImageDraw.Draw
+
+    def recording_draw(image: Image.Image) -> Any:
+        delegate = real_draw(image)
+
+        class DrawRecorder:
+            def text(self, position: tuple[int, int], label: str, **kwargs: Any) -> Any:
+                labels.append(label)
+                return delegate.text(position, label, **kwargs)
+
+        return DrawRecorder()
+
+    monkeypatch.setattr(qa_engine.ImageDraw, "Draw", recording_draw)
+
+    output_path = create_contact_sheet(qa_dir)
+
+    cell_width = 120 + 2 * CONTACT_SHEET_PADDING
+    cell_height = 60 + CONTACT_SHEET_LABEL_HEIGHT + 2 * CONTACT_SHEET_PADDING
+    with Image.open(output_path) as sheet:
+        assert sheet.size == (
+            2 * cell_width + CONTACT_SHEET_GAP,
+            2 * cell_height + CONTACT_SHEET_GAP,
+        )
+    assert output_path == qa_dir / "contact-sheet.png"
+    assert labels == ["Slide 1", "Slide 2", "Slide 3"]
+
+
+def test_cli_contact_sheet_with_no_thumbnails_fails_gracefully(
+    qa_folder: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def forbidden(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("invalid flag combination must fail before auth")
+
+    monkeypatch.setattr(cli, "_token", forbidden)
+
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main(
+            ["check", str(qa_folder), "--no-thumbnails", "--contact-sheet"]
+        )
+
+    assert excinfo.value.code == 1
+    assert capsys.readouterr().err == (
+        "error: --contact-sheet requires thumbnail downloads; "
+        "remove --no-thumbnails\n"
+    )
     assert not (qa_folder / ".qa").exists()
 
 

@@ -21,10 +21,25 @@ def test_theme_extract_inventory_tokens_and_role_map(tmp_path: Path) -> None:
     assert theme["source"]["slides"] == [1]
     assert theme["tokens"] == {
         "palette": ["#f2ede2", "#112233", "#445566"],
+        "themeColors": [],
         "primaryFontFamily": {
             "family": "Montserrat",
             "class": "font-family-montserrat",
         },
+        "typeScale": [
+            {
+                "tier": "display",
+                "pt": 53.0,
+                "class": "text-size-53",
+                "count": 1,
+            },
+            {
+                "tier": "title",
+                "pt": 18.0,
+                "class": "text-size-18",
+                "count": 1,
+            },
+        ],
         "typeScalePt": [53.0, 18.0],
     }
     assert theme["roles"]["title"]["classes"] == [

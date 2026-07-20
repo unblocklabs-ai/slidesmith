@@ -262,10 +262,16 @@ Extraction writes readable versioned JSON with this shape:
   "source": {"folder": "source-deck", "slides": [1, 2, 3]},
   "tokens": {
     "palette": ["#112233", "#f2ede2"],
+    "themeColors": ["theme:accent1"],
     "primaryFontFamily": {
       "family": "Montserrat",
       "class": "font-family-montserrat"
     },
+    "typeScale": [
+      {"tier": "display", "pt": 53.0, "class": "text-size-53", "count": 3},
+      {"tier": "title", "pt": 24.0, "class": "text-size-24", "count": 4},
+      {"tier": "subtitle", "pt": 18.0, "class": "text-size-18", "count": 9}
+    ],
     "typeScalePt": [53.0, 24.0, 18.0]
   },
   "roles": {
@@ -289,11 +295,17 @@ Extraction writes readable versioned JSON with this shape:
 }
 ```
 
-The palette counts explicit RGB fill, stroke, text, and highlight classes.
+The palette counts explicit RGB fill, stroke, text, and highlight classes;
+unresolved Slides theme references are retained separately in `themeColors`
+and the inventory as values such as `theme:accent1`. Nearest-color mapping uses
+only concrete RGB values because a local SML workspace does not resolve theme
+references to stable RGB coordinates.
 The type inventory records every explicit font-family and font-size class with
 its frequency, after authoring constructs have been compiled so source
 component styles count as actually used. `tokens` gives the compact reusable
-palette, dominant primary font family, and descending size ladder. For each
+palette, dominant primary font family, and descending size ladder. Its inferred
+tiers are rank labels (`display`, `title`, `subtitle`, `body`, `caption`,
+`micro`, then `tier-N`), not semantic role assignments. For each
 role, the most frequent exact element-class set becomes canonical; ties are
 deterministic. `samples` is the number of role-bearing elements inspected and
 `canonicalSamples` is the number using the chosen class set. Roles with no

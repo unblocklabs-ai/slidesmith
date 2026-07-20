@@ -33,6 +33,10 @@ _COLOR_CLASS = re.compile(
     r"^(?P<use>fill|stroke|text-color|bg)-(?P<color>#[0-9a-fA-F]{6})"
     r"(?P<alpha>/[0-9]+)?$"
 )
+_THEME_COLOR_CLASS = re.compile(
+    r"^(?P<use>fill|stroke|text-color)-theme-(?P<color>[a-z0-9-]+)"
+    r"(?P<alpha>/[0-9]+)?$"
+)
 
 
 @dataclass(frozen=True)
@@ -101,6 +105,8 @@ def extract_theme(
 
     palette_counts: Counter[str] = Counter()
     palette_uses: dict[str, Counter[str]] = defaultdict(Counter)
+    theme_color_counts: Counter[str] = Counter()
+    theme_color_uses: dict[str, Counter[str]] = defaultdict(Counter)
     family_counts: Counter[tuple[str, str]] = Counter()
     size_counts: Counter[tuple[float, str]] = Counter()
     role_styles: dict[str, Counter[tuple[str, ...]]] = defaultdict(Counter)
@@ -115,6 +121,11 @@ def extract_theme(
                 color = color_match.group("color").lower()
                 palette_counts[color] += 1
                 palette_uses[color][color_match.group("use")] += 1
+            theme_match = _THEME_COLOR_CLASS.fullmatch(class_name)
+            if theme_match:
+                color = f"theme:{theme_match.group('color')}"
+                theme_color_counts[color] += 1
+                theme_color_uses[color][theme_match.group("use")] += 1
             classified = classify_class(class_name)
             if classified is None or classified[0] != ClassKind.TEXT:
                 continue
@@ -140,11 +151,10 @@ def extract_theme(
         palette_counts,
         key=lambda color: (-palette_counts[color], color),
     )
-    families = sorted(
-        family_counts,
-        key=lambda item: (-family_counts[item], item[0].casefold(), item[1]),
+    theme_colors = sorted(
+        theme_color_counts,
+        key=lambda color: (-theme_color_counts[color], color),
     )
-    sizes = sorted(size_counts, key=lambda item: (-item[0], item[1]))
     role_map: dict[str, dict[str, Any]] = {}
     for role in sorted(role_styles):
         canonical, count = sorted(
@@ -159,9 +169,24 @@ def extract_theme(
         }
 
     primary_font = None
-    if families:
-        family, class_name = families[0]
+    if family_counts:
+        family_totals: Counter[str] = Counter()
+        for (family, _), count in family_counts.items():
+            family_totals[family] += count
+        family = sorted(
+            family_totals,
+            key=lambda value: (-family_totals[value], value.casefold(), value),
+        )[0]
+        class_name = sorted(
+            (
+                (candidate_class, count)
+                for (candidate_family, candidate_class), count in family_counts.items()
+                if candidate_family == family
+            ),
+            key=lambda item: (-item[1], item[0]),
+        )[0][0]
         primary_font = {"family": family, "class": class_name}
+    type_scale = _type_scale(size_counts)
 
     return {
         "version": THEME_VERSION,
@@ -171,8 +196,10 @@ def extract_theme(
         },
         "tokens": {
             "palette": palette,
+            "themeColors": theme_colors,
             "primaryFontFamily": primary_font,
-            "typeScalePt": sorted({size for size, _ in sizes}, reverse=True),
+            "typeScale": type_scale,
+            "typeScalePt": [entry["pt"] for entry in type_scale],
         },
         "roles": role_map,
         "inventory": {
@@ -183,6 +210,14 @@ def extract_theme(
                     "uses": dict(sorted(palette_uses[color].items())),
                 }
                 for color in palette
+            ]
+            + [
+                {
+                    "color": color,
+                    "count": theme_color_counts[color],
+                    "uses": dict(sorted(theme_color_uses[color].items())),
+                }
+                for color in theme_colors
             ],
             "type": {
                 "fontFamilies": [
@@ -355,6 +390,30 @@ def _class_tokens(content: str) -> Iterable[str]:
                 yield from start_tag[
                     attribute.value_start : attribute.value_end
                 ].split()
+
+
+def _type_scale(
+    size_counts: Counter[tuple[float, str]],
+) -> list[dict[str, Any]]:
+    names = ("display", "title", "subtitle", "body", "caption", "micro")
+    by_size: dict[float, Counter[str]] = defaultdict(Counter)
+    for (size, class_name), count in size_counts.items():
+        by_size[size][class_name] += count
+    result: list[dict[str, Any]] = []
+    for index, size in enumerate(sorted(by_size, reverse=True)):
+        class_name, _ = sorted(
+            by_size[size].items(),
+            key=lambda item: (-item[1], item[0]),
+        )[0]
+        result.append(
+            {
+                "tier": names[index] if index < len(names) else f"tier-{index + 1}",
+                "pt": size,
+                "class": class_name,
+                "count": sum(by_size[size].values()),
+            }
+        )
+    return result
 
 
 def _raw_element_ids(content: str) -> set[str]:

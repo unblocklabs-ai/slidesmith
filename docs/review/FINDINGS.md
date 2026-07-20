@@ -325,7 +325,7 @@ Resolution: removed fill and outline class groups now produce field-masked `prop
 Resolution: COPY changes retain pristine/edited runs and paragraph data, apply edited run ranges to new text, and preserve same-slide auto-text through `duplicateObject` instead of static insertion.
 
 ### [x] R2-5 [HIGH] Copied images lost `imageProperties`
-Resolution: image reconstruction now follows `createImage` with a field-masked `updateImageProperties` covering extracted crop, transparency, brightness, contrast, recolor, and shadow values.
+Resolution: superseded by R3-3 after API mutability review. Image reconstruction now replays only writable outline/link properties and warns when read-only visual adjustments must be dropped.
 
 ### [x] R2-6 [MEDIUM] Service-account credentials requested an unused Sheets scope
 Resolution: service-account credentials now request only the Google Slides presentations scope.
@@ -338,5 +338,23 @@ Resolution: fallback loading now checks the file store after a keyring miss, all
 ### [x] R3-1 [CRITICAL] Moving/resizing a group corrupted its transform
 Resolution: GROUP moves now always emit a translation-only `RELATIVE` transform, so the missing API group size can no longer route moves through legacy absolute size reconstruction. Group resize is deliberately unsupported: it raises a clear `ValueError` directing callers to resize the group's children because the API supplies no stable native group size. Golden-fixture contracts cover both decisions.
 
+### [x] R3-2 [HIGH] Recreated text copies lost pristine formatting
+Resolution: copy reconstruction now replays pristine `styles.json` run and paragraph styles over UTF-16 ranges clamped to the newly authored text, then applies authored `P` and `T` classes as overrides. This preserves hyperlinks and generator-hoisted paragraph defaults while keeping every request range in bounds. The former helper-only test is now an end-to-end styled-and-linked copy contract.
+
+### [x] R3-3 [HIGH] Copied adjusted images emitted read-only `ImageProperties`
+Resolution: copied images now emit only writable `outline` and `link` fields. Crop, transparency, brightness, contrast, recolor, and shadow are omitted to prevent an atomic-batch 400; request generation records a warning that `push` returns to the CLI, and the agent guide documents the unavoidable fidelity loss.
+
 ### [x] R3-4 [MEDIUM] Child move/resize used page deltas in a scaled group-local frame
 Resolution: extracted styles now retain the composed pristine ancestor-group transform. Move and resize generation invert its linear component to convert absolute SML page-frame positions and dimensions into the API parent-group frame. A synthetic 2x-group fixture verifies that a 20pt page move becomes a 10pt local translation and a 20pt page resize changes the child's local scale from 1.0 to 1.1.
+
+### [x] R3-5 [MEDIUM] Removing non-fill class groups silently did nothing
+Resolution: removal is now distinct from unchanged state for element text, paragraph, vertical content alignment, and Line stroke groups. Request generation emits empty, field-masked updates that clear only the formerly authored properties back to inherited/default values; shape fill/outline resets retain their existing explicit `INHERIT` behavior.
+
+### [x] R3-6 [MEDIUM] Single-instance group-copy descendants moved originals
+Resolution: descendant-instance suppression now runs for both duplicate-ID and missing-dimensions copy detection. Children serialized into a single-instance recreated copy no longer produce independent MOVE changes against their pristine IDs.
+
+### [x] R3-7 [LOW] Copy-child custom positions could be shifted twice ambiguously
+Resolution: the source-versus-source-plus-delta heuristic is documented in the agent guide. Any authored child position matching neither frame records a returned warning that names the copy and child, reports both reference positions, and tells the caller to verify the translated result.
+
+### [x] R3-8 [MEDIUM] Nested `autoText` was baked into static text on copy
+Resolution: the copy guard now recursively scans serialized descendants. Same-slide copies containing nested `autoText` use `duplicateObject`, while cross-slide copies fail with the same explicit preservation error as root-level `autoText`.

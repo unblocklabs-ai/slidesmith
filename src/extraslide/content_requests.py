@@ -194,6 +194,9 @@ def _emit_style_update_requests(
                 change.new_styles,
                 has_text=bool(change.new_text),
                 element_tag=element_tag,
+                text_style_reset_fields=change.text_style_reset_fields,
+                paragraph_style_reset_fields=change.paragraph_style_reset_fields,
+                reset_content_alignment=change.reset_content_alignment,
             )
         )
         if not (
@@ -273,6 +276,7 @@ def _emit_copy_requests(
                     source_google_id=source_google_id,
                     allocate_object_id=_allocate_create_object_id,
                     unique_suffix=unique_suffix,
+                    warnings=diff_result.warnings,
                 )
             )
 

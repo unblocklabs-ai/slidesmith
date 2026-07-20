@@ -10,17 +10,20 @@ from extraslide.classes import (
     ContentAlignment,
     DashStyle,
     Fill,
+    ParagraphStyle,
     PropertyState,
     Stroke,
     TextStyle,
+    TextAlignment,
 )
 from extraslide.class_style_requests import (
+    _class_paragraph_style_to_api,
     _class_text_style_to_api,
     _create_class_line_style_request,
     _create_class_shape_style_requests,
 )
-from extraslide.content_diff import Change
-from extraslide.content_parser import ElementStyles, ParsedRun
+from extraslide.content_diff import Change, ParagraphClassUpdate
+from extraslide.content_parser import ElementStyles, ParagraphStyles, ParsedRun
 from extraslide.element_factories import (
     _create_image_request,
     _create_line_request,
@@ -30,12 +33,12 @@ from extraslide.element_factories import (
     _tag_to_type,
 )
 from extraslide.text_requests import (
+    _create_paragraph_class_update_requests,
     _create_run_style_requests,
     _create_text_insert_requests,
     _create_text_update_requests,
     _utf16_len,
 )
-from extraslide.units import pt_to_emu
 
 
 def _create_copy_requests(
@@ -48,6 +51,7 @@ def _create_copy_requests(
     source_google_id: str | None = None,
     allocate_object_id: Callable[[str, set[str]], str],
     unique_suffix: Callable[[], str],
+    warnings: list[str],
 ) -> list[dict[str, Any]]:
     """Create requests to copy an element.
 
@@ -92,7 +96,7 @@ def _create_copy_requests(
     )
     reserved_ids.add(new_object_id)
 
-    if _contains_auto_text(change.new_runs):
+    if _contains_auto_text(change.new_runs, change.children):
         if source_google_id is None:
             raise ValueError(
                 f"Cannot preserve autoText on copy '{change.source_id}': "
@@ -138,9 +142,11 @@ def _create_copy_requests(
         object_id=new_object_id,
         elem_type=elem_type,
         source_id=change.source_id or change.target_id,
+        copy_source_id=change.source_id or change.target_id,
         position=position,
         text=change.new_text or [],
         runs=change.new_runs or [],
+        paragraph_styles=change.new_paragraph_styles or [],
         children=change.children or [],
         translation=translation,
         slide_google_id=slide_google_id,
@@ -150,6 +156,7 @@ def _create_copy_requests(
         child_depth=0,
         reserved_ids=reserved_ids,
         allocate_object_id=allocate_object_id,
+        warnings=warnings,
     )
 
     return requests
@@ -160,9 +167,11 @@ def _create_one_copied_element(
     object_id: str,
     elem_type: str,
     source_id: str,
+    copy_source_id: str,
     position: dict[str, float],
     text: list[str],
     runs: list[list[ParsedRun]],
+    paragraph_styles: list[ParagraphStyles | None],
     children: list[dict[str, Any]],
     translation: dict[str, float],
     slide_google_id: str,
@@ -172,6 +181,7 @@ def _create_one_copied_element(
     child_depth: int,
     reserved_ids: set[str],
     allocate_object_id: Callable[[str, set[str]], str],
+    warnings: list[str],
 ) -> None:
     """Recreate one copied element using the shared root/descendant pipeline."""
     if elem_type == "GROUP":
@@ -185,8 +195,10 @@ def _create_one_copied_element(
             requests,
             object_id,
             child_depth,
+            copy_source_id,
             reserved_ids=reserved_ids,
             allocate_object_id=allocate_object_id,
+            warnings=warnings,
         )
         if not child_ids:
             raise ValueError(
@@ -219,11 +231,20 @@ def _create_one_copied_element(
                 native_scale=style.get("nativeScale"),
             )
         )
+        image_properties = style.get("imageProperties")
         image_properties_request = _create_image_properties_request(
-            object_id, style.get("imageProperties")
+            object_id, image_properties
         )
         if image_properties_request:
             requests.append(image_properties_request)
+        dropped = _dropped_image_property_names(image_properties)
+        if dropped:
+            warnings.append(
+                f"copy '{source_id}': image adjustments {', '.join(dropped)} "
+                "cannot be preserved because the Google Slides API exposes them "
+                "as read-only; the copy uses the source image without those "
+                "adjustments"
+            )
     else:
         requests.append(
             _create_shape_request(object_id, slide_google_id, elem_type, position)
@@ -231,15 +252,28 @@ def _create_one_copied_element(
         requests.extend(_apply_style_requests(object_id, style))
         if text:
             requests.extend(_create_text_insert_requests(object_id, text))
-            if runs:
-                requests.extend(_create_run_style_requests(object_id, runs))
-            else:
-                text_style_info = style.get("text", {})
+            text_style_info = style.get("text", {})
+            if text_style_info:
                 requests.extend(
                     _apply_text_style_requests(object_id, text, text_style_info)
-                    if text_style_info
-                    else []
                 )
+            if paragraph_styles:
+                paragraph_updates = [
+                    ParagraphClassUpdate(index, None, styles)
+                    for index, styles in enumerate(paragraph_styles)
+                    if styles is not None
+                ]
+                requests.extend(
+                    _create_paragraph_class_update_requests(
+                        object_id,
+                        text,
+                        runs,
+                        paragraph_updates,
+                        reapply_runs=False,
+                    )
+                )
+            if runs:
+                requests.extend(_create_run_style_requests(object_id, runs))
 
     if children:
         _create_children_from_data(
@@ -250,8 +284,10 @@ def _create_one_copied_element(
             requests,
             object_id,
             child_depth,
+            copy_source_id,
             reserved_ids=reserved_ids,
             allocate_object_id=allocate_object_id,
+            warnings=warnings,
         )
 
 
@@ -263,9 +299,11 @@ def _create_children_from_data(
     requests: list[dict[str, Any]],
     id_prefix: str,
     depth: int = 0,
+    copy_source_id: str = "",
     *,
     reserved_ids: set[str],
     allocate_object_id: Callable[[str, set[str]], str],
+    warnings: list[str],
 ) -> list[str]:
     """Create child elements from serialized children data.
 
@@ -297,6 +335,7 @@ def _create_children_from_data(
         child_tag = child_data.get("tag", "Rect")
         child_text = child_data.get("text", [])
         child_runs = child_data.get("runs", [])
+        child_paragraph_styles = child_data.get("paragraphStyles", [])
         nested_children = child_data.get("children", [])
 
         # Get style for this child from all_styles
@@ -323,6 +362,22 @@ def _create_children_from_data(
             ):
                 child_dx = 0
                 child_dy = 0
+            elif not (
+                abs(child_orig_pos.get("x", 0) - source_position.get("x", 0))
+                <= 0.01
+                and abs(child_orig_pos.get("y", 0) - source_position.get("y", 0))
+                <= 0.01
+            ):
+                warnings.append(
+                    f"copy '{copy_source_id}' child '{source_id}': "
+                    f"authored position ({_format_number(child_orig_pos.get('x', 0))}, "
+                    f"{_format_number(child_orig_pos.get('y', 0))}) matches neither "
+                    f"the source position ({_format_number(source_position.get('x', 0))}, "
+                    f"{_format_number(source_position.get('y', 0))}) nor the translated "
+                    f"copy position ({_format_number(expected_final_x)}, "
+                    f"{_format_number(expected_final_y)}); Slidesmith applied the parent "
+                    "translation, so verify the copied child position"
+                )
         if child_orig_pos:
             abs_position = {
                 "x": child_orig_pos.get("x", 0) + child_dx,
@@ -347,9 +402,11 @@ def _create_children_from_data(
             object_id=child_obj_id,
             elem_type=elem_type,
             source_id=source_id,
+            copy_source_id=copy_source_id,
             position=abs_position,
             text=child_text,
             runs=child_runs,
+            paragraph_styles=child_paragraph_styles,
             children=nested_children,
             translation=translation,
             slide_google_id=slide_google_id,
@@ -359,69 +416,46 @@ def _create_children_from_data(
             child_depth=depth + 1,
             reserved_ids=reserved_ids,
             allocate_object_id=allocate_object_id,
+            warnings=warnings,
         )
         child_ids.append(child_obj_id)
 
     return child_ids
 
 
-def _contains_auto_text(runs: list[list[ParsedRun]] | None) -> bool:
-    """Return whether copied text contains a dynamic autoText run."""
-    return any(run.auto_text_type for paragraph in runs or [] for run in paragraph)
+def _contains_auto_text(
+    runs: list[list[ParsedRun]] | None,
+    children: list[dict[str, Any]] | None = None,
+) -> bool:
+    """Return whether copied root or descendant text contains dynamic autoText."""
+    if any(run.auto_text_type for paragraph in runs or [] for run in paragraph):
+        return True
+    return any(
+        _contains_auto_text(child.get("runs"), child.get("children"))
+        for child in children or []
+    )
+
+
+def _format_number(value: Any) -> str:
+    """Format warning coordinates without noisy integral decimal suffixes."""
+    number = float(value)
+    return f"{number:g}"
 
 
 def _create_image_properties_request(
     object_id: str,
     properties: dict[str, Any] | None,
 ) -> dict[str, Any] | None:
-    """Replay persisted image properties after createImage."""
+    """Replay only writable persisted ImageProperties after createImage."""
     if not properties:
         return None
 
     image_properties: dict[str, Any] = {}
     fields: list[str] = []
-    for name in ("transparency", "brightness", "contrast"):
+    for name in ("outline", "link"):
         if name in properties:
             image_properties[name] = properties[name]
             fields.append(name)
-
-    crop = properties.get("crop")
-    if crop is not None:
-        image_properties["cropProperties"] = {
-            "leftOffset": crop.get("left", 0),
-            "rightOffset": crop.get("right", 0),
-            "topOffset": crop.get("top", 0),
-            "bottomOffset": crop.get("bottom", 0),
-        }
-        fields.append("cropProperties")
-
-    recolor = properties.get("recolor")
-    if recolor:
-        image_properties["recolor"] = {"name": recolor}
-        fields.append("recolor")
-
-    shadow = properties.get("shadow")
-    if shadow:
-        if shadow.get("type") == "none":
-            image_properties["shadow"] = {"propertyState": "NOT_RENDERED"}
-            fields.append("shadow.propertyState")
-        else:
-            api_shadow: dict[str, Any] = {}
-            for name in ("type", "alignment", "alpha"):
-                if name in shadow:
-                    api_shadow[name] = shadow[name]
-            if shadow.get("color"):
-                api_shadow["color"] = _color_from_styles_json(
-                    str(shadow["color"])
-                ).to_api()
-            if "blurRadius" in shadow:
-                api_shadow["blurRadius"] = {
-                    "magnitude": pt_to_emu(float(shadow["blurRadius"])),
-                    "unit": "EMU",
-                }
-            if api_shadow:
-                image_properties["shadow"] = api_shadow
-                fields.append("shadow")
 
     if not fields:
         return None
@@ -432,6 +466,24 @@ def _create_image_properties_request(
             "fields": ",".join(fields),
         }
     }
+
+
+def _dropped_image_property_names(
+    properties: dict[str, Any] | None,
+) -> list[str]:
+    """Return persisted image adjustments that the Slides API cannot write."""
+    return [
+        name
+        for name in (
+            "transparency",
+            "brightness",
+            "contrast",
+            "crop",
+            "recolor",
+            "shadow",
+        )
+        if properties and name in properties
+    ]
 
 
 def _color_from_styles_json(value: str, *, alpha: float = 1.0) -> Color:
@@ -510,7 +562,7 @@ def _apply_text_style_requests(
     text_lines: list[str],
     text_style_info: dict[str, Any],
 ) -> list[dict[str, Any]]:
-    """Apply each copied paragraph/run style to its original text range."""
+    """Apply pristine paragraph/run styles over clamped new-text ranges."""
     requests: list[dict[str, Any]] = []
 
     paragraphs = text_style_info.get("paragraphs", [])
@@ -525,6 +577,7 @@ def _apply_text_style_requests(
             else ""
         )
         source_runs = paragraph.get("runs", [])
+        paragraph_length = _utf16_len(authored_text)
         run_offset = 0
         for run_index, run in enumerate(source_runs):
             run_text = str(run.get("content", ""))
@@ -532,8 +585,10 @@ def _apply_text_style_requests(
                 run_text = run_text.removesuffix("\n")
             run_length = _utf16_len(run_text)
             text_style, fields = _copied_text_style_to_api(run.get("style", {}))
-            if fields and run_length:
-                start = paragraph_start + run_offset
+            start_offset = min(run_offset, paragraph_length)
+            end_offset = min(run_offset + run_length, paragraph_length)
+            if fields and end_offset > start_offset:
+                start = paragraph_start + start_offset
                 requests.append(
                     {
                         "updateTextStyle": {
@@ -541,7 +596,7 @@ def _apply_text_style_requests(
                             "textRange": {
                                 "type": "FIXED_RANGE",
                                 "startIndex": start,
-                                "endIndex": start + run_length,
+                                "endIndex": paragraph_start + end_offset,
                             },
                             "style": text_style,
                             "fields": ",".join(fields),
@@ -550,8 +605,10 @@ def _apply_text_style_requests(
                 )
             run_offset += run_length
 
-        alignment = paragraph.get("style", {}).get("alignment")
-        if alignment and authored_text:
+        paragraph_style, paragraph_fields = _copied_paragraph_style_to_api(
+            paragraph.get("style", {})
+        )
+        if paragraph_fields and authored_text:
             requests.append(
                 {
                     "updateParagraphStyle": {
@@ -561,8 +618,8 @@ def _apply_text_style_requests(
                             "startIndex": paragraph_start,
                             "endIndex": paragraph_start + _utf16_len(authored_text),
                         },
-                        "style": {"alignment": alignment},
-                        "fields": "alignment",
+                        "style": paragraph_style,
+                        "fields": ",".join(paragraph_fields),
                     }
                 }
             )
@@ -597,4 +654,36 @@ def _copied_text_style_to_api(
         link=run_style.get("link"),
         baseline_offset=run_style.get("baselineOffset"),
     )
-    return _class_text_style_to_api(typed)
+    style, fields = _class_text_style_to_api(typed)
+    if "linkSlideIndex" in run_style:
+        style["link"] = {"slideIndex": run_style["linkSlideIndex"]}
+        if "link" not in fields:
+            fields.append("link")
+    elif "linkPageObjectId" in run_style:
+        style["link"] = {"pageObjectId": run_style["linkPageObjectId"]}
+        if "link" not in fields:
+            fields.append("link")
+    elif "linkRelative" in run_style:
+        style["link"] = {"relativeLink": run_style["linkRelative"]}
+        if "link" not in fields:
+            fields.append("link")
+    return style, fields
+
+
+def _copied_paragraph_style_to_api(
+    style: dict[str, Any],
+) -> tuple[dict[str, Any], list[str]]:
+    """Convert persisted styles.json paragraph data through typed requests."""
+    alignment = style.get("alignment")
+    typed = ParagraphStyle(
+        alignment=TextAlignment(str(alignment)) if alignment else None,
+        line_spacing=style.get("lineSpacing"),
+        space_above_pt=style.get("spaceAbove"),
+        space_below_pt=style.get("spaceBelow"),
+        indent_start_pt=style.get("indentStart"),
+        indent_end_pt=style.get("indentEnd"),
+        indent_first_line_pt=style.get("indentFirstLine"),
+        direction=style.get("direction"),
+        spacing_mode=style.get("spacingMode"),
+    )
+    return _class_paragraph_style_to_api(typed)

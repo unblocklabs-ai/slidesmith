@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
-from extraslide.classes import Fill, PropertyState, Stroke
+from extraslide.classes import Fill, ParagraphStyle, PropertyState, Stroke, TextStyle
 from extraslide.content_parser import (
     ElementStyles,
     ParagraphStyles,
@@ -93,6 +93,13 @@ class Change:
     # For CREATE/STYLE_UPDATE: class-derived styles from the edited element
     new_styles: ElementStyles | None = None
 
+    # For STYLE_UPDATE: fields to clear when an entire authored class group was
+    # removed. None means unchanged; a list means reset those fields to the
+    # Slides inherited/default values with an empty field-masked update.
+    text_style_reset_fields: list[str] | None = None
+    paragraph_style_reset_fields: list[str] | None = None
+    reset_content_alignment: bool = False
+
     # For CREATE/TEXT_UPDATE: styled text runs (one list per paragraph)
     new_runs: list[list[ParsedRun]] | None = None
 
@@ -130,6 +137,9 @@ class DiffResult:
 
     # Styles from pristine (for copy operations)
     pristine_styles: dict[str, dict[str, Any]] = field(default_factory=dict)
+
+    # Lossy-but-safe request-generation decisions surfaced by push/CLI.
+    warnings: list[str] = field(default_factory=list)
 
 
 def format_diff_summary(diff_result: DiffResult, request_count: int) -> str:
@@ -311,28 +321,27 @@ def diff_presentation(
     copied_descendant_instances: set[int] = set()
 
     for elem_id, instances in edited_elements.items():
-        if elem_id in known_ids and len(instances) > 1:
-            # This is a copy - check if it's a group with children
-            # The original is on the same slide as in pristine
-            original_slide = pristine_slide_map[elem_id]
-            pristine_elem = pristine_elements[elem_id]
-
-            for slide_idx, edited_elem in instances:
-                # Skip the original instance - matches pristine slide and position
-                if (
-                    slide_idx == original_slide
-                    and edited_elem.x == pristine_elem.x
-                    and edited_elem.y == pristine_elem.y
-                ):
-                    continue
-                # This is a copy
-                if edited_elem.children:
-                    # Suppress only descendants belonging to this copy. The
-                    # original child instance must still be compared for
-                    # same-diff edits to text, geometry, and styles.
-                    _collect_descendant_instances(
-                        edited_elem, copied_descendant_instances
-                    )
+        if elem_id not in known_ids:
+            continue
+        pristine_elem = pristine_elements[elem_id]
+        if len(instances) == 1:
+            copy_instances = (
+                instances if _is_copy_by_missing_dimensions(instances[0][1]) else []
+            )
+        else:
+            _, copy_instances = _split_original_and_copies(
+                instances,
+                pristine_slide_map[elem_id],
+                pristine_elem,
+            )
+        for _, edited_elem in copy_instances:
+            if edited_elem.children:
+                # Suppress only descendants belonging to this copy. The
+                # original child instance must still be compared for same-diff
+                # edits to text, geometry, and styles.
+                _collect_descendant_instances(
+                    edited_elem, copied_descendant_instances
+                )
 
     # Detect changes
     for elem_id, instances in edited_elements.items():
@@ -527,7 +536,18 @@ def _compare_elements(
             stroke=(
                 edited_styles.stroke
                 if edited_styles.stroke is not None
-                else Stroke(state=PropertyState.INHERIT)
+                else Stroke(
+                    state=PropertyState.INHERIT,
+                    color=pristine_styles.stroke.color
+                    if pristine_styles.stroke is not None
+                    else None,
+                    weight_pt=pristine_styles.stroke.weight_pt
+                    if pristine_styles.stroke is not None
+                    else None,
+                    dash_style=pristine_styles.stroke.dash_style
+                    if pristine_styles.stroke is not None
+                    else None,
+                )
             )
             if edited_styles.stroke != pristine_styles.stroke
             else None,
@@ -547,6 +567,22 @@ def _compare_elements(
                 target_id=pristine.clean_id,
                 slide_index=slide_idx,
                 new_styles=style_delta,
+                text_style_reset_fields=(
+                    _text_style_fields(pristine_styles.text_style)
+                    if pristine_styles.text_style is not None
+                    and edited_styles.text_style is None
+                    else None
+                ),
+                paragraph_style_reset_fields=(
+                    _paragraph_style_fields(pristine_styles.paragraph_style)
+                    if pristine_styles.paragraph_style is not None
+                    and edited_styles.paragraph_style is None
+                    else None
+                ),
+                reset_content_alignment=(
+                    pristine_styles.content_alignment is not None
+                    and edited_styles.content_alignment is None
+                ),
                 new_text=edited.paragraphs if edited.paragraphs else None,
                 new_runs=edited.runs if edited.runs else None,
                 new_paragraph_styles=edited.paragraph_styles
@@ -673,6 +709,7 @@ def _serialize_children(
         if child.paragraphs:
             child_data["text"] = child.paragraphs
             child_data["runs"] = child.runs
+            child_data["paragraphStyles"] = child.paragraph_styles
 
         # Recursively include nested children
         if child.children:
@@ -710,6 +747,49 @@ def _collect_descendant_instances(elem: ParsedElement, result: set[int]) -> None
     for child in elem.children:
         result.add(id(child))
         _collect_descendant_instances(child, result)
+
+
+def _text_style_fields(style: TextStyle) -> list[str]:
+    """Return the API field mask represented by one authored text class group."""
+    fields: list[str] = []
+    for attribute, api_name in (
+        ("bold", "bold"),
+        ("italic", "italic"),
+        ("underline", "underline"),
+        ("strikethrough", "strikethrough"),
+        ("small_caps", "smallCaps"),
+        ("baseline_offset", "baselineOffset"),
+        ("font_size_pt", "fontSize"),
+        ("foreground_color", "foregroundColor"),
+        ("background_color", "backgroundColor"),
+        ("link", "link"),
+    ):
+        if getattr(style, attribute) is not None:
+            fields.append(api_name)
+    if style.font_weight is not None:
+        fields.append("weightedFontFamily")
+    elif style.font_family is not None:
+        fields.append("fontFamily")
+    return fields
+
+
+def _paragraph_style_fields(style: ParagraphStyle) -> list[str]:
+    """Return the API field mask represented by one paragraph class group."""
+    return [
+        api_name
+        for attribute, api_name in (
+            ("alignment", "alignment"),
+            ("line_spacing", "lineSpacing"),
+            ("space_above_pt", "spaceAbove"),
+            ("space_below_pt", "spaceBelow"),
+            ("indent_start_pt", "indentStart"),
+            ("indent_end_pt", "indentEnd"),
+            ("indent_first_line_pt", "indentFirstLine"),
+            ("direction", "direction"),
+            ("spacing_mode", "spacingMode"),
+        )
+        if getattr(style, attribute) is not None
+    ]
 
 
 def _get_position(elem: ParsedElement) -> dict[str, float] | None:

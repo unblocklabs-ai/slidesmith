@@ -321,7 +321,7 @@ class SlidesClient:
         if not presentation_id:
             raise ValueError("Presentation ID not found in presentation.json")
 
-        requests = self.diff(folder_path)
+        diff_result, requests = self.diff_with_result(folder_path)
 
         if not requests:
             return {"replies": [], "message": "No changes detected."}
@@ -335,6 +335,8 @@ class SlidesClient:
                 "will be overwritten"
             )
             response = await transport.batch_update(presentation_id, requests)
+            if diff_result.warnings:
+                response.setdefault("warnings", []).extend(diff_result.warnings)
             response.setdefault("warnings", []).append(warning)
             await refresh_after_success(
                 transport, folder_path, presentation_id, response
@@ -374,6 +376,9 @@ class SlidesClient:
                     "Re-pull and retry."
                 ) from e
             raise
+
+        if diff_result.warnings:
+            response.setdefault("warnings", []).extend(diff_result.warnings)
 
         if base_raw is None:
             response.setdefault("warnings", []).append(warning)

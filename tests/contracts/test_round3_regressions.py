@@ -9,6 +9,16 @@ from pathlib import Path
 
 import pytest
 
+from extraslide.client import SlidesClient
+from extraslide.content_diff import (
+    Change,
+    ChangeType,
+    DiffResult,
+    diff_slide_content,
+)
+from extraslide.content_parser import ParsedRun
+from extraslide.content_requests import generate_batch_requests
+from extraslide.transport import PresentationData, Transport
 from extraslide.units import pt_to_emu
 from slidesmith.workspace import materialize
 
@@ -20,6 +30,22 @@ GOLDEN = (
     / "simple_presentation"
     / "presentation.json"
 )
+
+
+class _WarningTransport(Transport):
+    async def get_presentation(self, presentation_id: str) -> PresentationData:
+        return PresentationData(presentation_id, {"presentationId": presentation_id})
+
+    async def batch_update(
+        self,
+        presentation_id: str,
+        requests: list[dict[str, object]],
+        required_revision_id: str | None = None,
+    ) -> dict[str, object]:
+        return {"replies": []}
+
+    async def close(self) -> None:
+        return None
 
 
 def _edit_element(
@@ -156,3 +182,217 @@ def test_child_resize_converts_page_delta_to_scaled_group_frame(tmp_path: Path) 
     assert transform["applyMode"] == "ABSOLUTE"
     assert transform["transform"]["scaleX"] == pytest.approx(1.1)
     assert transform["transform"]["scaleY"] == pytest.approx(1)
+
+
+def test_image_copy_emits_only_writable_properties_and_records_dropped_warning() -> None:
+    change = Change(
+        change_type=ChangeType.COPY,
+        target_id="photo_copy0",
+        source_id="photo",
+        slide_index="01",
+        source_slide_index="01",
+        new_position={"x": 100, "y": 0, "w": 80, "h": 60},
+    )
+    source_style = {
+        "type": "IMAGE",
+        "position": {"x": 0, "y": 0, "w": 80, "h": 60},
+        "contentUrl": "https://example.com/photo.png",
+        "imageProperties": {
+            "transparency": 0.2,
+            "brightness": 0.1,
+            "contrast": -0.1,
+            "crop": {"left": 0.1, "right": 0, "top": 0, "bottom": 0},
+            "recolor": "LIGHT1",
+            "shadow": {"type": "none"},
+            "outline": {"propertyState": "NOT_RENDERED"},
+            "link": {"url": "https://example.com/destination"},
+        },
+    }
+    diff_result = DiffResult(
+        changes=[change],
+        pristine_styles={"photo": source_style},
+    )
+
+    requests = generate_batch_requests(
+        diff_result,
+        {"photo": "photo-google"},
+        {"01": "slide-google"},
+    )
+
+    image_update = next(
+        request["updateImageProperties"]
+        for request in requests
+        if "updateImageProperties" in request
+    )
+    assert image_update == {
+        "objectId": image_update["objectId"],
+        "imageProperties": {
+            "outline": {"propertyState": "NOT_RENDERED"},
+            "link": {"url": "https://example.com/destination"},
+        },
+        "fields": "outline,link",
+    }
+    assert diff_result.warnings == [
+        "copy 'photo': image adjustments transparency, brightness, contrast, "
+        "crop, recolor, shadow cannot be preserved because the Google Slides "
+        "API exposes them as read-only; the copy uses the source image without "
+        "those adjustments"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_copy_generation_warnings_are_returned_by_push(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    folder = tmp_path / "deck"
+    folder.mkdir()
+    (folder / "presentation.json").write_text(
+        json.dumps({"presentationId": "pid"}), encoding="utf-8"
+    )
+    warning = "copy 'photo': image adjustments cannot be preserved"
+    diff_result = DiffResult()
+    diff_result.warnings = [warning]
+    client = SlidesClient(_WarningTransport())
+    monkeypatch.setattr(
+        client,
+        "diff_with_result",
+        lambda _folder: (diff_result, [{"createImage": {"objectId": "copy"}}]),
+    )
+
+    async def no_refresh(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr("extraslide.client.refresh_after_success", no_refresh)
+
+    response = await client.push(folder, force=True)
+
+    assert warning in response["warnings"]
+
+
+def test_removed_class_groups_emit_field_masked_default_resets() -> None:
+    pristine = (
+        '<Slide id="s1">'
+        '<TextBox id="label" x="0" y="0" w="100" h="30" '
+        'class="content-align-middle bold text-align-center"><P>Hi</P></TextBox>'
+        '<Line id="rule" x="0" y="40" w="100" h="1" '
+        'class="stroke-#ff0000 stroke-w-2 stroke-dash" />'
+        "</Slide>"
+    )
+    edited = (
+        '<Slide id="s1">'
+        '<TextBox id="label" x="0" y="0" w="100" h="30"><P>Hi</P></TextBox>'
+        '<Line id="rule" x="0" y="40" w="100" h="1" />'
+        "</Slide>"
+    )
+    changes = diff_slide_content(pristine, edited, {}, "01")
+    requests = generate_batch_requests(
+        DiffResult(changes=changes),
+        {"label": "label-google", "rule": "rule-google"},
+        {"01": "slide-google"},
+        {"label-google": "TEXT_BOX", "rule-google": "LINE"},
+    )
+
+    assert {
+        (next(iter(request)), request[next(iter(request))]["fields"])
+        for request in requests
+    } == {
+        ("updateShapeProperties", "contentAlignment"),
+        ("updateTextStyle", "bold"),
+        ("updateParagraphStyle", "alignment"),
+        ("updateLineProperties", "lineFill,weight,dashStyle"),
+    }
+    for request in requests:
+        body = request[next(iter(request))]
+        if "style" in body:
+            assert body["style"] == {}
+        elif "shapeProperties" in body:
+            assert body["shapeProperties"] == {}
+        elif "lineProperties" in body:
+            assert body["lineProperties"] == {}
+
+
+def test_single_instance_group_copy_suppresses_pristine_id_descendants() -> None:
+    pristine = (
+        '<Slide id="s1"><Group id="group" x="0" y="0" w="100" h="100">'
+        '<Rect id="child" x="10" y="10" w="20" h="20" />'
+        "</Group></Slide>"
+    )
+    edited = (
+        '<Slide id="s1"><Group id="group" x="100" y="0">'
+        '<Rect id="child" x="110" y="10" w="20" h="20" />'
+        "</Group></Slide>"
+    )
+
+    changes = diff_slide_content(pristine, edited, {}, "01")
+
+    assert [change.change_type for change in changes] == [ChangeType.COPY]
+    assert changes[0].source_id == "group"
+
+
+def test_nested_auto_text_copy_uses_root_guard_and_fails_cross_slide() -> None:
+    change = Change(
+        change_type=ChangeType.COPY,
+        target_id="group_copy0",
+        source_id="group",
+        slide_index="02",
+        source_slide_index="01",
+        new_position={"x": 100, "y": 0, "w": 100, "h": 100},
+        children=[
+            {
+                "id": "number",
+                "tag": "TextBox",
+                "position": {"x": 110, "y": 10, "w": 20, "h": 20},
+                "sourcePosition": {"x": 10, "y": 10, "w": 20, "h": 20},
+                "text": ["7"],
+                "runs": [[ParsedRun("7", auto_text_type="SLIDE_NUMBER")]],
+            }
+        ],
+    )
+    styles = {
+        "group": {"type": "GROUP", "position": {"x": 0, "y": 0}},
+        "number": {"type": "TEXT_BOX", "position": {"x": 10, "y": 10}},
+    }
+
+    with pytest.raises(ValueError, match="Cannot preserve autoText on cross-slide copy"):
+        generate_batch_requests(
+            DiffResult(changes=[change], pristine_styles=styles),
+            {"group": "group-google"},
+            {"02": "slide-google-2"},
+        )
+
+
+def test_ambiguous_authored_copy_child_position_records_warning() -> None:
+    change = Change(
+        change_type=ChangeType.COPY,
+        target_id="group_copy0",
+        source_id="group",
+        slide_index="01",
+        source_slide_index="01",
+        new_position={"x": 100, "y": 0, "w": 100, "h": 100},
+        translation={"dx": 100, "dy": 0},
+        children=[
+            {
+                "id": "child",
+                "tag": "Rect",
+                "position": {"x": 35, "y": 10, "w": 20, "h": 20},
+                "sourcePosition": {"x": 10, "y": 10, "w": 20, "h": 20},
+            }
+        ],
+    )
+    styles = {
+        "group": {"type": "GROUP", "position": {"x": 0, "y": 0}},
+        "child": {"type": "RECTANGLE", "position": {"x": 10, "y": 10}},
+    }
+    diff_result = DiffResult(changes=[change], pristine_styles=styles)
+
+    generate_batch_requests(
+        diff_result,
+        {"group": "group-google"},
+        {"01": "slide-google"},
+    )
+
+    assert diff_result.warnings == [
+        "copy 'group' child 'child': authored position (35, 10) matches neither "
+        "the source position (10, 10) nor the translated copy position (110, 10); "
+        "Slidesmith applied the parent translation, so verify the copied child position"
+    ]

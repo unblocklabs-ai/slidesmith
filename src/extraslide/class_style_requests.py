@@ -15,6 +15,9 @@ def _create_class_style_requests(
     *,
     has_text: bool,
     element_tag: str | None = None,
+    text_style_reset_fields: list[str] | None = None,
+    paragraph_style_reset_fields: list[str] | None = None,
+    reset_content_alignment: bool = False,
 ) -> list[dict[str, Any]]:
     """Generate requests applying class-derived styles to an existing element.
 
@@ -32,7 +35,40 @@ def _create_class_style_requests(
 
     requests.extend(_create_class_shape_style_requests(object_id, styles))
 
+    if reset_content_alignment:
+        requests.append(
+            {
+                "updateShapeProperties": {
+                    "objectId": object_id,
+                    "shapeProperties": {},
+                    "fields": "contentAlignment",
+                }
+            }
+        )
+
     if has_text:
+        if text_style_reset_fields:
+            requests.append(
+                {
+                    "updateTextStyle": {
+                        "objectId": object_id,
+                        "textRange": {"type": "ALL"},
+                        "style": {},
+                        "fields": ",".join(text_style_reset_fields),
+                    }
+                }
+            )
+        if paragraph_style_reset_fields:
+            requests.append(
+                {
+                    "updateParagraphStyle": {
+                        "objectId": object_id,
+                        "textRange": {"type": "ALL"},
+                        "style": {},
+                        "fields": ",".join(paragraph_style_reset_fields),
+                    }
+                }
+            )
         text_request = _create_class_text_style_request(object_id, styles.text_style)
         if text_request:
             requests.append(text_request)
@@ -180,8 +216,17 @@ def _create_class_line_style_request(
     stroke: Stroke | None,
 ) -> dict[str, Any] | None:
     """Create one field-masked line update from authored stroke classes."""
-    if stroke is None or stroke.state == PropertyState.INHERIT:
+    if stroke is None:
         return None
+
+    if stroke.state == PropertyState.INHERIT:
+        return {
+            "updateLineProperties": {
+                "objectId": object_id,
+                "lineProperties": {},
+                "fields": "lineFill,weight,dashStyle",
+            }
+        }
 
     line_properties: dict[str, Any] = {}
     fields: list[str] = []

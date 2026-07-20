@@ -459,12 +459,19 @@ def _extract_paragraph_style(para_style: dict[str, Any]) -> dict[str, Any]:
         magnitude = para_style["indentStart"].get("magnitude", 0)
         style["indentStart"] = round(emu_to_pt(magnitude), 2)
 
+    if "indentEnd" in para_style:
+        magnitude = para_style["indentEnd"].get("magnitude", 0)
+        style["indentEnd"] = round(emu_to_pt(magnitude), 2)
+
     if "indentFirstLine" in para_style:
         magnitude = para_style["indentFirstLine"].get("magnitude", 0)
         style["indentFirstLine"] = round(emu_to_pt(magnitude), 2)
 
     if "direction" in para_style:
         style["direction"] = para_style["direction"]
+
+    if "spacingMode" in para_style:
+        style["spacingMode"] = para_style["spacingMode"]
 
     return style
 
@@ -528,6 +535,10 @@ def _extract_run_style(run_style: dict[str, Any]) -> dict[str, Any]:
             style["link"] = link["url"]
         elif "slideIndex" in link:
             style["linkSlideIndex"] = link["slideIndex"]
+        elif "pageObjectId" in link:
+            style["linkPageObjectId"] = link["pageObjectId"]
+        elif "relativeLink" in link:
+            style["linkRelative"] = link["relativeLink"]
 
     return style
 
@@ -535,6 +546,13 @@ def _extract_run_style(run_style: dict[str, Any]) -> dict[str, Any]:
 def _extract_image_properties(image_props: dict[str, Any]) -> dict[str, Any]:
     """Extract image-specific properties."""
     props: dict[str, Any] = {}
+
+    # These are the only writable ImageProperties fields and are retained in
+    # their API shape so reconstructed copies can replay them losslessly.
+    if "outline" in image_props:
+        props["outline"] = image_props["outline"]
+    if "link" in image_props:
+        props["link"] = image_props["link"]
 
     if "transparency" in image_props:
         props["transparency"] = image_props["transparency"]

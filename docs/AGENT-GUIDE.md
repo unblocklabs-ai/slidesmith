@@ -236,6 +236,33 @@ on SML elements; use `x`, `y`, `w`, and `h` attributes.
 Unknown classes fail loudly and name both the class and element ID. This is
 intentional: never invent a Tailwind-looking class and assume it will parse.
 
+## Copying pulled elements
+
+To copy a pulled element, repeat it with the same `id`, set the copy's `x` and
+`y`, and omit `w` and `h`. Slidesmith recreates the element at the new position,
+replays the writable pristine styling from `styles.json`, then applies authored
+`P` and `T` classes as overrides. This preserves formatting that SML classes
+cannot express, including hyperlinks. A same-slide copy containing dynamic
+`autoText` anywhere in its descendant tree uses `duplicateObject`; a cross-slide
+copy containing `autoText` fails loudly because the Slides API cannot preserve
+that dynamic field while recreating the element.
+
+For copied groups, leave child coordinates either at their source positions or
+move them by exactly the same parent delta. Slidesmith accepts both forms and
+avoids applying the delta twice. If an authored child position matches neither
+the source position nor source plus the parent delta, Slidesmith applies the
+parent delta and returns a warning. Treat that warning as an ambiguity: inspect
+the resulting request/thumbnail and correct the child coordinates if the shift
+was not intended.
+
+Google exposes image `outline` and `link` as writable copy-time properties, but
+exposes crop, transparency, brightness, contrast, recolor, and shadow as
+read-only. Slidesmith safely drops those adjustments instead of sending an
+invalid atomic batch and returns a warning naming the lost properties. A copied
+adjusted image therefore uses the original image content but may not look
+identical; verify it in the post-push thumbnail and recreate the adjustment in
+the source image when exact fidelity matters.
+
 ## Layout authoring
 
 `Stack`, `Grid`, and `TextBox h="auto"` are authoring conveniences compiled to

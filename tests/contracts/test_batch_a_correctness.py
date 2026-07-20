@@ -26,7 +26,6 @@ from extraslide.content_requests import (
     _order_deletes_for_safe_removal,
     generate_batch_requests,
 )
-from extraslide.copy_requests import _apply_text_style_requests
 from extraslide.element_factories import _create_line_request, _create_shape_request
 from extraslide.text_requests import _create_text_update_requests
 from extraslide.slide_processor import process_presentation
@@ -323,25 +322,70 @@ def test_font_family_round_trip_preserves_exact_capitalization() -> None:
     assert parse_text_style_classes(classes).font_family == "IBM Plex Sans"
 
 
-def test_copied_text_styles_keep_independent_run_ranges() -> None:
-    requests = _apply_text_style_requests(
-        "copy",
-        ["Bold plain"],
-        {
+def test_copied_text_replays_pristine_links_and_merges_authored_classes() -> None:
+    pristine = (
+        '<Slide id="s1"><TextBox id="label" x="0" y="0" w="100" h="30">'
+        "<P>Source text</P></TextBox></Slide>"
+    )
+    edited = (
+        '<Slide id="s1"><TextBox id="label" x="100" y="0">'
+        '<P class="text-align-right bold"><T class="italic">Hi</T> all</P>'
+        "</TextBox></Slide>"
+    )
+    source_style = {
+        "type": "TEXT_BOX",
+        "position": {"x": 0, "y": 0, "w": 100, "h": 30, "relative": False},
+        "text": {
             "paragraphs": [
                 {
-                    "style": {},
+                    "style": {"alignment": "CENTER"},
                     "runs": [
-                        {"content": "Bold ", "style": {"bold": True}},
-                        {"content": "plain\n", "style": {"italic": True}},
+                        {
+                            "content": "Source text\n",
+                            "style": {
+                                "underline": True,
+                                "link": "https://example.com/source",
+                            },
+                        }
                     ],
                 }
             ]
         },
+    }
+    changes = diff_slide_content(pristine, edited, {"label": source_style}, "01")
+    requests = generate_batch_requests(
+        DiffResult(changes=changes, pristine_styles={"label": source_style}),
+        {"label": "label-google"},
+        {"01": "slide-google"},
     )
-    assert [request["updateTextStyle"]["textRange"] for request in requests] == [
-        {"type": "FIXED_RANGE", "startIndex": 0, "endIndex": 5},
-        {"type": "FIXED_RANGE", "startIndex": 5, "endIndex": 10},
+
+    text_updates = [
+        request["updateTextStyle"]
+        for request in requests
+        if "updateTextStyle" in request
+    ]
+    assert any(
+        update["style"].get("link") == {"url": "https://example.com/source"}
+        and update["style"].get("underline") is True
+        for update in text_updates
+    )
+    assert any(update["style"].get("bold") is True for update in text_updates)
+    assert any(update["style"].get("italic") is True for update in text_updates)
+    assert all(
+        0 <= update["textRange"]["startIndex"]
+        < update["textRange"]["endIndex"]
+        <= len("Hi all")
+        for update in text_updates
+    )
+
+    paragraph_updates = [
+        request["updateParagraphStyle"]
+        for request in requests
+        if "updateParagraphStyle" in request
+    ]
+    assert [update["style"]["alignment"] for update in paragraph_updates] == [
+        "CENTER",
+        "END",
     ]
 
 

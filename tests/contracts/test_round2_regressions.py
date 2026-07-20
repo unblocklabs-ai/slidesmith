@@ -151,7 +151,7 @@ def test_removing_fill_and_outline_classes_resets_them_to_inherit() -> None:
     ]
 
 
-def test_copy_uses_edited_runs_to_style_the_edited_text_ranges() -> None:
+def test_copy_merges_pristine_and_edited_run_styles_on_new_text_ranges() -> None:
     pristine = (
         '<Slide id="s1"><TextBox id="label" x="0" y="0" w="100" h="30">'
         "<P>Old</P></TextBox></Slide>"
@@ -188,6 +188,12 @@ def test_copy_uses_edited_runs_to_style_the_edited_text_ranges() -> None:
     assert updates == [
         {
             "objectId": updates[0]["objectId"],
+            "textRange": {"type": "FIXED_RANGE", "startIndex": 0, "endIndex": 3},
+            "style": {"italic": True},
+            "fields": "italic",
+        },
+        {
+            "objectId": updates[0]["objectId"],
             "textRange": {"type": "FIXED_RANGE", "startIndex": 0, "endIndex": 6},
             "style": {"bold": True},
             "fields": "bold",
@@ -220,7 +226,7 @@ def test_copy_of_auto_text_duplicates_the_dynamic_run_instead_of_inserting_text(
     assert not any("insertText" in request for request in requests)
 
 
-def test_golden_image_copy_replays_all_extracted_image_properties(
+def test_golden_image_copy_replays_writable_properties_and_warns_on_dropped_adjustments(
     tmp_path: Path,
 ) -> None:
     folder = _materialized_golden(tmp_path)
@@ -241,21 +247,18 @@ def test_golden_image_copy_replays_all_extracted_image_properties(
     else:
         raise AssertionError("golden element 'e125' not found")
 
-    from extraslide.client import diff_folder
+    from extraslide.client import diff_folder_with_result
 
-    requests = diff_folder(folder)
+    diff_result, requests = diff_folder_with_result(folder)
     image_update = next(
         request["updateImageProperties"]
         for request in requests
         if "updateImageProperties" in request
     )
-    assert image_update["imageProperties"] == {
-        "cropProperties": {
-            "leftOffset": 0,
-            "rightOffset": 0,
-            "topOffset": 0.10032776,
-            "bottomOffset": 0.10024786,
-        },
-        "shadow": {"propertyState": "NOT_RENDERED"},
-    }
-    assert image_update["fields"] == "cropProperties,shadow.propertyState"
+    assert image_update["fields"] == "outline"
+    assert set(image_update["imageProperties"]) == {"outline"}
+    assert diff_result.warnings == [
+        "copy 'e125': image adjustments crop, shadow cannot be preserved because "
+        "the Google Slides API exposes them as read-only; the copy uses the source "
+        "image without those adjustments"
+    ]

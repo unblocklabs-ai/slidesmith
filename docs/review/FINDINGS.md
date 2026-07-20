@@ -332,3 +332,11 @@ Resolution: service-account credentials now request only the Google Slides prese
 
 ### [x] R2-7 [MEDIUM] A healthy keyring miss hid a valid file-store token
 Resolution: fallback loading now checks the file store after a keyring miss, allowing the credential manager's existing mirror repair to repopulate keyring.
+
+## ROUND 3
+
+### [x] R3-1 [CRITICAL] Moving/resizing a group corrupted its transform
+Resolution: GROUP moves now always emit a translation-only `RELATIVE` transform, so the missing API group size can no longer route moves through legacy absolute size reconstruction. Group resize is deliberately unsupported: it raises a clear `ValueError` directing callers to resize the group's children because the API supplies no stable native group size. Golden-fixture contracts cover both decisions.
+
+### [x] R3-4 [MEDIUM] Child move/resize used page deltas in a scaled group-local frame
+Resolution: extracted styles now retain the composed pristine ancestor-group transform. Move and resize generation invert its linear component to convert absolute SML page-frame positions and dimensions into the API parent-group frame. A synthetic 2x-group fixture verifies that a 20pt page move becomes a 10pt local translation and a 20pt page resize changes the child's local scale from 1.0 to 1.1.

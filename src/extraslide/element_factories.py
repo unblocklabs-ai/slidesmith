@@ -44,6 +44,7 @@ def _create_move_request(
     old_position = pristine_position or pristine_style.get("position", {})
     native_size = pristine_style.get("nativeSize", {})
     native_transform = pristine_style.get("nativeTransform", {})
+    parent_transform = pristine_style.get("parentTransform", {})
 
     old_w = float(old_position.get("w", position["w"]))
     old_h = float(old_position.get("h", position["h"]))
@@ -51,21 +52,22 @@ def _create_move_request(
     target_h = float(position["h"])
     has_native_geometry = bool(native_size and native_transform)
     size_unchanged = abs(target_w - old_w) <= 0.005 and abs(target_h - old_h) <= 0.005
+    delta_x, delta_y = _page_delta_to_parent_frame(
+        float(position["x"]) - float(old_position.get("x", 0)),
+        float(position["y"]) - float(old_position.get("y", 0)),
+        parent_transform,
+    )
+
+    if pristine_style.get("type") == "GROUP":
+        if not size_unchanged:
+            raise ValueError(
+                f"Resizing groups is not supported for element '{google_id}'; "
+                "resize its children instead"
+            )
+        return _relative_translation_request(google_id, delta_x, delta_y)
 
     if has_native_geometry and size_unchanged:
-        return {
-            "updatePageElementTransform": {
-                "objectId": google_id,
-                "transform": {
-                    "scaleX": 1,
-                    "scaleY": 1,
-                    "translateX": pt_to_emu(position["x"] - old_position.get("x", 0)),
-                    "translateY": pt_to_emu(position["y"] - old_position.get("y", 0)),
-                    "unit": "EMU",
-                },
-                "applyMode": "RELATIVE",
-            }
-        }
+        return _relative_translation_request(google_id, delta_x, delta_y)
 
     if has_native_geometry:
         width_emu = max(abs(float(native_size.get("w", 0))), _MIN_EMU)
@@ -79,15 +81,30 @@ def _create_move_request(
         # Recompute only authored dimensions. SML is rounded to two decimals,
         # so replaying an unchanged axis through that rounded value would
         # introduce a tiny scale drift on every one-axis resize.
+        target_visual_w = pt_to_emu(target_w)
+        target_visual_h = pt_to_emu(target_h)
+        if parent_transform:
+            local_target_w, _ = _page_delta_to_parent_frame(
+                target_w,
+                0,
+                parent_transform,
+            )
+            _, local_target_h = _page_delta_to_parent_frame(
+                0,
+                target_h,
+                parent_transform,
+            )
+            target_visual_w = pt_to_emu(local_target_w)
+            target_visual_h = pt_to_emu(local_target_h)
         ratio_x = (
             1.0
             if abs(target_w - old_w) <= 0.005
-            else max(abs(pt_to_emu(target_w)), _MIN_EMU) / old_visual_w
+            else max(abs(target_visual_w), _MIN_EMU) / old_visual_w
         )
         ratio_y = (
             1.0
             if abs(target_h - old_h) <= 0.005
-            else max(abs(pt_to_emu(target_h)), _MIN_EMU) / old_visual_h
+            else max(abs(target_visual_h), _MIN_EMU) / old_visual_h
         )
         sx *= ratio_x
         shx *= ratio_x
@@ -125,15 +142,13 @@ def _create_move_request(
         old_visual_y = float(native_transform.get("translateY", 0)) + min(
             old_y_offsets
         )
-        delta_x = pt_to_emu(float(position["x"]) - float(old_position.get("x", 0)))
-        delta_y = pt_to_emu(float(position["y"]) - float(old_position.get("y", 0)))
         transform = {
             "scaleX": sx,
             "scaleY": sy,
             "shearX": shx,
             "shearY": shy,
-            "translateX": old_visual_x + delta_x - min(x_offsets),
-            "translateY": old_visual_y + delta_y - min(y_offsets),
+            "translateX": old_visual_x + pt_to_emu(delta_x) - min(x_offsets),
+            "translateY": old_visual_y + pt_to_emu(delta_y) - min(y_offsets),
             "unit": "EMU",
         }
     else:
@@ -153,6 +168,50 @@ def _create_move_request(
             "applyMode": "ABSOLUTE",
         }
     }
+
+
+def _relative_translation_request(
+    google_id: str,
+    delta_x: float,
+    delta_y: float,
+) -> dict[str, Any]:
+    """Create a translation-only update in the element's parent frame."""
+    return {
+        "updatePageElementTransform": {
+            "objectId": google_id,
+            "transform": {
+                "scaleX": 1,
+                "scaleY": 1,
+                "translateX": pt_to_emu(delta_x),
+                "translateY": pt_to_emu(delta_y),
+                "unit": "EMU",
+            },
+            "applyMode": "RELATIVE",
+        }
+    }
+
+
+def _page_delta_to_parent_frame(
+    delta_x: float,
+    delta_y: float,
+    parent_transform: dict[str, Any],
+) -> tuple[float, float]:
+    """Convert a page-frame vector to the pristine API parent-group frame."""
+    if not parent_transform:
+        return delta_x, delta_y
+
+    scale_x = float(parent_transform.get("scaleX", 1))
+    scale_y = float(parent_transform.get("scaleY", 1))
+    shear_x = float(parent_transform.get("shearX", 0))
+    shear_y = float(parent_transform.get("shearY", 0))
+    determinant = scale_x * scale_y - shear_x * shear_y
+    if abs(determinant) < 1e-12:
+        raise ValueError("Cannot transform an element inside a singular parent group")
+
+    return (
+        (scale_y * delta_x - shear_x * delta_y) / determinant,
+        (-shear_y * delta_x + scale_x * delta_y) / determinant,
+    )
 
 
 def _nonzero_scale(value: float) -> float:

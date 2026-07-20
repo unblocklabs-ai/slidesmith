@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from extraslide.bounds import Transform
 from extraslide.classes import (
     ContentAlignment,
     Fill,
@@ -97,20 +98,49 @@ def extract_styles(
     """
     styles: dict[str, dict[str, Any]] = {}
 
-    def _extract_node(node: RenderNode) -> None:
+    def _extract_node(
+        node: RenderNode,
+        parent_group_transform: Transform | None = None,
+    ) -> None:
         if not node.clean_id:
             return
 
         style = _extract_element_style(node)
+        if parent_group_transform is not None:
+            style["parentTransform"] = _serialize_transform(parent_group_transform)
         styles[node.clean_id] = style
 
+        child_group_transform = parent_group_transform
+        if "elementGroup" in node.element:
+            group_transform = Transform.from_element(node.element)
+            child_group_transform = (
+                parent_group_transform.compose(group_transform)
+                if parent_group_transform is not None
+                else group_transform
+            )
+        elif node.parent is None or "elementGroup" not in node.parent.element:
+            # Visual-containment parents are not API coordinate frames.
+            child_group_transform = None
+
         for child in node.children:
-            _extract_node(child)
+            _extract_node(child, child_group_transform)
 
     for root in roots:
         _extract_node(root)
 
     return styles
+
+
+def _serialize_transform(transform: Transform) -> dict[str, float]:
+    """Serialize a composed ancestor transform for page/local delta conversion."""
+    return {
+        "scaleX": transform.scale_x,
+        "scaleY": transform.scale_y,
+        "shearX": transform.shear_x,
+        "shearY": transform.shear_y,
+        "translateX": transform.translate_x,
+        "translateY": transform.translate_y,
+    }
 
 
 def _extract_element_style(node: RenderNode) -> dict[str, Any]:

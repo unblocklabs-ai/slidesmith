@@ -92,7 +92,7 @@ async def refresh_after_success(
     folder_path: Path,
     presentation_id: str,
     response: dict[str, Any],
-) -> None:
+) -> bool:
     """Refresh after a committed write, preserving a clear stale state on error."""
     try:
         await refresh_after_push(transport, folder_path, presentation_id)
@@ -102,6 +102,8 @@ async def refresh_after_success(
             f"(post-push refresh failed: {exc})"
         )
         response.setdefault("warnings", []).append(warning)
+        return False
+    return True
 
 
 async def refresh_after_push(
@@ -181,4 +183,3 @@ async def refresh_after_push(
                     destination.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(backup, destination)
             raise
-

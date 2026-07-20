@@ -45,6 +45,7 @@ class StubTransport(Transport):
         self.data = data
         self.batch_calls: list[dict[str, Any]] = []
         self.batch_error: Exception | None = None
+        self.drop_shape_property_updates = False
 
     async def get_presentation(self, presentation_id: str) -> PresentationData:
         return PresentationData(
@@ -70,7 +71,7 @@ class StubTransport(Transport):
 
         for request in requests:
             update = request.get("updateShapeProperties")
-            if update is None:
+            if update is None or self.drop_shape_property_updates:
                 continue
             element = find_element(self.data, update["objectId"])
             shape_properties = element.setdefault("shape", {}).setdefault(
@@ -395,6 +396,30 @@ async def test_immediate_second_push_is_a_noop_against_refreshed_pristine(
 
     assert response == {"replies": [], "message": "No changes detected."}
     assert len(ws.stub.batch_calls) == 1
+
+
+async def test_push_warns_when_an_intended_change_does_not_persist(
+    ws: Workspace,
+) -> None:
+    recolor_e121_locally(ws.folder, "#00ff00")
+    ws.stub.drop_shape_property_updates = True
+
+    response = await ws.client.push(ws.folder)
+
+    assert response["warnings"] == [
+        "1 change(s) did not persist remotely: e121 (style update) "
+        "— the API may not support these values"
+    ]
+
+
+async def test_push_without_remote_divergence_returns_no_warning(
+    ws: Workspace,
+) -> None:
+    recolor_e121_locally(ws.folder, "#00ff00")
+
+    response = await ws.client.push(ws.folder)
+
+    assert "warnings" not in response
 
 
 async def test_second_edit_pushes_against_just_pushed_base(ws: Workspace) -> None:

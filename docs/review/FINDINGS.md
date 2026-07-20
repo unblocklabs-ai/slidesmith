@@ -398,3 +398,9 @@ represented when `new.font_family` is not None; a family change maps to
 `weightedFontFamily` when `new.font_weight` is not None. Tests: family swap w/
 unchanged weight (run and element level) emits apply not reset; whole-class removal
 still resets.
+
+### [x] R2D-W1 [WISH] Verify that successful pushes persisted remotely
+Resolution: successful post-push refreshes now diff remote truth against the pre-push local intent and return a T-C4 CLI warning naming every pushed semantic change that remains.
+
+### [x] R2D-W2 [WISH] Replace one class across the whole deck locally
+Resolution: `slidesmith replace-class <folder> OLD NEW [--dry-run]` now validates through the canonical parser, detects scoped conflicts atomically, and reports per-slide and total replacement counts.

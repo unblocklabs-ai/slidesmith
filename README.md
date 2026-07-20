@@ -20,6 +20,11 @@ slidesmith diff <ID>     # prints the batchUpdate requests, no API call
 slidesmith push <ID>     # applies them to the same deck
 ```
 
+For local deck-wide restyles, use `slidesmith replace-class <ID> OLD NEW`
+(`--dry-run` reports per-slide counts without writing). The command validates
+the replacement against the real SML class parser; review it with `diff` and
+push separately.
+
 Auth is zero-config if you already use gogcli: slidesmith reads the OAuth
 client from `~/Library/Application Support/gogcli/credentials.json` (or
 `GOG_ACCESS_TOKEN` / `GOOGLE_WORKSPACE_CLI_TOKEN` env vars, or a service
@@ -47,4 +52,5 @@ complete edit/diff/push/check loop.
 .venv/bin/pytest -q
 ```
 
-Run `scripts/lint.sh` to check Pyflakes/syntax errors with Ruff and intentional dead-code exceptions with Vulture.
+Run `scripts/lint.sh` to check Pyflakes/syntax errors with Ruff and intentional
+dead-code exceptions with Vulture.

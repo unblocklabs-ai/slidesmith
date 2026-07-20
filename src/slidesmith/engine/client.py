@@ -20,7 +20,7 @@ from slidesmith.engine.conflicts import (
     ensure_no_conflicts,
     index_presentation,
 )
-from slidesmith.engine.content_diff import DiffResult, diff_presentation
+from slidesmith.engine.content_diff import ChangeType, DiffResult, diff_presentation
 from slidesmith.engine.content_parser import parse_slide_content
 from slidesmith.engine.content_requests import generate_batch_requests
 from slidesmith.engine.json_utils import read_json
@@ -366,6 +366,11 @@ class SlidesClient:
         if not requests:
             return {"replies": [], "message": "No changes detected."}
 
+        intended_slides = self._read_current_slides(folder_path)
+        intended_change_keys = {
+            (change.target_id, change.change_type)
+            for change in diff_result.changes
+        }
         transport = self._require_transport()
 
         if force:
@@ -378,9 +383,16 @@ class SlidesClient:
             if diff_result.warnings:
                 response.setdefault("warnings", []).extend(diff_result.warnings)
             response.setdefault("warnings", []).append(warning)
-            await refresh_after_success(
+            refreshed = await refresh_after_success(
                 transport, folder_path, presentation_id, response
             )
+            if refreshed:
+                self._append_persistence_warning(
+                    folder_path,
+                    intended_slides,
+                    intended_change_keys,
+                    response,
+                )
             return response
 
         # 2. Re-fetch the remote presentation and guard the touched objects.
@@ -424,10 +436,57 @@ class SlidesClient:
             response.setdefault("warnings", []).append(warning)
 
         # 4. Refresh from the authoritative post-push deck.
-        await refresh_after_success(
+        refreshed = await refresh_after_success(
             transport, folder_path, presentation_id, response
         )
+        if refreshed:
+            self._append_persistence_warning(
+                folder_path,
+                intended_slides,
+                intended_change_keys,
+                response,
+            )
         return response
+
+    def _append_persistence_warning(
+        self,
+        folder_path: Path,
+        intended_slides: dict[str, list[Any]],
+        intended_change_keys: set[tuple[str, ChangeType]],
+        response: dict[str, Any],
+    ) -> None:
+        """Warn when pushed semantic changes differ from refreshed truth."""
+        refreshed_slides, refreshed_styles = self._read_pristine(folder_path)
+        divergence = diff_presentation(
+            refreshed_slides,
+            intended_slides,
+            refreshed_styles,
+            read_json(folder_path / ID_MAPPING_FILE, missing_ok=True),
+        )
+        unpersisted = [
+            change
+            for change in divergence.changes
+            if (change.target_id, change.change_type) in intended_change_keys
+        ]
+        if not unpersisted:
+            return
+
+        changes = sorted(
+            unpersisted,
+            key=lambda change: (
+                change.slide_index or "",
+                change.target_id,
+                change.change_type.value,
+            ),
+        )
+        details = ", ".join(
+            f"{change.target_id} ({change.change_type.value.replace('_', ' ')})"
+            for change in changes
+        )
+        response.setdefault("warnings", []).append(
+            f"{len(changes)} change(s) did not persist remotely: {details} "
+            "— the API may not support these values"
+        )
 
     def _read_base_raw(self, folder_path: Path) -> dict[str, Any] | None:
         """Read the pristine base raw API tree, if this folder has one.

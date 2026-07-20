@@ -38,6 +38,12 @@ uses a revision lock for the write, and refreshes the local projection after a
 successful batch. Use `push --force` only when the user explicitly accepts
 overwriting concurrent edits to touched properties.
 
+After a successful refresh, `push` compares the intended local changes with the
+remote-truth projection. A warning such as `warning: 1 change(s) did not persist
+remotely: title (style update) — the API may not support these values` means
+Google accepted the batch but normalized or dropped an authored value. Treat
+the refreshed SML as authoritative and choose a supported alternative.
+
 Visual work is iterative: edit, `diff`, run the offline check, `push`, then run
 plain `check` and inspect the new thumbnails. Repeat that push-then-check loop
 until the rendered deck is correct; the local approximation is not a substitute
@@ -235,6 +241,26 @@ on SML elements; use `x`, `y`, `w`, and `h` attributes.
 
 Unknown classes fail loudly and name both the class and element ID. This is
 intentional: never invent a Tailwind-looking class and assume it will parse.
+
+## Bulk restyling
+
+Replace one exact class token across every `slides/NN/content.sml` file with the
+local-only command:
+
+```bash
+slidesmith replace-class <ID> font-family-arial font-family-inter --dry-run
+slidesmith replace-class <ID> font-family-arial font-family-inter
+```
+
+The command covers element, `P`, and `T` class attributes, prints a replacement
+count for every slide plus a total, and preserves the surrounding SML formatting.
+`--dry-run` performs the same validation and counting without writing files.
+`NEW` is validated by the real class parser before any file is considered, and
+all prospective slide contents are parsed before any write. An unknown class or
+a mutually exclusive family conflict therefore fails atomically with the
+existing error that names the affected element. This command does not call
+Google APIs or run a diff; inspect the result with `slidesmith diff <ID>` and
+push it separately.
 
 ## Copying pulled elements
 

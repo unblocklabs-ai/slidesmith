@@ -162,6 +162,22 @@ def cmd_push(args: Any) -> None:
         sys.exit(2)
 
 
+def cmd_replace_class(args: Any) -> None:
+    from slidesmith.engine.class_replacement import replace_class
+
+    result = replace_class(
+        args.folder,
+        args.old_class,
+        args.new_class,
+        dry_run=args.dry_run,
+    )
+    for slide_index, count in result.counts.items():
+        print(f"Slide {slide_index}: {count} replacement(s)")
+    print(f"Total: {result.total} replacement(s)")
+    if args.dry_run:
+        print("Dry run: no files written.")
+
+
 def cmd_check(args: Any) -> None:
     from slidesmith.engine.qa import check_folder, download_thumbnails
 
@@ -254,6 +270,20 @@ def main(argv: list[str] | None = None) -> None:
         ),
     )
     spu.set_defaults(func=cmd_push)
+
+    src = sub.add_parser(
+        "replace-class",
+        help="Replace a class across all content.sml files (local only)",
+    )
+    src.add_argument("folder", help="Presentation folder created by pull")
+    src.add_argument("old_class", metavar="OLD", help="Class token to replace")
+    src.add_argument("new_class", metavar="NEW", help="Replacement class token")
+    src.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print replacement counts without writing files",
+    )
+    src.set_defaults(func=cmd_replace_class)
 
     sc = sub.add_parser(
         "check",

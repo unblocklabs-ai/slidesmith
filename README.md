@@ -36,17 +36,39 @@ Read [docs/AGENT-GUIDE.md](docs/AGENT-GUIDE.md) before editing a deck. It is the
 source-derived reference for the pull/diff/check/push loop, accepted SML class
 vocabulary, one-shot Stack/Grid layout, QA judgment, and auth recovery.
 
+## Features
+
+- **Styled round-trip**: pull any deck to readable SML with Tailwind-style
+  classes for fills, strokes, text, paragraphs, and content alignment —
+  inherited theme styling is never baked in, and a no-edit pull always diffs
+  to zero requests.
+- **Surgical diffs**: minimal UTF-16-correct text range edits, field-masked
+  style updates, and `diff --summary` for a compact review (plain `diff`
+  keeps exact request JSON).
+- **Safe concurrent pushes**: three-way conflict guard against the live deck,
+  `writeControl` revision locking, atomic batches, post-push workspace
+  refresh, and **push persistence verification** — a warning whenever Google
+  silently drops or normalizes a property you sent.
+- **Layout authoring**: one-shot `Stack`/`Grid` containers, `flex`,
+  `h="auto"` text height, and `content-align-*` — the compiler does the
+  coordinate math.
+- **Visual QA**: `check` downloads rendered slide PNGs and runs geometry lint
+  (overlap, out-of-bounds, likely text overflow) with a NEW / PRE-EXISTING /
+  RESOLVED ledger keyed to your last pull.
+- **Bulk restyles**: `replace-class` swaps validated classes deck-wide.
+- **Agent-grade errors and auth**: loud, named errors for unknown or
+  conflicting classes; dual-store sessions (Keychain + 0600 file) so
+  subprocess agents can authenticate; `auth doctor` for self-rescue.
+- Authored element IDs survive push/pull round trips.
+
 ## Status
 
-Working today: styled pull to editable SML, field-masked diff, conflict-aware
-in-place push with post-push refresh, and baseline-aware offline/thumbnail QA via
-`check`. The parser and generator preserve element, paragraph, and text-run
-styling; authoring supports one-shot `Stack`, `Grid`, and automatic text height.
-Authored element IDs survive push/pull round trips, and `diff --summary` provides
-a compact slide-grouped review while plain `diff` retains exact request JSON.
-`slidesmith auth doctor` diagnoses credentials before a pull. See the
-[agent guide](docs/AGENT-GUIDE.md) for the supported class vocabulary and the
-complete edit/diff/push/check loop.
+Production-hardened through six adversarial review rounds (110 findings fixed
+— see `docs/review/FINDINGS.md`) and three live dogfood campaigns in which
+agent designers built new slides, executed deck-wide restyles, and shipped
+freeform polish on a real presentation. 323 tests; `scripts/lint.sh` clean.
+See the [agent guide](docs/AGENT-GUIDE.md) for the supported class vocabulary
+and the complete edit/diff/push/check loop.
 
 ```bash
 .venv/bin/pytest -q

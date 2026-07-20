@@ -9,61 +9,62 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
-import html
-import http.server
 import json
 import os
 import platform
-import secrets
-import select
 import socket
-import ssl
-import stat
 import sys
-import threading
 import time
 import urllib.error
-import urllib.parse
 import urllib.request
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Protocol
+from typing import Any
 
 from extraslide.json_utils import read_json
+from slidesmith.auth import browser_flow as _browser_flow
+from slidesmith.auth.browser_flow import (
+    SSL_CONTEXT,
+    BrowserFlowMixin,
+    _exchange_refresh_token,
+    _GOOGLE_TOKEN_URL,
+    _OAUTH_USER_SCOPES,
+    _post_form_json,
+)
+from slidesmith.auth.discovery import (
+    OAuthClientCredentials,
+    _find_gogcli_client_credentials,
+    _find_gws_client_credentials,
+    _parse_oauth_client_json,
+)
+from slidesmith.auth.doctor import auth_doctor_lines as _auth_doctor_lines
+from slidesmith.auth.stores import (
+    FallbackSessionStore,
+    FileSessionStore,
+    InMemorySessionStore,
+    KeyringSessionStore,
+    SessionStore,
+    SessionToken,
+    _DEFAULT_PROFILE,
+    _KEYRING_AVAILABLE,
+    _KEYRING_SERVICE,
+    _keyring,
+    _write_secure_json,
+)
 
-# Try to use certifi for SSL certificates (common on macOS)
-try:
-    import certifi
+# Backward-compatible module objects used by existing integrations and tests.
+http = _browser_flow.http
+secrets = _browser_flow.secrets
+urllib = _browser_flow.urllib
 
-    SSL_CONTEXT = ssl.create_default_context(cafile=certifi.where())
-except ImportError:
-    SSL_CONTEXT = ssl.create_default_context()
-
-try:
-    import keyring as _keyring
-
-    _KEYRING_AVAILABLE = True
-except ImportError:
-    _keyring = None  # type: ignore[assignment]
-    _KEYRING_AVAILABLE = False
-
-_KEYRING_SERVICE = "extrasuite"
-_DEFAULT_PROFILE = "default"
 _GOOGLE_SCOPE_PREFIX = "https://www.googleapis.com/auth/"
-_GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 
 # Client-side caps on returned token lifetimes
 _SA_TOKEN_CAP_SECONDS = 3600  # 60 min for service account tokens
 _DWD_TOKEN_CAP_SECONDS = 600  # 10 min for domain-wide delegation tokens
 
-_OAUTH_USER_SCOPES = [
-    "https://www.googleapis.com/auth/presentations",
-    "https://www.googleapis.com/auth/drive.file",
-    "openid",
-    "email",
-]
 # Scope changes require ``slidesmith auth login`` once to grant fresh consent.
 # Existing stored sessions minted with the previous scopes continue to work.
 
@@ -99,178 +100,6 @@ Quick start options:
   Already use gogcli? Run: gog auth credentials <path/to/client_secret.json>
   Team deployment?    Run: slidesmith auth login   (requires gateway server)\
 """
-
-
-def _write_secure_json(path: Path, data: dict[str, Any]) -> None:
-    """Atomically replace a JSON file with mode 0600 from creation onward."""
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    path.parent.chmod(stat.S_IRWXU)
-    temp_path = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-    content = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
-    fd = os.open(
-        temp_path,
-        os.O_WRONLY | os.O_CREAT | os.O_EXCL,
-        stat.S_IRUSR | stat.S_IWUSR,
-    )
-    try:
-        try:
-            handle = os.fdopen(fd, "w", encoding="utf-8")
-        except Exception:
-            with contextlib.suppress(OSError):
-                os.close(fd)
-            raise
-        with handle:
-            handle.write(content)
-        os.replace(temp_path, path)
-    except Exception:
-        with contextlib.suppress(OSError):
-            temp_path.unlink()
-        raise
-
-
-@dataclass
-class OAuthClientCredentials:
-    """Client ID + secret borrowed from a gws or gogcli installation."""
-
-    client_id: str
-    client_secret: str
-    source: str  # "gws" | "gogcli" — used only in log/error messages
-    location: str = ""
-
-
-def _parse_oauth_client_json(data: dict[str, Any]) -> tuple[str, str] | None:
-    """Extract (client_id, client_secret) from a Google OAuth client JSON dict.
-
-    Handles three formats:
-      - Desktop app: {"installed": {"client_id": ..., "client_secret": ...}}
-      - Web app:     {"web":       {"client_id": ..., "client_secret": ...}}
-      - Flat:        {"client_id": ..., "client_secret": ...}  (gogcli format)
-
-    Returns None for service account JSONs or files missing the required keys.
-    """
-    if data.get("type") == "service_account":
-        return None
-    for key in ("installed", "web"):
-        if key in data:
-            inner = data[key]
-            cid = inner.get("client_id", "")
-            csec = inner.get("client_secret", "")
-            if cid and csec:
-                return cid, csec
-    cid = data.get("client_id", "")
-    csec = data.get("client_secret", "")
-    if cid and csec:
-        return str(cid), str(csec)
-    return None
-
-
-def _find_gws_client_credentials() -> OAuthClientCredentials | None:
-    """Discover gws OAuth client credentials without any side effects.
-
-    Checks in order:
-      1. GOOGLE_WORKSPACE_CLI_CLIENT_ID + GOOGLE_WORKSPACE_CLI_CLIENT_SECRET env vars
-      2. GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE env var (reads the JSON file)
-      3. ~/.config/gws/client_secret.json
-    """
-    cid = os.environ.get("GOOGLE_WORKSPACE_CLI_CLIENT_ID", "")
-    csec = os.environ.get("GOOGLE_WORKSPACE_CLI_CLIENT_SECRET", "")
-    if cid and csec:
-        return OAuthClientCredentials(
-            client_id=cid,
-            client_secret=csec,
-            source="gws",
-            location=(
-                "environment variables GOOGLE_WORKSPACE_CLI_CLIENT_ID + "
-                "GOOGLE_WORKSPACE_CLI_CLIENT_SECRET"
-            ),
-        )
-
-    creds_file = os.environ.get("GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE", "")
-    candidates = [Path(creds_file)] if creds_file else []
-    candidates.append(Path.home() / ".config" / "gws" / "client_secret.json")
-
-    for path in candidates:
-        try:
-            data = read_json(path, missing_ok=False)
-        except (OSError, ValueError):
-            continue
-        parsed = _parse_oauth_client_json(data)
-        if parsed:
-            return OAuthClientCredentials(
-                client_id=parsed[0],
-                client_secret=parsed[1],
-                source="gws",
-                location=str(path),
-            )
-
-    return None
-
-
-def _find_gogcli_client_credentials() -> OAuthClientCredentials | None:
-    """Discover gogcli OAuth client credentials without any side effects.
-
-    Checks the platform-appropriate config directory for credentials.json.
-    """
-    system = platform.system()
-    if system == "Darwin":
-        base = Path.home() / "Library" / "Application Support"
-    elif system == "Windows":
-        appdata = os.environ.get("APPDATA", "")
-        base = Path(appdata) if appdata else Path.home() / "AppData" / "Roaming"
-    else:
-        xdg = os.environ.get("XDG_CONFIG_HOME", "")
-        base = Path(xdg) if xdg else Path.home() / ".config"
-
-    path = base / "gogcli" / "credentials.json"
-    try:
-        data = read_json(path, missing_ok=False)
-    except (OSError, ValueError):
-        return None
-
-    parsed = _parse_oauth_client_json(data)
-    if parsed:
-        return OAuthClientCredentials(
-            client_id=parsed[0],
-            client_secret=parsed[1],
-            source="gogcli",
-            location=str(path),
-        )
-    return None
-
-
-def _post_form_json(url: str, fields: dict[str, str]) -> dict[str, Any]:
-    """POST URL-encoded form fields and decode one JSON object response."""
-    body = urllib.parse.urlencode(fields).encode("utf-8")
-    req = urllib.request.Request(
-        url,
-        data=body,
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
-        method="POST",
-    )
-    with urllib.request.urlopen(req, timeout=30, context=SSL_CONTEXT) as response:
-        result: dict[str, Any] = json.loads(response.read().decode("utf-8"))
-        return result
-
-
-def _exchange_refresh_token(
-    client_id: str, client_secret: str, refresh_token: str
-) -> tuple[str, float]:
-    """Exchange a refresh token for a new access token via Google's token endpoint.
-
-    Returns (access_token, expires_at_unix_timestamp).
-    Raises on HTTP error (e.g. 400 if the refresh token has been revoked).
-    """
-    result = _post_form_json(
-        _GOOGLE_TOKEN_URL,
-        {
-            "client_id": client_id,
-            "client_secret": client_secret,
-            "refresh_token": refresh_token,
-            "grant_type": "refresh_token",
-        },
-    )
-    expires_at = time.time() + int(result.get("expires_in", 3600))
-    return result["access_token"], expires_at
 
 
 @dataclass
@@ -330,357 +159,15 @@ def _parse_first_google_credential(
     )
 
 
-@dataclass
-class SessionToken:
-    """Long-lived (30-day) session token for headless agent access.
-
-    Obtained once via browser OAuth flow; used to exchange for short-lived
-    access tokens without further browser interaction (Phase 2).
-
-    Attributes:
-        raw_token: The raw session token string.
-        email: User's email address.
-        expires_at: Unix timestamp when the session expires.
-    """
-
-    raw_token: str
-    email: str
-    expires_at: float
-
-    def is_valid(self, buffer_seconds: int = 300) -> bool:
-        """Check if session token is still valid with a 5-minute buffer."""
-        return time.time() < self.expires_at - buffer_seconds
-
-    def to_dict(self) -> dict[str, Any]:
-        """Convert to dictionary for serialization."""
-        return {
-            "raw_token": self.raw_token,
-            "email": self.email,
-            "expires_at": self.expires_at,
-        }
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> SessionToken:
-        """Create SessionToken from dictionary."""
-        return cls(
-            raw_token=data["raw_token"],
-            email=data["email"],
-            expires_at=data["expires_at"],
-        )
-
-
-class SessionStore(Protocol):
-    """Protocol for session token storage backends."""
-
-    def load(self, profile_name: str) -> SessionToken | None: ...
-    def save(self, profile_name: str, token: SessionToken) -> None: ...
-    def delete(self, profile_name: str) -> None: ...
-
-
-class KeyringSessionStore:
-    """Session token storage backed by the OS keyring."""
-
-    @staticmethod
-    def _backend() -> Any:
-        if not _KEYRING_AVAILABLE or _keyring is None:
-            raise RuntimeError("keyring package is not available")
-        return _keyring
-
-    def load(self, profile_name: str) -> SessionToken | None:
-        raw = self._backend().get_password(_KEYRING_SERVICE, profile_name)
-        if not raw:
-            return None
-        try:
-            token = SessionToken.from_dict(json.loads(raw))
-            return token if token.is_valid() else None
-        except (json.JSONDecodeError, KeyError):
-            return None
-
-    def save(self, profile_name: str, token: SessionToken) -> None:
-        self._backend().set_password(
-            _KEYRING_SERVICE, profile_name, json.dumps(token.to_dict())
-        )
-
-    def delete(self, profile_name: str) -> None:
-        self._backend().delete_password(_KEYRING_SERVICE, profile_name)
-
-
-class FileSessionStore:
-    """Session token storage at ``~/.config/slidesmith/session.json``.
-
-    The file contains one SessionToken payload per profile and is always written
-    with mode 0600. OAuth client credentials and client secrets are never stored
-    here.
-    """
-
-    def __init__(self, path: str | Path | None = None) -> None:
-        self.path = (
-            Path(path)
-            if path is not None
-            else Path.home() / ".config" / "slidesmith" / "session.json"
-        )
-
-    def _load_profiles(self) -> dict[str, dict[str, Any]]:
-        try:
-            data = read_json(self.path, missing_ok=True)
-        except (OSError, ValueError):
-            return {}
-        if not isinstance(data, dict):
-            return {}
-        profiles = data.get("profiles")
-        if isinstance(profiles, dict):
-            return {
-                str(name): payload
-                for name, payload in profiles.items()
-                if isinstance(payload, dict)
-            }
-        # Accept a direct SessionToken payload for forward compatibility with
-        # hand-provisioned single-profile files.
-        if {"raw_token", "email", "expires_at"}.issubset(data):
-            return {_DEFAULT_PROFILE: data}
-        return {}
-
-    def load(self, profile_name: str) -> SessionToken | None:
-        payload = self._load_profiles().get(profile_name)
-        if payload is None:
-            return None
-        try:
-            token = SessionToken.from_dict(payload)
-        except (KeyError, TypeError, ValueError):
-            return None
-        return token if token.is_valid() else None
-
-    def save(self, profile_name: str, token: SessionToken) -> None:
-        profiles = self._load_profiles()
-        profiles[profile_name] = token.to_dict()
-        _write_secure_json(self.path, {"profiles": profiles})
-
-    def delete(self, profile_name: str) -> None:
-        profiles = self._load_profiles()
-        if profile_name not in profiles:
-            return
-        profiles.pop(profile_name)
-        if profiles:
-            _write_secure_json(self.path, {"profiles": profiles})
-        else:
-            self.path.unlink(missing_ok=True)
-
-
-class FallbackSessionStore:
-    """Read keyring first and fall back to a file after any keyring error."""
-
-    def __init__(
-        self,
-        keyring_store: SessionStore | None = None,
-        file_store: SessionStore | None = None,
-    ) -> None:
-        self.keyring_store = keyring_store or KeyringSessionStore()
-        self.file_store = file_store or FileSessionStore()
-        self._notice_printed = False
-
-    def _notice(self, exc: Exception) -> None:
-        if self._notice_printed:
-            return
-        self._notice_printed = True
-        print(
-            f"warning: keyring unavailable ({exc!r}); using file session store",
-            file=sys.stderr,
-        )
-
-    def load(self, profile_name: str) -> SessionToken | None:
-        try:
-            return self.keyring_store.load(profile_name)
-        except Exception as exc:
-            self._notice(exc)
-            return self.file_store.load(profile_name)
-
-    def save(self, profile_name: str, token: SessionToken) -> None:
-        keyring_saved = False
-        try:
-            self.keyring_store.save(profile_name, token)
-            keyring_saved = True
-        except Exception as exc:
-            self._notice(exc)
-        try:
-            self.file_store.save(profile_name, token)
-        except Exception as exc:
-            if not keyring_saved:
-                raise
-            print(
-                f"warning: file session store unavailable ({exc!r}); "
-                "session saved to keyring only",
-                file=sys.stderr,
-            )
-
-    def delete(self, profile_name: str) -> None:
-        try:
-            self.keyring_store.delete(profile_name)
-        except Exception as exc:
-            self._notice(exc)
-        self.file_store.delete(profile_name)
-
-
-class InMemorySessionStore:
-    """In-memory session token storage (for testing and non-persistent use)."""
-
-    def __init__(self) -> None:
-        self._tokens: dict[str, SessionToken] = {}
-
-    def load(self, profile_name: str) -> SessionToken | None:
-        token = self._tokens.get(profile_name)
-        if token and token.is_valid():
-            return token
-        return None
-
-    def save(self, profile_name: str, token: SessionToken) -> None:
-        self._tokens[profile_name] = token
-
-    def delete(self, profile_name: str) -> None:
-        self._tokens.pop(profile_name, None)
-
-
-def _inspect_session_payload(payload: Any) -> tuple[str, SessionToken | None]:
-    if payload is None:
-        return "absent", None
-    if isinstance(payload, str):
-        try:
-            payload = json.loads(payload)
-        except json.JSONDecodeError:
-            return "invalid", None
-    if not isinstance(payload, dict):
-        return "invalid", None
-    try:
-        token = SessionToken.from_dict(payload)
-    except (KeyError, TypeError, ValueError):
-        return "invalid", None
-    return ("valid" if token.is_valid() else "expired"), token
-
-
-def _format_expiry(token: SessionToken | None) -> str:
-    if token is None:
-        return ""
-    return datetime.fromtimestamp(token.expires_at).astimezone().isoformat()
-
-
 def auth_doctor_lines() -> list[str]:
     """Return a layered, secret-safe authentication diagnosis."""
-    oauth_creds = _find_gws_client_credentials() or _find_gogcli_client_credentials()
-    server_url = os.environ.get("EXTRASUITE_SERVER_URL", "").strip()
-    service_account = os.environ.get("SERVICE_ACCOUNT_PATH", "").strip()
-    bare_token = bool(
-        os.environ.get("GOOGLE_WORKSPACE_CLI_TOKEN")
-        or os.environ.get("GOG_ACCESS_TOKEN")
+    return _auth_doctor_lines(
+        find_gws_client_credentials=_find_gws_client_credentials,
+        find_gogcli_client_credentials=_find_gogcli_client_credentials,
     )
 
-    if oauth_creds is not None:
-        credential_line = (
-            f"OAuth client credentials: FOUND ({oauth_creds.source}: "
-            f"{oauth_creds.location})"
-        )
-        profile_name = f"{oauth_creds.source}-default"
-    else:
-        credential_line = "OAuth client credentials: ABSENT"
-        profile_name = _DEFAULT_PROFILE
 
-    gateway_source = "environment variable EXTRASUITE_SERVER_URL"
-    if not server_url:
-        gateway_path = Path.home() / ".config" / "extrasuite" / "gateway.json"
-        try:
-            gateway_data = read_json(gateway_path, missing_ok=True)
-            candidate = gateway_data.get("EXTRASUITE_SERVER_URL", "")
-            if isinstance(candidate, str):
-                server_url = candidate.strip()
-                gateway_source = str(gateway_path)
-        except (OSError, ValueError, AttributeError):
-            pass
-
-    lines = [credential_line]
-    if server_url:
-        lines.append(f"ExtraSuite gateway: FOUND ({gateway_source})")
-    if service_account:
-        sa_path = Path(service_account).expanduser()
-        sa_state = "FOUND" if sa_path.is_file() else "MISSING"
-        lines.append(f"Service account: {sa_state} ({sa_path})")
-    if bare_token:
-        lines.append("Pre-obtained access token: FOUND (environment variable)")
-    lines.append(f"Session profile: {profile_name}")
-
-    keyring_error: Exception | None = None
-    keyring_status = "absent"
-    keyring_token: SessionToken | None = None
-    try:
-        raw = KeyringSessionStore._backend().get_password(
-            _KEYRING_SERVICE, profile_name
-        )
-        keyring_status, keyring_token = _inspect_session_payload(raw)
-        detail = keyring_status.upper()
-        if keyring_token is not None:
-            detail += f"; expires {_format_expiry(keyring_token)}"
-        lines.append(f"Keyring: READABLE; token {detail}")
-    except Exception as exc:
-        keyring_error = exc
-        lines.append(f"Keyring: DENIED OR BROKEN; error: {exc!r}")
-
-    file_store = FileSessionStore()
-    file_status = "absent"
-    file_token: SessionToken | None = None
-    if not file_store.path.exists():
-        lines.append(f"File store: ABSENT ({file_store.path})")
-    else:
-        try:
-            data = read_json(file_store.path, missing_ok=False)
-        except (OSError, ValueError) as exc:
-            file_status = "invalid"
-            lines.append(f"File store: INVALID ({file_store.path}); error: {exc!r}")
-        else:
-            payload: Any = None
-            recognized_format = False
-            if isinstance(data, dict) and isinstance(data.get("profiles"), dict):
-                payload = data["profiles"].get(profile_name)
-                recognized_format = True
-            elif isinstance(data, dict) and {
-                "raw_token",
-                "email",
-                "expires_at",
-            }.issubset(data):
-                payload = data
-                recognized_format = True
-            if not recognized_format:
-                file_status = "invalid"
-            else:
-                file_status, file_token = _inspect_session_payload(payload)
-            detail = file_status.upper()
-            if file_token is not None:
-                detail += f"; expires {_format_expiry(file_token)}"
-            lines.append(f"File store: PRESENT ({file_store.path}); token {detail}")
-
-    service_account_valid = bool(service_account and Path(service_account).is_file())
-    credentials_found = bool(
-        oauth_creds is not None or server_url or service_account_valid or bare_token
-    )
-    immediate_auth = service_account_valid or bare_token
-    token_statuses = {keyring_status, file_status}
-    if not credentials_found:
-        verdict = "CREDENTIAL ABSENT"
-        next_command = "gws auth setup"
-    elif "valid" in token_statuses or immediate_auth:
-        verdict = "READY"
-        next_command = "slidesmith pull <presentation-url-or-id>"
-    elif "expired" in token_statuses:
-        verdict = "TOKEN EXPIRED"
-        next_command = "slidesmith auth login"
-    elif keyring_error is not None:
-        verdict = "KEYRING DENIED OR BROKEN"
-        next_command = "slidesmith auth login"
-    else:
-        verdict = "SESSION TOKEN ABSENT"
-        next_command = "slidesmith auth login"
-
-    lines.extend([f"Verdict: {verdict}", f"Next command: {next_command}"])
-    return lines
-
-
-class CredentialsManager:
+class CredentialsManager(BrowserFlowMixin):
     """Manages credentials for Google API access.
 
     Supports two authentication modes:
@@ -1089,69 +576,6 @@ class CredentialsManager:
             metadata={"service_account_email": credentials.service_account_email},
         )
 
-    def _run_oauth_browser_flow(
-        self, client_id: str, client_secret: str
-    ) -> tuple[str, str]:
-        """Run an OAuth 2.0 authorization code flow with PKCE directly against Google.
-
-        Opens a browser (or prints the URL for headless mode), starts a localhost
-        callback server, and exchanges the returned code for tokens.
-
-        Returns (access_token, refresh_token).
-        """
-        import base64
-
-        code_verifier = base64.urlsafe_b64encode(os.urandom(32)).rstrip(b"=").decode()
-        digest = hashlib.sha256(code_verifier.encode()).digest()
-        code_challenge = base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
-
-        def auth_url_for_port(port: int, state: str) -> str:
-            redirect_uri = f"http://127.0.0.1:{port}"
-            params = urllib.parse.urlencode(
-                {
-                    "client_id": client_id,
-                    "redirect_uri": redirect_uri,
-                    "response_type": "code",
-                    "scope": " ".join(_OAUTH_USER_SCOPES),
-                    "state": state,
-                    "code_challenge": code_challenge,
-                    "code_challenge_method": "S256",
-                    "access_type": "offline",
-                    "prompt": "consent",
-                }
-            )
-            return f"https://accounts.google.com/o/oauth2/v2/auth?{params}"
-
-        code, port = self._run_browser_flow(
-            auth_url_for_port, "Sign in with Google:"
-        )
-        redirect_uri = f"http://127.0.0.1:{port}"
-
-        try:
-            result = _post_form_json(
-                _GOOGLE_TOKEN_URL,
-                {
-                "client_id": client_id,
-                "client_secret": client_secret,
-                "code": code,
-                "code_verifier": code_verifier,
-                "grant_type": "authorization_code",
-                "redirect_uri": redirect_uri,
-                },
-            )
-        except urllib.error.HTTPError as e:
-            error_body = e.read().decode("utf-8") if e.fp else str(e)
-            raise Exception(f"Google token exchange failed: {error_body}") from e
-
-        if "refresh_token" not in result:
-            raise RuntimeError(
-                "Google did not return a refresh token. "
-                "This can happen if you have already authorized this app. "
-                "Visit https://myaccount.google.com/permissions to revoke access, "
-                "then try again."
-            )
-        return result["access_token"], result["refresh_token"]
-
     def _get_oauth_client_credential(self) -> Credential:
         """Get a credential using a borrowed OAuth client from gws or gogcli.
 
@@ -1319,165 +743,6 @@ class CredentialsManager:
         self._save_session_token(session, name)
         return session
 
-    def _run_browser_flow(
-        self,
-        auth_url_for_port: Callable[[int, str], str],
-        display_msg: str,
-    ) -> tuple[str, int]:
-        """Run browser OAuth and return the auth code plus bound callback port.
-
-        Starts a local HTTP callback server, opens the browser, and also accepts
-        the code from stdin (interactive fallback). Raises on error or timeout.
-        """
-        state = secrets.token_urlsafe(32)
-        result_holder: dict[str, Any] = {"code": None, "error": None, "done": False}
-        result_lock = threading.Lock()
-
-        handler_class = self._create_handler_class(
-            result_holder, result_lock, expected_state=state
-        )
-        # Bind once and keep this exact socket. This avoids the free-port
-        # probe/rebind race where another process could claim the callback port.
-        server = http.server.HTTPServer(("127.0.0.1", 0), handler_class)
-        port = int(server.server_port)
-        auth_url = auth_url_for_port(port, state)
-        server.timeout = 1
-
-        def serve_loop() -> None:
-            start_time = time.time()
-            while time.time() - start_time < self.DEFAULT_CALLBACK_TIMEOUT:
-                with result_lock:
-                    if result_holder["done"]:
-                        break
-                server.handle_request()
-            server.server_close()
-
-        server_thread = threading.Thread(target=serve_loop, daemon=True)
-        server_thread.start()
-
-        print(f"{display_msg}\n\n  {auth_url}\n")
-        try:
-            import webbrowser
-
-            webbrowser.open(auth_url)
-        except Exception:
-            pass
-        print("Waiting for authentication...")
-
-        def read_stdin() -> None:
-            try:
-                if not sys.stdin.isatty():
-                    return
-                while True:
-                    with result_lock:
-                        if result_holder["done"]:
-                            return
-                    if sys.platform != "win32":
-                        ready, _, _ = select.select([sys.stdin], [], [], 1.0)
-                        if not ready:
-                            continue
-                    line = sys.stdin.readline().strip()
-                    if line:
-                        with result_lock:
-                            if not result_holder["done"]:
-                                result_holder["code"] = line
-                                result_holder["done"] = True
-                        return
-            except Exception:
-                pass
-
-        stdin_thread = threading.Thread(target=read_stdin, daemon=True)
-        stdin_thread.start()
-
-        start_time = time.time()
-        while time.time() - start_time < self.DEFAULT_CALLBACK_TIMEOUT:
-            with result_lock:
-                if result_holder["done"]:
-                    break
-            time.sleep(0.5)
-
-        with result_lock:
-            result_holder["done"] = True
-            error = result_holder.get("error")
-            code = result_holder.get("code")
-
-        if error:
-            raise Exception(f"Authentication failed: {error}")
-        if not code:
-            raise Exception("Authentication timed out. Please try again.")
-        return str(code), port
-
-    def _run_browser_flow_for_session(self) -> tuple[str, str]:
-        """Run OAuth browser flow and return the auth code and PKCE verifier.
-
-        In headless mode: calls /api/token/auth (no port), which shows the auth
-        code on an HTML page instead of redirecting to localhost. Prints the URL
-        to stderr and reads the code from stdin — no local callback server needed.
-
-        Otherwise: starts a local HTTP callback server, opens the browser, and
-        waits for the redirect from the ExtraSuite server.
-        """
-        import base64
-
-        code_verifier = base64.urlsafe_b64encode(os.urandom(32)).rstrip(b"=").decode()
-        digest = hashlib.sha256(code_verifier.encode()).digest()
-        code_challenge = base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
-
-        if self._headless:
-            params = urllib.parse.urlencode(
-                {
-                    "state": secrets.token_urlsafe(32),
-                    "code_challenge": code_challenge,
-                    "code_challenge_method": "S256",
-                }
-            )
-            auth_url = f"{self._server_base_url}/api/token/auth?{params}"
-            print(
-                f"\nOpen this URL to authenticate:\n\n  {auth_url}\n",
-                file=sys.stderr,
-            )
-            print(
-                "After authenticating, copy the code shown on the page and paste it here: ",
-                end="",
-                flush=True,
-                file=sys.stderr,
-            )
-            code_holder: list[str] = []
-
-            def _read_code() -> None:
-                try:
-                    line = sys.stdin.readline().strip()
-                    if line:
-                        code_holder.append(line)
-                except Exception:
-                    pass
-
-            reader = threading.Thread(target=_read_code, daemon=True)
-            reader.start()
-            reader.join(timeout=self.DEFAULT_CALLBACK_TIMEOUT)
-
-            if not code_holder:
-                raise Exception(
-                    f"No auth code provided within {self.DEFAULT_CALLBACK_TIMEOUT}s. Please try again."
-                )
-            return code_holder[0], code_verifier
-
-        code, _ = self._run_browser_flow(
-            lambda port, state: (
-                f"{self._server_base_url}/api/token/auth?"
-                + urllib.parse.urlencode(
-                    {
-                        "port": port,
-                        "state": state,
-                        "code_challenge": code_challenge,
-                        "code_challenge_method": "S256",
-                    }
-                )
-            ),
-            "Open this URL to authenticate:",
-        )
-        return code, code_verifier
-
     def _exchange_session_for_credential(
         self,
         session: SessionToken,
@@ -1523,101 +788,3 @@ class CredentialsManager:
             raise Exception(f"Access token exchange failed: {error_body}") from e
         except urllib.error.URLError as e:
             raise Exception(f"Failed to connect to server: {e}") from e
-
-    @staticmethod
-    def _create_handler_class(
-        result_holder: dict[str, Any],
-        result_lock: threading.Lock,
-        expected_state: str,
-    ) -> type:
-        """Create HTTP handler class for OAuth callback."""
-
-        class CallbackHandler(http.server.BaseHTTPRequestHandler):
-            """HTTP handler to receive OAuth callback."""
-
-            def log_message(self, format: str, *args: Any) -> None:
-                """Suppress default logging."""
-                pass
-
-            def do_GET(self) -> None:
-                """Handle GET request with auth code or error."""
-                parsed = urllib.parse.urlparse(self.path)
-                params = urllib.parse.parse_qs(parsed.query)
-
-                with result_lock:
-                    if result_holder["done"]:
-                        self._send_html("Already processed.", 400)
-                        return
-
-                    callback_state = params.get("state", [""])[0]
-                    if not secrets.compare_digest(callback_state, expected_state):
-                        result_holder["error"] = (
-                            "OAuth state mismatch. Please restart authentication."
-                        )
-                        result_holder["done"] = True
-                        self._send_html(
-                            """
-                            <html>
-                            <head><title>Authentication Failed</title></head>
-                            <body style="font-family: sans-serif; padding: 40px; text-align: center;">
-                                <h1 style="color: #dc3545;">Authentication Failed</h1>
-                                <p>OAuth state mismatch. Please restart authentication.</p>
-                            </body>
-                            </html>
-                            """,
-                            400,
-                        )
-                    elif "error" in params:
-                        result_holder["error"] = params["error"][0]
-                        result_holder["done"] = True
-                        escaped_error = html.escape(params["error"][0])
-                        self._send_html(
-                            f"""
-                            <html>
-                            <head><title>Authentication Failed</title></head>
-                            <body style="font-family: sans-serif; padding: 40px; text-align: center;">
-                                <h1 style="color: #dc3545;">Authentication Failed</h1>
-                                <p>{escaped_error}</p>
-                                <p>Please close this window and try again.</p>
-                            </body>
-                            </html>
-                            """,
-                            400,
-                        )
-                    elif "code" in params:
-                        result_holder["code"] = params["code"][0]
-                        result_holder["done"] = True
-                        self._send_html(
-                            """
-                            <html>
-                            <head><title>Authentication Successful</title></head>
-                            <body style="font-family: sans-serif; padding: 40px; text-align: center;">
-                                <h1 style="color: #28a745;">Authentication Successful!</h1>
-                                <p>You can close this window and return to your terminal.</p>
-                                <script>window.close();</script>
-                            </body>
-                            </html>
-                            """
-                        )
-                    else:
-                        self._send_html(
-                            """
-                            <html>
-                            <head><title>Invalid Request</title></head>
-                            <body style="font-family: sans-serif; padding: 40px; text-align: center;">
-                                <h1>Invalid Request</h1>
-                                <p>Missing auth code in callback.</p>
-                            </body>
-                            </html>
-                            """,
-                            400,
-                        )
-
-            def _send_html(self, content: str, status: int = 200) -> None:
-                """Send HTML response."""
-                self.send_response(status)
-                self.send_header("Content-Type", "text/html")
-                self.end_headers()
-                self.wfile.write(content.encode())
-
-        return CallbackHandler

@@ -242,7 +242,8 @@ Implementation: split the current 1,979-line file by its live seams into text ed
 ### [x] T-M1 [MEDIUM] generate_batch_requests does 7 jobs inline — extract _bucket_changes, _emit_new_slide_requests, per-type emitters.
 Implementation: `generate_batch_requests` now delegates bucketing and missing-slide creation plus delete, move, text, style, paragraph-style, copy, and create emission to focused helpers in `content_requests.py`, preserving the original request order.
 ### [x] T-M2 [MEDIUM] client.py push() concentrates diff+guard+lock+refresh — move guard helpers + ConflictError to conflicts.py; _refresh_after_push to a workspace-refresh helper.
-### T-M3 [MEDIUM] credentials.py 1763 lines / five concerns — split into auth/stores.py, auth/browser_flow.py, auth/discovery.py, auth/doctor.py. (Do AFTER security fixes land.)
+### [x] T-M3 [MEDIUM] credentials.py 1763 lines / five concerns — split into auth/stores.py, auth/browser_flow.py, auth/discovery.py, auth/doctor.py. (Do AFTER security fixes land.)
+Implementation: split the current post-security-fix file into session persistence, browser/PKCE callback flows, gws/gogcli discovery, and secret-safe doctor diagnostics. `CredentialsManager` remains in `credentials.py`, with compatibility re-exports preserving existing imports.
 ### [x] T-M4 [MEDIUM] cli.py cmd_check embeds thumbnail engine — extract qa.download_thumbnails(transport, folder, qa_dir).
 ### [x] T-M5 [MEDIUM] content_diff.diff_presentation 235 lines with duplicated COPY construction (== D-D5) — extract _make_copy_change, _split_original_and_copies.
 ### T-L1..L4 [LOW] copied_group_ids written never read; _id_counter global state → IdAllocator; duplicate _read_json (== D-D11); builtin shadowing (`id`, `format`).

@@ -71,6 +71,8 @@ vocabulary, one-shot Stack/Grid layout, QA judgment, and auth recovery.
   RESOLVED ledger keyed to your last pull.
 - **Bulk restyles**: `replace-class` swaps one or more validated classes
   deck-wide as a single atomic operation.
+- **Semantic selectors**: local-only `select` / atomic `apply` target elements
+  by role, tag, class, ID, text, slide, and geometry without ID-level scripting.
 - **Agent-grade errors and auth**: loud, named errors for unknown or
   conflicting classes; dual-store sessions (Keychain + 0600 file) so
   subprocess agents can authenticate; `auth doctor` for self-rescue.

@@ -76,6 +76,7 @@ uncommitted SML edits first.
 ├── presentation.json       title, page size, slide count, revisionId, pulledAt
 ├── id_mapping.json         clean SML IDs -> Google object IDs
 ├── styles.json             pulled style details used by diff and QA
+├── roles.json              optional local semantic roles keyed by clean ID
 ├── slides/NN/content.sml   one XML document per slide
 ├── .pristine/              baseline used by diff and conflict detection
 ├── .raw/                   optional raw pull response
@@ -126,6 +127,80 @@ tags fall back to a rectangle when created, so do not guess tag names.
 
 XML rules still apply: escape `&`, `<`, and `>` in text; quote attributes; keep
 `T` inside `P`; and do not put layout containers inside `P` or `T`.
+
+## Semantic selection and apply
+
+Use `select` to find elements at any depth of the same parsed SML tree used by
+`diff`. Both commands are local-only and make no API calls:
+
+```bash
+slidesmith select <ID> 'role=subtitle OR (tag=TextBox AND text~=overview)'
+slidesmith apply <ID> 'id~=subtitle AND slide in 4..24' --set-role subtitle
+slidesmith apply <ID> 'role=subtitle' \
+  --remove-class text-size-18 --add-class text-size-20 --dry-run
+slidesmith apply <ID> 'role=subtitle' \
+  --remove-class text-size-18 --add-class text-size-20
+slidesmith diff <ID> --summary
+slidesmith push <ID>
+```
+
+`select` prints every matching nested or top-level element with its slide, clean
+ID, tag, and a short text/class summary, followed by the total. `apply` accepts
+repeatable `--add-class` and `--remove-class`, plus mutually exclusive
+`--set-role` / `--clear-role`. It reports match and mutated-element counts per
+slide and in total. A matched element counts as one mutation even if several of
+its classes and its role change. `--dry-run` calculates the same result without
+writing any file.
+
+Class changes are transactional across the workspace: Slidesmith constructs all
+prospective SML first and parses every resulting slide through the normal SML
+parser and its existing mutually-exclusive-class validation before the first
+write. If one result is invalid, the error names the offending element and no
+SML or role file is written. Run `diff` and `push` separately after reviewing a
+successful apply.
+
+The query grammar is:
+
+```ebnf
+query          = or-expression ;
+or-expression = and-expression, { "OR", and-expression } ;
+and-expression = primary, { "AND", primary } ;
+primary        = predicate | "(", or-expression, ")" ;
+
+predicate      = "tag", "=", value
+               | "class", "~=", value
+               | "role", "=", value
+               | "id", "~=", value
+               | "text", "~=", value
+               | "slide", "=", positive-integer
+               | "slide", "in", slide-set
+               | geometry-field, comparison, number ;
+
+slide-set      = positive-integer, "..", positive-integer
+               | positive-integer, { ",", positive-integer } ;
+geometry-field = "w" | "h" | "x" | "y" ;
+comparison     = ">" | ">=" | "<" | "<=" | "=" ;
+value          = bare-value | quoted-value ;
+```
+
+Whitespace is allowed between tokens. `AND` binds more tightly than `OR`; use
+parentheses to override precedence. Keywords and predicate names are
+case-insensitive. Tags, roles, class membership, and ID substrings are
+case-sensitive; `text~=` is case-insensitive and searches the element's
+concatenated paragraph text. `class~=` tests exact membership on the element's
+own `class` attribute (it is not a glob and does not inspect `P` or `T`
+classes). Slide ranges are inclusive. Geometry uses the parsed element's
+absolute point-valued box; a predicate does not match when that dimension is
+absent. Quote a value with single or double quotes when it contains whitespace.
+
+Roles deliberately live in the workspace sidecar `roles.json`, keyed by clean
+element ID, instead of in SML. Pull and post-push refresh replace only generated
+workspace files and leave this sidecar untouched. On every selection,
+Slidesmith reattaches a saved role to the currently parsed element with that
+clean ID, so roles survive pull → edit → push → re-pull as long as element
+identity survives. Because roles never enter SML, the diff or request generator
+cannot serialize them into a Google Slides `batchUpdate`; they are local
+selection metadata only.
 
 ## Formatting SML safely
 

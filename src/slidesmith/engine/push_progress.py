@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -66,15 +67,11 @@ def partition_requests_by_slide(
                     source_google_id, change.source_slide_index
                 )
 
-    missing_slide_indices = sorted(
-        {
-            change.slide_index
-            for change in diff_result.changes
-            if change.slide_index and change.slide_index not in slide_id_mapping
-        },
-        key=_slide_sort_key,
-    )
-    next_missing_slide = iter(missing_slide_indices)
+    missing_slide_indices = {
+        change.slide_index
+        for change in diff_result.changes
+        if change.slide_index and change.slide_index not in slide_id_mapping
+    }
     grouped: dict[str, list[dict[str, Any]]] = {}
 
     for request in requests:
@@ -85,13 +82,13 @@ def partition_requests_by_slide(
             raise ValueError(f"Cannot partition malformed {operation} request")
 
         if operation == "createSlide":
-            try:
-                slide_index = next(next_missing_slide)
-            except StopIteration as exc:
+            page_id = body.get("objectId")
+            slide_index = _new_slide_index_from_object_id(page_id)
+            if slide_index is None or slide_index not in missing_slide_indices:
                 raise ValueError(
                     "Cannot map createSlide request to a local slide"
-                ) from exc
-            page_id = body.get("objectId")
+                )
+            missing_slide_indices.remove(slide_index)
             if isinstance(page_id, str) and page_id:
                 slide_by_page_id[page_id] = slide_index
                 slide_by_object_id[page_id] = slide_index
@@ -119,6 +116,13 @@ def partition_requests_by_slide(
         )
         for slide_index in sorted(grouped, key=_slide_sort_key)
     ]
+
+
+def _new_slide_index_from_object_id(object_id: Any) -> str | None:
+    if not isinstance(object_id, str):
+        return None
+    match = re.fullmatch(r"new_slide_(.+)_([0-9]+)", object_id)
+    return match.group(1) if match else None
 
 
 def _index_page_elements(

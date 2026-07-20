@@ -95,7 +95,7 @@ def _emit_new_slide_requests(
         for change in copies + creates
         if change.slide_index and change.slide_index not in slide_ids
     }
-    for slide_index in sorted(new_slide_indices):
+    for slide_index in sorted(new_slide_indices, key=_slide_sort_key):
         while True:
             suffix = unique_suffix()
             new_slide_id = f"new_slide_{slide_index}_{suffix}"
@@ -104,6 +104,12 @@ def _emit_new_slide_requests(
         requests.append(_create_slide_request(new_slide_id))
         slide_ids[slide_index] = new_slide_id
         reserved_object_ids.add(new_slide_id)
+
+
+def _slide_sort_key(slide_index: str) -> tuple[int, int | str]:
+    if slide_index.isdigit():
+        return (0, int(slide_index))
+    return (1, slide_index)
 
 
 def _emit_delete_requests(

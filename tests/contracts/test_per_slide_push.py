@@ -16,9 +16,12 @@ from slidesmith.engine.client import (
     SlidesClient,
 )
 from slidesmith.engine.content_diff import Change, ChangeType, DiffResult
+from slidesmith.engine.content_requests import generate_batch_requests
 from slidesmith.engine.push_progress import (
     PUSH_PROGRESS_FILE,
+    load_progress_ledger,
     partition_requests_by_slide,
+    write_progress_ledger,
 )
 from slidesmith.engine.transport import APIError, PresentationData, Transport
 
@@ -226,6 +229,140 @@ def test_partition_groups_existing_and_new_slide_requests(tmp_path: Path) -> Non
     assert batches[0].requests == [requests[1]]
     assert batches[1].requests == [requests[0], requests[2], requests[3]]
     assert all(len(batch.content_hash) == 64 for batch in batches)
+
+
+def test_partition_uses_create_slide_object_id_across_100_boundary(
+    tmp_path: Path,
+) -> None:
+    folder = tmp_path / "deck"
+    for slide_index in ("99", "100"):
+        content_path = folder / "slides" / slide_index / "content.sml"
+        content_path.parent.mkdir(parents=True)
+        content_path.write_text(
+            f'<Slide id="s{slide_index}"><Rect id="box{slide_index}" /></Slide>',
+            encoding="utf-8",
+        )
+    diff_result = DiffResult(
+        changes=[
+            Change(ChangeType.CREATE, "box99", slide_index="99"),
+            Change(ChangeType.CREATE, "box100", slide_index="100"),
+        ]
+    )
+    requests = [
+        {"createSlide": {"objectId": "new_slide_100_1"}},
+        {"createSlide": {"objectId": "new_slide_99_2"}},
+        {
+            "createShape": {
+                "objectId": "box100",
+                "elementProperties": {"pageObjectId": "new_slide_100_1"},
+            }
+        },
+        {"updateShapeProperties": {"objectId": "box100"}},
+        {
+            "createShape": {
+                "objectId": "box99",
+                "elementProperties": {"pageObjectId": "new_slide_99_2"},
+            }
+        },
+        {"updateShapeProperties": {"objectId": "box99"}},
+    ]
+
+    batches = partition_requests_by_slide(
+        requests,
+        diff_result,
+        {},
+        {},
+        {"slides": []},
+        folder,
+    )
+
+    assert [batch.slide_index for batch in batches] == ["99", "100"]
+    assert batches[0].requests == [requests[1], requests[4], requests[5]]
+    assert batches[1].requests == [requests[0], requests[2], requests[3]]
+
+
+def test_new_slide_requests_use_numeric_order_across_100_boundary() -> None:
+    changes = [
+        Change(
+            ChangeType.CREATE,
+            f"box{slide_index}",
+            slide_index=slide_index,
+            new_position={"x": 0, "y": 0, "w": 10, "h": 10},
+            tag="Rect",
+        )
+        for slide_index in ("99", "100")
+    ]
+
+    requests = generate_batch_requests(DiffResult(changes=changes), {}, {})
+
+    assert [
+        request["createSlide"]["objectId"].rsplit("_", 1)[0]
+        for request in requests
+        if "createSlide" in request
+    ] == ["new_slide_99", "new_slide_100"]
+
+
+def test_editing_slide_100_invalidates_ledger_hash_for_batch_that_builds_it(
+    tmp_path: Path,
+) -> None:
+    folder = tmp_path / "deck"
+    for slide_index in ("99", "100"):
+        content_path = folder / "slides" / slide_index / "content.sml"
+        content_path.parent.mkdir(parents=True)
+        content_path.write_text(
+            f'<Slide id="s{slide_index}"><Rect id="box{slide_index}" /></Slide>',
+            encoding="utf-8",
+        )
+    diff_result = DiffResult(
+        changes=[
+            Change(ChangeType.CREATE, "box99", slide_index="99"),
+            Change(ChangeType.CREATE, "box100", slide_index="100"),
+        ]
+    )
+    requests = [
+        {"createSlide": {"objectId": "new_slide_100_1"}},
+        {"createSlide": {"objectId": "new_slide_99_2"}},
+        {
+            "createShape": {
+                "objectId": "box100",
+                "elementProperties": {"pageObjectId": "new_slide_100_1"},
+            }
+        },
+        {
+            "createShape": {
+                "objectId": "box99",
+                "elementProperties": {"pageObjectId": "new_slide_99_2"},
+            }
+        },
+    ]
+
+    before = partition_requests_by_slide(
+        requests, diff_result, {}, {}, {"slides": []}, folder
+    )
+    write_progress_ledger(
+        folder,
+        "deck-id",
+        {batch.slide_index: batch.content_hash for batch in before},
+    )
+    recorded = load_progress_ledger(folder, "deck-id")
+
+    (folder / "slides" / "100" / "content.sml").write_text(
+        '<Slide id="s100"><Rect id="box100" x="1" /></Slide>',
+        encoding="utf-8",
+    )
+    after = partition_requests_by_slide(
+        requests, diff_result, {}, {}, {"slides": []}, folder
+    )
+    batch_building_100 = next(
+        batch
+        for batch in after
+        if any(
+            request.get("createSlide", {}).get("objectId") == "new_slide_100_1"
+            for request in batch.requests
+        )
+    )
+
+    assert recorded[batch_building_100.slide_index] != batch_building_100.content_hash
 
 
 async def test_per_slide_push_writes_one_locked_batch_per_slide_in_order(

@@ -490,3 +490,13 @@ contract. Cover/crop remains unsupported.
   classes while preserving warnings for dropped authored classes, text loss,
   real geometry changes, and non-default alignment such as
   `content-align-middle` on a `TextBox`.
+
+## M7 REVIEW ROUND 1
+
+- [x] MEDIUM per-slide push mis-partitioned new slides at the 100-slide
+  boundary. Partitioning now derives each new slide's local index from the
+  emitted `new_slide_{index}_{suffix}` createSlide objectId instead of zipping
+  against a separately sorted list, and request generation uses numeric slide
+  ordering. Offline regressions cover correct request grouping, resume-ledger
+  hash invalidation for slide 100, numeric emission order, and the existing
+  padded-index case.

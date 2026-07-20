@@ -11,8 +11,6 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from defusedxml import ElementTree as DefusedET
-
 from extraslide.json_utils import read_json
 
 
@@ -134,7 +132,8 @@ def _request_id_legend(
 
 
 def cmd_push(args: Any) -> None:
-    from extraslide.client import ConflictError, SlidesClient
+    from extraslide.client import SlidesClient
+    from extraslide.conflicts import ConflictError
     from extraslide.transport import GoogleSlidesTransport
 
     _warn_if_stale(args.folder)
@@ -159,7 +158,7 @@ def cmd_push(args: Any) -> None:
 
 
 def cmd_check(args: Any) -> None:
-    from extraslide.qa import check_folder
+    from extraslide.qa import check_folder, download_thumbnails
 
     folder = Path(args.folder)
     _warn_if_stale(folder)
@@ -167,7 +166,8 @@ def cmd_check(args: Any) -> None:
         from extraslide.transport import GoogleSlidesTransport
 
         metadata = read_json(folder / "presentation.json", missing_ok=False)
-        id_mapping = read_json(folder / "id_mapping.json", missing_ok=False)
+        # Preserve the pre-auth workspace validation order from the inline engine.
+        read_json(folder / "id_mapping.json", missing_ok=False)
         presentation_id = metadata["presentationId"]
         token = _token("slide.pull", presentation_id)
         qa_dir = folder / ".qa"
@@ -176,24 +176,7 @@ def cmd_check(args: Any) -> None:
         async def run() -> None:
             transport = GoogleSlidesTransport(token)
             try:
-                content_paths = (folder / "slides").glob("*/content.sml")
-                for content_path in sorted(
-                    content_paths, key=lambda path: int(path.parent.name)
-                ):
-                    slide_number = content_path.parent.name
-                    slide_clean_id = DefusedET.fromstring(
-                        content_path.read_text(encoding="utf-8")
-                    ).get("id")
-                    if not slide_clean_id or slide_clean_id not in id_mapping:
-                        raise ValueError(
-                            f"No Google page object ID for slide {slide_number}"
-                        )
-                    png = await transport.get_page_thumbnail(
-                        presentation_id, id_mapping[slide_clean_id]
-                    )
-                    output_path = qa_dir / f"slide-{slide_number}.png"
-                    output_path.write_bytes(png)
-                    print(output_path, flush=True)
+                await download_thumbnails(transport, folder, qa_dir)
             finally:
                 await transport.close()
 

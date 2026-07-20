@@ -13,11 +13,8 @@ import pytest
 
 from extraslide.bounds import BoundingBox
 from extraslide.classes import TextStyle, parse_text_style_classes
-from extraslide.client import (
-    SlidesClient,
-    _collect_request_object_ids,
-    diff_folder,
-)
+from extraslide.client import SlidesClient, diff_folder
+from extraslide.conflicts import collect_request_object_ids
 from extraslide.content_diff import (
     Change,
     ChangeType,
@@ -479,7 +476,7 @@ def test_golden_group_copy_and_delete_are_end_to_end_contracts(tmp_path: Path) -
     sml_path.write_text(ET.tostring(root, encoding="unicode"), encoding="utf-8")
     copy_requests = client.diff(folder)
     assert any("groupObjects" in request for request in copy_requests)
-    created_ids, _ = _collect_request_object_ids(copy_requests)
+    created_ids, _ = collect_request_object_ids(copy_requests)
     assert len(created_ids) == len(set(created_ids))
 
     sml_path.write_text(pristine_sml, encoding="utf-8")

@@ -360,41 +360,11 @@ def diff_presentation(
                     result.changes.extend(changes)
             else:
                 # Multiple instances - identify original vs copies
-                # The original is the one on the same slide as in pristine
-                original_slide = pristine_slide_map[elem_id]
-
-                original_instance: tuple[str, ParsedElement] | None = None
-                copy_instances: list[tuple[str, ParsedElement]] = []
-
-                # Find instances on the original slide vs other slides
-                same_slide_instances: list[tuple[str, ParsedElement]] = []
-                for slide_idx, edited_elem in instances:
-                    # Check if this is a copy by missing dimensions
-                    if _is_copy_by_missing_dimensions(edited_elem):
-                        copy_instances.append((slide_idx, edited_elem))
-                    elif slide_idx == original_slide:
-                        same_slide_instances.append((slide_idx, edited_elem))
-                    else:
-                        copy_instances.append((slide_idx, edited_elem))
-
-                # If multiple instances on the same slide, find the one matching
-                # pristine position (that's the original), rest are same-slide copies
-                if len(same_slide_instances) == 1:
-                    original_instance = same_slide_instances[0]
-                elif len(same_slide_instances) > 1:
-                    # Find the instance that matches pristine position
-                    for slide_idx, edited_elem in same_slide_instances:
-                        if (
-                            edited_elem.x == pristine_elem.x
-                            and edited_elem.y == pristine_elem.y
-                        ):
-                            original_instance = (slide_idx, edited_elem)
-                        else:
-                            copy_instances.append((slide_idx, edited_elem))
-                    # If no position match, use first one as original
-                    if original_instance is None and same_slide_instances:
-                        original_instance = same_slide_instances[0]
-                        copy_instances.extend(same_slide_instances[1:])
+                original_instance, copy_instances = _split_original_and_copies(
+                    instances,
+                    pristine_slide_map[elem_id],
+                    pristine_elem,
+                )
 
                 # Handle original (if it still exists on its original slide)
                 if original_instance:
@@ -588,6 +558,42 @@ def _make_copy_change(
         children=children,
         tag=edited.tag,
     )
+
+
+def _split_original_and_copies(
+    instances: list[tuple[str, ParsedElement]],
+    original_slide: str,
+    pristine: ParsedElement,
+) -> tuple[
+    tuple[str, ParsedElement] | None,
+    list[tuple[str, ParsedElement]],
+]:
+    """Partition duplicate edited instances into the original and its copies."""
+    original_instance: tuple[str, ParsedElement] | None = None
+    copy_instances: list[tuple[str, ParsedElement]] = []
+    same_slide_instances: list[tuple[str, ParsedElement]] = []
+
+    for slide_index, edited in instances:
+        if _is_copy_by_missing_dimensions(edited):
+            copy_instances.append((slide_index, edited))
+        elif slide_index == original_slide:
+            same_slide_instances.append((slide_index, edited))
+        else:
+            copy_instances.append((slide_index, edited))
+
+    if len(same_slide_instances) == 1:
+        original_instance = same_slide_instances[0]
+    elif len(same_slide_instances) > 1:
+        for slide_index, edited in same_slide_instances:
+            if edited.x == pristine.x and edited.y == pristine.y:
+                original_instance = (slide_index, edited)
+            else:
+                copy_instances.append((slide_index, edited))
+        if original_instance is None:
+            original_instance = same_slide_instances[0]
+            copy_instances.extend(same_slide_instances[1:])
+
+    return original_instance, copy_instances
 
 
 def _serialize_children(

@@ -10,7 +10,8 @@ from typing import Any
 import httpx
 import pytest
 
-from extraslide.client import SlidesClient, _collect_request_object_ids
+from extraslide.client import SlidesClient
+from extraslide.conflicts import collect_request_object_ids, detect_conflicts
 from extraslide.transport import (
     APIError,
     AuthenticationError,
@@ -139,13 +140,12 @@ def test_conflict_collection_includes_group_children_and_deleted_target_slide() 
             }
         },
     ]
-    object_ids, page_ids = _collect_request_object_ids(requests)
+    object_ids, page_ids = collect_request_object_ids(requests)
     assert object_ids == {"group", "a", "b", "new-shape"}
     assert page_ids == {"slide"}
 
     base = {"slides": [{"objectId": "slide", "pageElements": []}]}
-    client = SlidesClient(_RefreshFailTransport(base))
-    assert client._detect_conflicts(base, {"slides": []}, requests, {"s1": "slide"}) == [
+    assert detect_conflicts(base, {"slides": []}, requests, {"s1": "slide"}) == [
         ("s1", "target slide deleted remotely")
     ]
 

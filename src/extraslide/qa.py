@@ -8,6 +8,8 @@ from pathlib import Path
 from collections.abc import Iterator
 from typing import Any, Callable
 
+from defusedxml import ElementTree as DefusedET
+
 from extraslide.bounds import BoundingBox
 from extraslide.content_parser import ParsedElement, ParsedRun, parse_all_slides
 from extraslide.json_utils import read_json
@@ -16,6 +18,29 @@ from extraslide.layout import ApproximateTextMeasurer, TextMeasurer
 OVERLAP_THRESHOLD = 0.15
 TEXT_OVERFLOW_TOLERANCE = 1.10
 QA_BASELINE_FILE = "qa-baseline.json"
+
+
+async def download_thumbnails(transport: Any, folder: Path, qa_dir: Path) -> None:
+    """Download each materialized slide thumbnail in numeric slide order."""
+    metadata = read_json(folder / "presentation.json", missing_ok=False)
+    id_mapping = read_json(folder / "id_mapping.json", missing_ok=False)
+    presentation_id = metadata["presentationId"]
+    content_paths = (folder / "slides").glob("*/content.sml")
+    for content_path in sorted(
+        content_paths, key=lambda path: int(path.parent.name)
+    ):
+        slide_number = content_path.parent.name
+        slide_clean_id = DefusedET.fromstring(
+            content_path.read_text(encoding="utf-8")
+        ).get("id")
+        if not slide_clean_id or slide_clean_id not in id_mapping:
+            raise ValueError(f"No Google page object ID for slide {slide_number}")
+        png = await transport.get_page_thumbnail(
+            presentation_id, id_mapping[slide_clean_id]
+        )
+        output_path = qa_dir / f"slide-{slide_number}.png"
+        output_path.write_bytes(png)
+        print(output_path, flush=True)
 
 
 @dataclass(frozen=True)

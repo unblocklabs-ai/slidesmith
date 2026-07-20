@@ -241,10 +241,10 @@ Disposition: **fixed**. `Change.tag` is now the single representation in diff co
 Implementation: split the current 1,979-line file by its live seams into text editing/ranges, copied-element reconstruction, typed class styling, and element factories. Batch ordering, delete hierarchy handling, and ID allocation remain in `content_requests.py`; allocator callbacks keep copy reconstruction acyclic, and compatibility re-exports preserve existing imports.
 ### [x] T-M1 [MEDIUM] generate_batch_requests does 7 jobs inline — extract _bucket_changes, _emit_new_slide_requests, per-type emitters.
 Implementation: `generate_batch_requests` now delegates bucketing and missing-slide creation plus delete, move, text, style, paragraph-style, copy, and create emission to focused helpers in `content_requests.py`, preserving the original request order.
-### T-M2 [MEDIUM] client.py push() concentrates diff+guard+lock+refresh — move guard helpers + ConflictError to conflicts.py; _refresh_after_push to a workspace-refresh helper.
+### [x] T-M2 [MEDIUM] client.py push() concentrates diff+guard+lock+refresh — move guard helpers + ConflictError to conflicts.py; _refresh_after_push to a workspace-refresh helper.
 ### T-M3 [MEDIUM] credentials.py 1763 lines / five concerns — split into auth/stores.py, auth/browser_flow.py, auth/discovery.py, auth/doctor.py. (Do AFTER security fixes land.)
-### T-M4 [MEDIUM] cli.py cmd_check embeds thumbnail engine — extract qa.download_thumbnails(transport, folder, qa_dir).
-### T-M5 [MEDIUM] content_diff.diff_presentation 235 lines with duplicated COPY construction (== D-D5) — extract _make_copy_change, _split_original_and_copies.
+### [x] T-M4 [MEDIUM] cli.py cmd_check embeds thumbnail engine — extract qa.download_thumbnails(transport, folder, qa_dir).
+### [x] T-M5 [MEDIUM] content_diff.diff_presentation 235 lines with duplicated COPY construction (== D-D5) — extract _make_copy_change, _split_original_and_copies.
 ### T-L1..L4 [LOW] copied_group_ids written never read; _id_counter global state → IdAllocator; duplicate _read_json (== D-D11); builtin shadowing (`id`, `format`).
 
 ### Consistency

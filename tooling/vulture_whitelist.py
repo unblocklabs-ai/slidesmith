@@ -35,6 +35,10 @@ _._timeout
 _.log_message
 format_string
 
+# http.client invokes these overrides and owns the socket attribute dynamically.
+_.connect
+_.sock
+
 # Credentials re-exports are the supported monkeypatch surface for tests/integrations.
 SSL_CONTEXT
 BrowserFlowMixin

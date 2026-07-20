@@ -24,6 +24,7 @@ from slidesmith.engine.qa import (
     create_contact_sheet,
     finding_id,
     lint_folder,
+    push_preflight,
     record_qa_baseline,
 )
 from slidesmith.engine.transport import (
@@ -125,6 +126,46 @@ def test_overlap_flags_sibling_leaves_over_threshold(qa_folder: Path) -> None:
     assert findings[0].slide_number == 1
     assert findings[0].severity == "WARNING"
     assert findings[0].suggested_fix
+
+
+def test_preflight_uses_contain_image_effective_box_for_overlap(
+    qa_folder: Path,
+) -> None:
+    assets = qa_folder / "assets"
+    assets.mkdir()
+    Image.new("RGB", (300, 100)).save(assets / "wide.png")
+    _replace_slides(
+        qa_folder,
+        '<Image id="hero" src="./assets/wide.png" fit="contain" '
+        'x="10" y="10" w="120" h="90" />'
+        '<Rect id="neighbor" x="100" y="65" w="60" h="20" />',
+    )
+    output: list[str] = []
+
+    active = push_preflight(qa_folder, output=output.append)
+
+    assert active == 0
+    assert not any("OVERLAP" in line for line in output)
+
+
+def test_preflight_warns_for_genuine_contain_effective_box_overlap(
+    qa_folder: Path,
+) -> None:
+    assets = qa_folder / "assets"
+    assets.mkdir()
+    Image.new("RGB", (300, 100)).save(assets / "wide.png")
+    _replace_slides(
+        qa_folder,
+        '<Image id="hero" src="./assets/wide.png" fit="contain" '
+        'x="10" y="10" w="120" h="90" />'
+        '<Rect id="neighbor" x="100" y="40" w="60" h="30" />',
+    )
+    output: list[str] = []
+
+    active = push_preflight(qa_folder, output=output.append)
+
+    assert active == 1
+    assert any("OVERLAP" in line for line in output)
 
 
 def test_overlap_allows_exactly_fifteen_percent(qa_folder: Path) -> None:

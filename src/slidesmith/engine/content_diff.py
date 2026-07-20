@@ -401,7 +401,12 @@ def diff_presentation(
                     )
                 else:
                     # Normal modification check
-                    changes = _compare_elements(pristine_elem, edited_elem, slide_idx)
+                    changes = _compare_elements(
+                        pristine_elem,
+                        edited_elem,
+                        slide_idx,
+                        workspace_root=workspace_root,
+                    )
                     result.changes.extend(changes)
             else:
                 # Multiple instances - identify original vs copies
@@ -414,7 +419,12 @@ def diff_presentation(
                 # Handle original (if it still exists on its original slide)
                 if original_instance:
                     slide_idx, edited_elem = original_instance
-                    changes = _compare_elements(pristine_elem, edited_elem, slide_idx)
+                    changes = _compare_elements(
+                        pristine_elem,
+                        edited_elem,
+                        slide_idx,
+                        workspace_root=workspace_root,
+                    )
                     result.changes.extend(changes)
 
                 # Handle copies
@@ -441,7 +451,7 @@ def diff_presentation(
                         target_id=elem_id,
                         slide_index=slide_idx,
                         parent_id=edited_elem.parent_id,
-                        new_position=_get_create_position(
+                        new_position=get_effective_position(
                             edited_elem, workspace_root=workspace_root
                         ),
                         new_text=edited_elem.paragraphs
@@ -477,28 +487,30 @@ def _compare_elements(
     pristine: ParsedElement,
     edited: ParsedElement,
     slide_idx: str,
+    *,
+    workspace_root: Path | None = None,
 ) -> list[Change]:
     """Compare two elements with the same ID and generate changes."""
     changes: list[Change] = []
+    pristine_position = _get_position(pristine)
+    edited_position = get_effective_position(
+        edited,
+        workspace_root=workspace_root,
+    )
 
     # Check position change (only for root elements)
     if (
         pristine.has_position
         and edited.has_position
-        and (
-            pristine.x != edited.x
-            or pristine.y != edited.y
-            or pristine.w != edited.w
-            or pristine.h != edited.h
-        )
+        and pristine_position != edited_position
     ):
         changes.append(
             Change(
                 change_type=ChangeType.MOVE,
                 target_id=pristine.clean_id,
                 slide_index=slide_idx,
-                new_position=_get_position(edited),
-                old_position=_get_position(pristine),
+                new_position=edited_position,
+                old_position=pristine_position,
             )
         )
 
@@ -973,12 +985,12 @@ def _get_position(elem: ParsedElement) -> dict[str, float] | None:
     }
 
 
-def _get_create_position(
+def get_effective_position(
     elem: ParsedElement,
     *,
     workspace_root: Path | None = None,
 ) -> dict[str, float] | None:
-    """Resolve authored CREATE geometry, including Image contain fitting."""
+    """Resolve the effective box consumed by Slides for authored geometry."""
     if elem.tag == "Image" and elem.src is not None:
         validate_authored_image_geometry(
             elem.clean_id,

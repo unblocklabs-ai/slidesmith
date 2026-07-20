@@ -18,6 +18,7 @@ from slidesmith.engine.content_parser import (
     ParsedRun,
     parse_all_slides,
 )
+from slidesmith.engine.content_diff import get_effective_position
 from slidesmith.engine.components import load_components
 from slidesmith.engine.json_utils import read_json
 from slidesmith.engine.layout import (
@@ -301,9 +302,9 @@ def lint_folder(
         except ValueError as exc:
             raise ValueError(f"Slide folder name must be numeric: {slide_name}") from exc
 
-        findings.extend(_find_overlaps(roots, slide_number))
+        findings.extend(_find_overlaps(roots, slide_number, folder_path))
         for element in _walk(roots):
-            box = _box(element)
+            box = _box(element, folder_path)
             if box is None:
                 continue
             if (
@@ -518,6 +519,7 @@ def push_preflight(
 def _find_overlaps(
     siblings: list[ParsedElement],
     slide_number: int,
+    workspace_root: Path,
 ) -> list[Finding]:
     findings: list[Finding] = []
     # Divider lines intentionally cross other content. Treating their thin
@@ -528,11 +530,11 @@ def _find_overlaps(
         if not element.children and element.tag != "Line"
     ]
     for index, first in enumerate(leaves):
-        first_box = _box(first)
+        first_box = _box(first, workspace_root)
         if first_box is None or first_box.area <= 0:
             continue
         for second in leaves[index + 1 :]:
-            second_box = _box(second)
+            second_box = _box(second, workspace_root)
             if second_box is None or second_box.area <= 0:
                 continue
             if first_box.contains(second_box, threshold=1.0) or second_box.contains(
@@ -562,7 +564,9 @@ def _find_overlaps(
             )
 
     for element in siblings:
-        findings.extend(_find_overlaps(element.children, slide_number))
+        findings.extend(
+            _find_overlaps(element.children, slide_number, workspace_root)
+        )
     return findings
 
 
@@ -572,14 +576,16 @@ def _walk(elements: list[ParsedElement]) -> Iterator[ParsedElement]:
         yield from _walk(element.children)
 
 
-def _box(element: ParsedElement) -> BoundingBox | None:
-    if None in (element.x, element.y, element.w, element.h):
+def _box(element: ParsedElement, workspace_root: Path) -> BoundingBox | None:
+    position = get_effective_position(element, workspace_root=workspace_root)
+    if position is None:
         return None
-    assert element.x is not None
-    assert element.y is not None
-    assert element.w is not None
-    assert element.h is not None
-    return BoundingBox(element.x, element.y, element.w, element.h)
+    return BoundingBox(
+        position["x"],
+        position["y"],
+        position["w"],
+        position["h"],
+    )
 
 
 def _intersection_area(first: BoundingBox, second: BoundingBox) -> float:

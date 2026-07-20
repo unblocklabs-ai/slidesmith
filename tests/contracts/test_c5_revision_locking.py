@@ -20,6 +20,7 @@ from typing import Any
 
 import httpx
 import pytest
+from PIL import Image
 
 from slidesmith.engine.client import ConflictError, SlidesClient
 from slidesmith.engine.content_diff import ChangeType
@@ -565,6 +566,42 @@ def test_persistence_warning_ignores_created_text_layout_defaults(
         {"01": intended},
         {("new_box", ChangeType.CREATE)},
         {("01", "new_box")},
+        response,
+    )
+
+    assert "warnings" not in response
+
+
+def test_persistence_warning_treats_contain_effective_geometry_as_intended(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    folder = tmp_path / "deck"
+    assets = folder / "assets"
+    assets.mkdir(parents=True)
+    Image.new("RGB", (300, 100)).save(assets / "wide.png")
+    (folder / "id_mapping.json").write_text("{}", encoding="utf-8")
+    intended = parse_slide_content(
+        '<Slide id="s1"><Image id="hero" src="./assets/wide.png" '
+        'fit="contain" x="10" y="20" w="120" h="90" /></Slide>'
+    )
+    remote = parse_slide_content(
+        '<Slide id="s1"><Image id="hero" x="10" y="20" w="120" h="40" />'
+        "</Slide>"
+    )
+    client = SlidesClient()
+    monkeypatch.setattr(
+        client,
+        "_read_pristine",
+        lambda _folder: ({"01": remote}, {}),
+    )
+    response: dict[str, Any] = {}
+
+    client._append_persistence_warning(
+        folder,
+        {"01": intended},
+        {("hero", ChangeType.CREATE)},
+        {("01", "hero")},
         response,
     )
 

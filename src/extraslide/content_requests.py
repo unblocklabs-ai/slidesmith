@@ -196,6 +196,7 @@ def _emit_style_update_requests(
                 element_tag=element_tag,
                 text_style_reset_fields=change.text_style_reset_fields,
                 paragraph_style_reset_fields=change.paragraph_style_reset_fields,
+                stroke_reset_fields=change.stroke_reset_fields,
                 reset_content_alignment=change.reset_content_alignment,
             )
         )
@@ -274,6 +275,7 @@ def _emit_copy_requests(
                     diff_result.pristine_styles,
                     reserved_object_ids,
                     source_google_id=source_google_id,
+                    id_mapping=id_mapping,
                     allocate_object_id=_allocate_create_object_id,
                     unique_suffix=unique_suffix,
                     warnings=diff_result.warnings,

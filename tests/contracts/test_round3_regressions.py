@@ -311,7 +311,7 @@ def test_removed_class_groups_emit_field_masked_default_resets() -> None:
             assert body["lineProperties"] == {}
 
 
-def test_single_instance_group_copy_suppresses_pristine_id_descendants() -> None:
+def test_single_instance_group_copy_suppresses_descendant_moves() -> None:
     pristine = (
         '<Slide id="s1"><Group id="group" x="0" y="0" w="100" h="100">'
         '<Rect id="child" x="10" y="10" w="20" h="20" />'
@@ -325,8 +325,12 @@ def test_single_instance_group_copy_suppresses_pristine_id_descendants() -> None
 
     changes = diff_slide_content(pristine, edited, {}, "01")
 
-    assert [change.change_type for change in changes] == [ChangeType.COPY]
+    assert [change.change_type for change in changes] == [
+        ChangeType.COPY,
+        ChangeType.DELETE,
+    ]
     assert changes[0].source_id == "group"
+    assert changes[1].target_id == "child"
 
 
 def test_nested_auto_text_copy_uses_root_guard_and_fails_cross_slide() -> None:

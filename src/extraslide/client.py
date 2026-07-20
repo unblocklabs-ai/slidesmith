@@ -14,6 +14,7 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
+from extraslide.bounds import Transform
 from extraslide.conflicts import (
     ConflictError,
     ensure_no_conflicts,
@@ -114,6 +115,45 @@ def _enrich_pristine_geometry(
                     "translateY": transform.get("translateY", 0),
                 },
             )
+
+    clean_id_by_google_id = {
+        google_id: clean_id for clean_id, google_id in id_mapping.items()
+    }
+
+    def walk(
+        element: dict[str, Any],
+        parent_group_transform: Transform | None = None,
+    ) -> None:
+        google_id = element.get("objectId")
+        clean_id = clean_id_by_google_id.get(google_id)
+        if clean_id is not None and parent_group_transform is not None:
+            styles.setdefault(clean_id, {}).setdefault(
+                "parentTransform",
+                {
+                    "scaleX": parent_group_transform.scale_x,
+                    "scaleY": parent_group_transform.scale_y,
+                    "shearX": parent_group_transform.shear_x,
+                    "shearY": parent_group_transform.shear_y,
+                    "translateX": parent_group_transform.translate_x,
+                    "translateY": parent_group_transform.translate_y,
+                },
+            )
+
+        child_group_transform = parent_group_transform
+        if "elementGroup" in element:
+            group_transform = Transform.from_element(element)
+            child_group_transform = (
+                parent_group_transform.compose(group_transform)
+                if parent_group_transform is not None
+                else group_transform
+            )
+        for child in element.get("elementGroup", {}).get("children", []):
+            walk(child, child_group_transform)
+
+    for page_kind in ("slides", "layouts", "masters"):
+        for page in base_raw.get(page_kind, []) or []:
+            for element in page.get("pageElements", []) or []:
+                walk(element)
 
 
 class SlidesClient:

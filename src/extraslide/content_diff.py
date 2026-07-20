@@ -98,6 +98,7 @@ class Change:
     # Slides inherited/default values with an empty field-masked update.
     text_style_reset_fields: list[str] | None = None
     paragraph_style_reset_fields: list[str] | None = None
+    stroke_reset_fields: list[str] | None = None
     reset_content_alignment: bool = False
 
     # For CREATE/TEXT_UPDATE: styled text runs (one list per paragraph)
@@ -105,6 +106,10 @@ class Change:
 
     # For CREATE: explicit <P class> defaults, parallel to new_text.
     new_paragraph_styles: list[ParagraphStyles | None] | None = None
+
+    # For COPY: pristine paragraph defaults used to apply only authored deltas
+    # after duplicateObject preserves dynamic autoText.
+    old_paragraph_styles: list[ParagraphStyles | None] | None = None
 
     # For PARAGRAPH_STYLE_UPDATE: only paragraphs whose class changed.
     paragraph_style_updates: list[ParagraphClassUpdate] | None = None
@@ -344,6 +349,7 @@ def diff_presentation(
                 )
 
     # Detect changes
+    retained_pristine_ids: set[str] = set()
     for elem_id, instances in edited_elements.items():
         instances = [
             instance
@@ -354,6 +360,11 @@ def diff_presentation(
             continue
 
         if elem_id in known_ids:
+            # A non-suppressed instance retains the pristine source. Explicit
+            # copy roots are intentionally included: authoring a copy does not
+            # delete its source. Descendants found only inside that copy were
+            # suppressed above and therefore do not retain their originals.
+            retained_pristine_ids.add(elem_id)
             # This ID existed in pristine
             pristine_elem = pristine_elements[elem_id]
 
@@ -431,7 +442,7 @@ def diff_presentation(
 
     # Detect deletions
     for elem_id in known_ids:
-        if elem_id not in edited_elements:
+        if elem_id not in retained_pristine_ids:
             slide_idx = pristine_slide_map.get(elem_id, "")
             result.changes.append(
                 Change(
@@ -568,15 +579,23 @@ def _compare_elements(
                 slide_index=slide_idx,
                 new_styles=style_delta,
                 text_style_reset_fields=(
-                    _text_style_fields(pristine_styles.text_style)
-                    if pristine_styles.text_style is not None
-                    and edited_styles.text_style is None
-                    else None
+                    _removed_text_style_fields(
+                        pristine_styles.text_style,
+                        edited_styles.text_style,
+                    )
                 ),
                 paragraph_style_reset_fields=(
-                    _paragraph_style_fields(pristine_styles.paragraph_style)
-                    if pristine_styles.paragraph_style is not None
-                    and edited_styles.paragraph_style is None
+                    _removed_paragraph_style_fields(
+                        pristine_styles.paragraph_style,
+                        edited_styles.paragraph_style,
+                    )
+                ),
+                stroke_reset_fields=(
+                    _removed_stroke_fields(
+                        pristine_styles.stroke,
+                        edited_styles.stroke,
+                    )
+                    if edited_styles.stroke is not None
                     else None
                 ),
                 reset_content_alignment=(
@@ -624,6 +643,9 @@ def _make_copy_change(
         old_runs=pristine.runs if pristine.runs else None,
         new_paragraph_styles=(
             edited.paragraph_styles if edited.paragraph_styles else None
+        ),
+        old_paragraph_styles=(
+            pristine.paragraph_styles if pristine.paragraph_styles else None
         ),
         source_slide_index=source_slide_index,
         children=children,
@@ -705,11 +727,16 @@ def _serialize_children(
                 "h": pristine_child.h,
             }
 
-        # Include text if available
-        if child.paragraphs:
+        # Include edited and pristine text state so the duplicateObject path
+        # can replay only authored descendant deltas onto its mapped IDs.
+        if child.paragraphs or (pristine_child and pristine_child.paragraphs):
             child_data["text"] = child.paragraphs
             child_data["runs"] = child.runs
             child_data["paragraphStyles"] = child.paragraph_styles
+            if pristine_child is not None:
+                child_data["sourceText"] = pristine_child.paragraphs
+                child_data["sourceRuns"] = pristine_child.runs
+                child_data["sourceParagraphStyles"] = pristine_child.paragraph_styles
 
         # Recursively include nested children
         if child.children:
@@ -747,6 +774,46 @@ def _collect_descendant_instances(elem: ParsedElement, result: set[int]) -> None
     for child in elem.children:
         result.add(id(child))
         _collect_descendant_instances(child, result)
+
+
+_TEXT_STYLE_FIELD_NAMES = {
+    "bold": "bold",
+    "italic": "italic",
+    "underline": "underline",
+    "strikethrough": "strikethrough",
+    "small_caps": "smallCaps",
+    "baseline_offset": "baselineOffset",
+    "font_family": "fontFamily",
+    "font_size_pt": "fontSize",
+    "font_weight": "weightedFontFamily",
+    "foreground_color": "foregroundColor",
+    "background_color": "backgroundColor",
+    "link": "link",
+}
+_PARAGRAPH_STYLE_FIELD_NAMES = {
+    "alignment": "alignment",
+    "line_spacing": "lineSpacing",
+    "space_above_pt": "spaceAbove",
+    "space_below_pt": "spaceBelow",
+    "indent_start_pt": "indentStart",
+    "indent_end_pt": "indentEnd",
+    "indent_first_line_pt": "indentFirstLine",
+    "direction": "direction",
+    "spacing_mode": "spacingMode",
+}
+
+
+def _changed_style_fields(
+    old_style: Any,
+    new_style: Any,
+    field_names: dict[str, str],
+) -> list[str]:
+    """Return API fields whose typed style values changed."""
+    return [
+        api_name
+        for attr_name, api_name in field_names.items()
+        if getattr(old_style, attr_name, None) != getattr(new_style, attr_name, None)
+    ]
 
 
 def _text_style_fields(style: TextStyle) -> list[str]:
@@ -790,6 +857,69 @@ def _paragraph_style_fields(style: ParagraphStyle) -> list[str]:
         )
         if getattr(style, attribute) is not None
     ]
+
+
+def _removed_text_style_fields(
+    pristine: TextStyle | None,
+    edited: TextStyle | None,
+) -> list[str] | None:
+    """Return element text fields removed while sibling classes survive."""
+    old = pristine or TextStyle()
+    new = edited or TextStyle()
+    changed = set(_changed_style_fields(old, new, _TEXT_STYLE_FIELD_NAMES))
+    represented_after = set(_text_style_fields(new))
+    removed = [
+        field
+        for field in _text_style_fields(old)
+        if field in changed and field not in represented_after
+    ]
+    return removed or None
+
+
+def _removed_paragraph_style_fields(
+    pristine: ParagraphStyle | None,
+    edited: ParagraphStyle | None,
+) -> list[str] | None:
+    """Return element paragraph fields removed while sibling classes survive."""
+    old = pristine or ParagraphStyle()
+    new = edited or ParagraphStyle()
+    changed = set(_changed_style_fields(old, new, _PARAGRAPH_STYLE_FIELD_NAMES))
+    represented_after = set(_paragraph_style_fields(new))
+    removed = [
+        field
+        for field in _paragraph_style_fields(old)
+        if field in changed and field not in represented_after
+    ]
+    return removed or None
+
+
+def _removed_stroke_fields(
+    pristine: Stroke | None,
+    edited: Stroke | None,
+) -> list[str] | None:
+    """Return logical Slides stroke fields removed from a partial class group."""
+    old = pristine or Stroke()
+    new = edited or Stroke()
+    fields = _changed_style_fields(
+        old,
+        new,
+        {
+            "color": "lineFill",
+            "weight_pt": "weight",
+            "dash_style": "dashStyle",
+        },
+    )
+    represented_after = {
+        field
+        for attribute, field in (
+            ("color", "lineFill"),
+            ("weight_pt", "weight"),
+            ("dash_style", "dashStyle"),
+        )
+        if getattr(new, attribute) is not None
+    }
+    removed = [field for field in fields if field not in represented_after]
+    return removed or None
 
 
 def _get_position(elem: ParsedElement) -> dict[str, float] | None:

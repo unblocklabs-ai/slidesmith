@@ -17,6 +17,7 @@ def _create_class_style_requests(
     element_tag: str | None = None,
     text_style_reset_fields: list[str] | None = None,
     paragraph_style_reset_fields: list[str] | None = None,
+    stroke_reset_fields: list[str] | None = None,
     reset_content_alignment: bool = False,
 ) -> list[dict[str, Any]]:
     """Generate requests applying class-derived styles to an existing element.
@@ -31,9 +32,38 @@ def _create_class_style_requests(
         line_request = _create_class_line_style_request(object_id, styles.stroke)
         if line_request:
             requests.append(line_request)
+        if stroke_reset_fields:
+            requests.append(
+                {
+                    "updateLineProperties": {
+                        "objectId": object_id,
+                        "lineProperties": {},
+                        "fields": ",".join(stroke_reset_fields),
+                    }
+                }
+            )
         return requests
 
     requests.extend(_create_class_shape_style_requests(object_id, styles))
+
+    if stroke_reset_fields:
+        shape_fields = [
+            {
+                "lineFill": "outline.outlineFill",
+                "weight": "outline.weight",
+                "dashStyle": "outline.dashStyle",
+            }[field]
+            for field in stroke_reset_fields
+        ]
+        requests.append(
+            {
+                "updateShapeProperties": {
+                    "objectId": object_id,
+                    "shapeProperties": {},
+                    "fields": ",".join(shape_fields),
+                }
+            }
+        )
 
     if reset_content_alignment:
         requests.append(

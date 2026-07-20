@@ -10,7 +10,12 @@ from extraslide.class_style_requests import (
     _class_text_style_to_api,
     _create_class_text_style_request,
 )
-from extraslide.content_diff import ParagraphClassUpdate
+from extraslide.content_diff import (
+    _PARAGRAPH_STYLE_FIELD_NAMES,
+    _TEXT_STYLE_FIELD_NAMES,
+    ParagraphClassUpdate,
+    _changed_style_fields,
+)
 from extraslide.content_parser import ParagraphStyles, ParsedRun
 
 
@@ -353,46 +358,6 @@ def _create_run_style_delta_requests(
                 }
             )
     return requests
-
-
-_TEXT_STYLE_FIELD_NAMES = {
-    "bold": "bold",
-    "italic": "italic",
-    "underline": "underline",
-    "strikethrough": "strikethrough",
-    "small_caps": "smallCaps",
-    "baseline_offset": "baselineOffset",
-    "font_family": "fontFamily",
-    "font_size_pt": "fontSize",
-    "font_weight": "weightedFontFamily",
-    "foreground_color": "foregroundColor",
-    "background_color": "backgroundColor",
-    "link": "link",
-}
-_PARAGRAPH_STYLE_FIELD_NAMES = {
-    "alignment": "alignment",
-    "line_spacing": "lineSpacing",
-    "space_above_pt": "spaceAbove",
-    "space_below_pt": "spaceBelow",
-    "indent_start_pt": "indentStart",
-    "indent_end_pt": "indentEnd",
-    "indent_first_line_pt": "indentFirstLine",
-    "direction": "direction",
-    "spacing_mode": "spacingMode",
-}
-
-
-def _changed_style_fields(
-    old_style: Any,
-    new_style: Any,
-    field_names: dict[str, str],
-) -> list[str]:
-    """Return API fields whose typed style values changed."""
-    return [
-        api_name
-        for attr_name, api_name in field_names.items()
-        if getattr(old_style, attr_name, None) != getattr(new_style, attr_name, None)
-    ]
 
 
 def _paragraph_text_range(

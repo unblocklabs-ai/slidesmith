@@ -49,6 +49,7 @@ def _create_copy_requests(
     reserved_ids: set[str],
     *,
     source_google_id: str | None = None,
+    id_mapping: dict[str, str] | None = None,
     allocate_object_id: Callable[[str, set[str]], str],
     unique_suffix: Callable[[], str],
     warnings: list[str],
@@ -110,11 +111,20 @@ def _create_copy_requests(
                 f"Cannot preserve autoText on cross-slide copy '{change.source_id}': "
                 "the Slides API can only duplicate a page element on its source slide"
             )
+        object_ids = {source_google_id: new_object_id}
+        _map_duplicate_descendants(
+            change.children or [],
+            id_mapping or {},
+            object_ids,
+            new_object_id,
+            reserved_ids,
+            allocate_object_id,
+        )
         requests.append(
             {
                 "duplicateObject": {
                     "objectId": source_google_id,
-                    "objectIds": {source_google_id: new_object_id},
+                    "objectIds": object_ids,
                 }
             }
         )
@@ -136,6 +146,21 @@ def _create_copy_requests(
                     change.old_runs,
                 )
             )
+        requests.extend(
+            _duplicate_paragraph_style_requests(
+                new_object_id,
+                change.new_text or [],
+                change.new_runs or [],
+                change.old_paragraph_styles or [],
+                change.new_paragraph_styles or [],
+            )
+        )
+        _apply_duplicate_descendant_edits(
+            change.children or [],
+            id_mapping or {},
+            object_ids,
+            requests,
+        )
         return requests
 
     _create_one_copied_element(
@@ -160,6 +185,118 @@ def _create_copy_requests(
     )
 
     return requests
+
+
+def _map_duplicate_descendants(
+    children: list[dict[str, Any]],
+    id_mapping: dict[str, str],
+    object_ids: dict[str, str],
+    id_prefix: str,
+    reserved_ids: set[str],
+    allocate_object_id: Callable[[str, set[str]], str],
+    depth: int = 0,
+) -> None:
+    """Populate duplicateObject mappings for every serialized descendant."""
+    for index, child in enumerate(children):
+        clean_id = str(child.get("id", ""))
+        source_google_id = id_mapping.get(clean_id)
+        if source_google_id is None:
+            raise ValueError(
+                f"Cannot preserve edits on copied child '{clean_id}': "
+                "source Google object ID is missing"
+            )
+        new_object_id = allocate_object_id(
+            f"{id_prefix}_c{depth}_{index}", reserved_ids
+        )
+        reserved_ids.add(new_object_id)
+        object_ids[source_google_id] = new_object_id
+        _map_duplicate_descendants(
+            child.get("children", []),
+            id_mapping,
+            object_ids,
+            new_object_id,
+            reserved_ids,
+            allocate_object_id,
+            depth + 1,
+        )
+
+
+def _duplicate_paragraph_style_requests(
+    object_id: str,
+    text: list[str],
+    runs: list[list[ParsedRun]],
+    old_styles: list[ParagraphStyles | None],
+    new_styles: list[ParagraphStyles | None],
+) -> list[dict[str, Any]]:
+    """Apply paragraph defaults changed on a duplicated text element."""
+    updates = [
+        ParagraphClassUpdate(index, old_style, new_style)
+        for index, (old_style, new_style) in enumerate(
+            zip(old_styles, new_styles, strict=False)
+        )
+        if old_style != new_style
+    ]
+    if len(new_styles) > len(old_styles):
+        updates.extend(
+            ParagraphClassUpdate(index, None, new_styles[index])
+            for index in range(len(old_styles), len(new_styles))
+            if new_styles[index] is not None
+        )
+    if not updates:
+        return []
+    return _create_paragraph_class_update_requests(
+        object_id,
+        text,
+        runs,
+        updates,
+    )
+
+
+def _apply_duplicate_descendant_edits(
+    children: list[dict[str, Any]],
+    id_mapping: dict[str, str],
+    object_ids: dict[str, str],
+    requests: list[dict[str, Any]],
+) -> None:
+    """Replay authored text and paragraph deltas on mapped copied children."""
+    for child in children:
+        clean_id = str(child.get("id", ""))
+        source_google_id = id_mapping.get(clean_id)
+        new_object_id = object_ids.get(source_google_id or "")
+        if new_object_id is None:
+            raise ValueError(
+                f"Cannot preserve edits on copied child '{clean_id}': "
+                "duplicateObject descendant mapping is missing"
+            )
+        new_text = child.get("text", [])
+        new_runs = child.get("runs", [])
+        old_text = child.get("sourceText", [])
+        old_runs = child.get("sourceRuns", [])
+        if new_text != old_text or new_runs != old_runs:
+            requests.extend(
+                _create_text_update_requests(
+                    new_object_id,
+                    new_text,
+                    new_runs,
+                    old_text,
+                    old_runs,
+                )
+            )
+        requests.extend(
+            _duplicate_paragraph_style_requests(
+                new_object_id,
+                new_text,
+                new_runs,
+                child.get("sourceParagraphStyles", []),
+                child.get("paragraphStyles", []),
+            )
+        )
+        _apply_duplicate_descendant_edits(
+            child.get("children", []),
+            id_mapping,
+            object_ids,
+            requests,
+        )
 
 
 def _create_one_copied_element(

@@ -358,3 +358,17 @@ Resolution: the source-versus-source-plus-delta heuristic is documented in the a
 
 ### [x] R3-8 [MEDIUM] Nested `autoText` was baked into static text on copy
 Resolution: the copy guard now recursively scans serialized descendants. Same-slide copies containing nested `autoText` use `duplicateObject`, while cross-slide copies fail with the same explicit preservation error as root-level `autoText`.
+
+## ROUND 4
+
+### [x] R4-1 [HIGH] Partial element class removal silently left remote fields set
+Resolution: element text, paragraph, and stroke class changes now track removed fields independently from surviving sibling classes and emit empty field-masked resets for only those removed fields.
+
+### [x] R4-2 [HIGH] DELETE was dropped when an element survived only inside a copy
+Resolution: deletion bookkeeping now uses post-suppression instances. Explicit copy roots retain their sources, while descendants suppressed because they belong only to a copy no longer retain the corresponding pristine object.
+
+### [x] R4-3 [MEDIUM] Same-slide group duplication dropped edited child text and paragraph styles
+Resolution: `duplicateObject.objectIds` now maps every serialized descendant to a deterministic new ID, and request generation replays root and descendant text, run-style, and paragraph-default deltas onto those IDs. Missing mappings fail loudly.
+
+### [x] R4-4 [MEDIUM] Legacy geometry enrichment omitted composed parent transforms
+Resolution: `_enrich_pristine_geometry` now walks the raw group hierarchy and backfills each descendant's composed `parentTransform` with `setdefault`, matching current style extraction without overwriting persisted values.

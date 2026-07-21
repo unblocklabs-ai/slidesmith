@@ -8,92 +8,60 @@ Provides the `pull`, `diff`, and `push` methods for the presentation workflow:
 
 from __future__ import annotations
 
-import json
-import re
-import zipfile
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 from slidesmith.engine.assets import (
-    AssetCache,
     AssetUploader,
     image_source_kind,
-    inspect_local_image,
-    resolve_local_image_path,
 )
-from slidesmith.engine.bounds import BoundingBox, Transform, get_bounds
-from slidesmith.engine.conflicts import (
-    ConflictError,
-    ensure_no_conflicts,
-    index_presentation,
-    iter_page_elements,
-)
+from slidesmith.engine.bounds import get_bounds
+from slidesmith.engine.conflicts import ConflictError
 from slidesmith.engine.content_diff import (
-    Change,
     ChangeType,
     DiffResult,
     diff_presentation,
 )
-from slidesmith.engine.content_parser import (
-    ParsedElement,
-    ParsedRun,
-    flatten_elements,
-    parse_slide_content,
-)
-from slidesmith.engine.components import load_components
 from slidesmith.engine.content_requests import generate_batch_requests
 from slidesmith.engine.json_utils import read_json
 from slidesmith.engine.image_fetch import fetch_image_dimensions
 from slidesmith.engine.push_progress import (
-    SlideBatch,
     clear_progress_ledger,
     load_progress_ledger,
-    partition_requests_by_slide,
     write_progress_ledger,
 )
-from slidesmith.engine.shape_types import TAG_TO_TYPE, VALID_GOOGLE_TYPES
 from slidesmith.engine.transport import APIError, Transport
-from slidesmith.engine.units import pt_to_emu
+from slidesmith.engine import push_executor as _push_executor
+from slidesmith.engine.image_replace import (
+    _find_element_with_parent_transform,
+    _replacement_geometry_requests,
+    _replacement_image_dimensions,
+    resolve_asset_source,
+)
+from slidesmith.engine.persistence import append_persistence_warning
+from slidesmith.engine.push_executor import (
+    PerSlideConflictError,
+    PerSlidePushError,
+    _missing_base_warning,
+    _progress_slide_total,
+    _report_progress,
+    partition_requests_by_slide,
+)
 from slidesmith.engine.workspace_layout import (
     ID_MAPPING_FILE,
     PRESENTATION_FILE,
-    PRISTINE_BASE_FILE,
-    PRISTINE_DIR,
-    PRISTINE_ZIP,
-    RAW_DIR,
-    SLIDES_DIR,
-    STYLES_FILE,
     materialize_workspace,
     refresh_after_success,
 )
-
-
-PERSISTENCE_GEOMETRY_TOLERANCE_PT = 0.02
-GOOGLE_DEFAULT_TEXT_LAYOUT_CLASSES = frozenset(
-    {
-        "content-align-top",
-        "content-align-middle",
-        "text-align-left",
-        "leading-100",
-        "space-above-0",
-        "space-below-0",
-        "indent-start-0",
-        "indent-first-0",
-        "spacing-never-collapse",
-        "spacing-collapse-lists",
-        "font-weight-400",
-    }
+from slidesmith.engine.workspace_reader import (
+    _build_slide_id_mapping,
+    _enrich_pristine_geometry,
+    _pristine_element_metadata,
+    _read_base_raw,
+    _read_current_slides,
+    _read_pristine,
 )
-
-
-def _missing_base_warning() -> str:
-    return (
-        "no pristine base snapshot found "
-        f"({PRISTINE_DIR}/{PRISTINE_BASE_FILE}); this folder was "
-        "pulled by an older slidesmith. Remote-change detection "
-        "skipped for this push -- re-pull to re-enable the guard."
-    )
 
 
 async def execute_guarded_batch(
@@ -106,29 +74,16 @@ async def execute_guarded_batch(
     guard_conflicts: bool,
     lock_revision: bool,
 ) -> dict[str, Any]:
-    """Fetch, conflict-check, revision-lock, and execute one request batch."""
-    required_revision: str | None = None
-    if guard_conflicts or lock_revision:
-        remote = await transport.get_presentation(presentation_id)
-        if guard_conflicts and base_raw is not None:
-            ensure_no_conflicts(base_raw, remote.data, requests, id_mapping)
-        if lock_revision:
-            required_revision = remote.revision_id
-
-    try:
-        return await transport.batch_update(
-            presentation_id,
-            requests,
-            required_revision_id=required_revision,
-        )
-    except APIError as exc:
-        if exc.status_code == 400 and "revision" in str(exc).lower():
-            raise ConflictError(
-                "push aborted: the deck changed mid-push (someone edited "
-                "it between our conflict check and our write). "
-                "Re-pull and retry."
-            ) from exc
-        raise
+    """Compatibility bridge for the shared guarded batch executor."""
+    return await _push_executor.execute_guarded_batch(
+        transport=transport,
+        presentation_id=presentation_id,
+        requests=requests,
+        base_raw=base_raw,
+        id_mapping=id_mapping,
+        guard_conflicts=guard_conflicts,
+        lock_revision=lock_revision,
+    )
 
 
 async def finalize_push(
@@ -143,545 +98,19 @@ async def finalize_push(
     verify_persistence: Callable[[dict[str, Any]], None],
     clear_progress: bool,
 ) -> dict[str, Any]:
-    """Merge warnings, refresh authoritative state, and verify persistence."""
-    if diff_warnings:
-        response.setdefault("warnings", []).extend(diff_warnings)
-    for warning in (base_warning, force_warning):
-        if warning is not None:
-            response.setdefault("warnings", []).append(warning)
-
-    refreshed = await refresh_after_success(
-        transport, folder_path, presentation_id, response
+    """Compatibility bridge preserving the client refresh patch point."""
+    return await _push_executor._finalize_push(
+        transport=transport,
+        folder_path=folder_path,
+        presentation_id=presentation_id,
+        response=response,
+        diff_warnings=diff_warnings,
+        base_warning=base_warning,
+        force_warning=force_warning,
+        verify_persistence=verify_persistence,
+        clear_progress=clear_progress,
+        refresh=refresh_after_success,
     )
-    if refreshed:
-        verify_persistence(response)
-        if clear_progress:
-            clear_progress_ledger(folder_path)
-    return response
-
-
-class PerSlidePushError(RuntimeError):
-    """A per-slide batch failed after earlier slide batches may have committed."""
-
-    def __init__(self, slide_index: str, total_slides: int, cause: Exception) -> None:
-        self.slide_index = slide_index
-        self.total_slides = total_slides
-        self.cause = cause
-        super().__init__(
-            f"slide {slide_index}/{total_slides:02d} failed: {cause}"
-        )
-
-
-class PerSlideConflictError(ConflictError):
-    """A conflict tied to one resumable slide batch."""
-
-    def __init__(
-        self, slide_index: str, total_slides: int, cause: ConflictError
-    ) -> None:
-        self.slide_index = slide_index
-        self.total_slides = total_slides
-        self.cause = cause
-        super().__init__(
-            f"slide {slide_index}/{total_slides:02d} failed: {cause}",
-            conflicts=cause.conflicts,
-        )
-
-
-def _replacement_geometry_requests(
-    object_id: str,
-    old: BoundingBox,
-    *,
-    pixel_width: int,
-    pixel_height: int,
-    fit: str,
-) -> tuple[BoundingBox, dict[str, Any]]:
-    """Compute a top-left target and undo Google's centered aspect fit."""
-    if old.w <= 0 or old.h <= 0:
-        raise ValueError(f"Image element {object_id!r} has non-positive geometry")
-    if pixel_width <= 0 or pixel_height <= 0:
-        raise ValueError("Replacement image has non-positive pixel dimensions")
-
-    image_aspect = pixel_width / pixel_height
-    old_aspect = old.w / old.h
-    if image_aspect > old_aspect:
-        fitted_w = old.w
-        fitted_h = old.w / image_aspect
-    else:
-        fitted_w = old.h * image_aspect
-        fitted_h = old.h
-
-    centered_x = old.x + (old.w - fitted_w) / 2
-    centered_y = old.y + (old.h - fitted_h) / 2
-    if fit == "contain":
-        target = BoundingBox(old.x, old.y, fitted_w, fitted_h)
-    else:
-        target = BoundingBox(old.x, old.y, old.w, old.h)
-
-    # replaceImage(CENTER_INSIDE) first produces the centered fitted rectangle.
-    # Pre-multiplying this relative affine transform maps that exact rectangle
-    # onto the requested top-left target, independent of Google's internal
-    # size/transform refactoring.
-    scale_x = target.w / fitted_w
-    scale_y = target.h / fitted_h
-    translate_x = target.x - scale_x * centered_x
-    translate_y = target.y - scale_y * centered_y
-    request = {
-        "updatePageElementTransform": {
-            "objectId": object_id,
-            "transform": {
-                "scaleX": scale_x,
-                "scaleY": scale_y,
-                "translateX": pt_to_emu(translate_x),
-                "translateY": pt_to_emu(translate_y),
-                "unit": "EMU",
-            },
-            "applyMode": "RELATIVE",
-        }
-    }
-    return target, request
-
-
-def _find_element_with_parent_transform(
-    data: dict[str, Any], object_id: str
-) -> tuple[dict[str, Any] | None, Transform | None]:
-    """Find an element and its composed ancestor-group transform."""
-
-    def walk(
-        element: dict[str, Any],
-        parent_transform: Transform | None,
-    ) -> tuple[dict[str, Any] | None, Transform | None]:
-        if element.get("objectId") == object_id:
-            return element, parent_transform
-
-        child_parent = parent_transform
-        if "elementGroup" in element:
-            group_transform = Transform.from_element(element)
-            child_parent = (
-                parent_transform.compose(group_transform)
-                if parent_transform is not None
-                else group_transform
-            )
-        for child in element.get("elementGroup", {}).get("children", []):
-            found, found_parent = walk(child, child_parent)
-            if found is not None:
-                return found, found_parent
-        return None, None
-
-    for page_kind in ("slides", "layouts", "masters"):
-        for page in data.get(page_kind, []) or []:
-            for element in page.get("pageElements", []) or []:
-                found, parent_transform = walk(element, None)
-                if found is not None:
-                    return found, parent_transform
-    return None, None
-
-
-def _progress_slide_total(
-    intended_slides: dict[str, list[Any]], batches: list[SlideBatch]
-) -> int:
-    numeric_indices = [
-        int(slide_index)
-        for slide_index in intended_slides
-        if slide_index.isdigit()
-    ]
-    numeric_indices.extend(
-        int(batch.slide_index)
-        for batch in batches
-        if batch.slide_index.isdigit()
-    )
-    return max(numeric_indices, default=max(len(intended_slides), len(batches)))
-
-
-def _report_progress(
-    progress: Callable[[str, str], None] | None,
-    event: str,
-    batch: SlideBatch,
-    total_slides: int,
-    detail: str | None = None,
-) -> None:
-    if progress is None:
-        return
-    prefix = f"slide {batch.slide_index}/{total_slides:02d}"
-    if event == "start":
-        message = f"{prefix} …"
-    elif event == "success":
-        message = f"{prefix} ✓ ({len(batch.requests)} changes)"
-    else:
-        message = f"{prefix} ✓ ({detail})"
-    progress(event, message)
-
-
-def _pristine_element_metadata(
-    data: dict[str, Any],
-) -> tuple[dict[str, str], dict[str, str | None]]:
-    """Extract element types and group parentage from a pristine API tree."""
-    types: dict[str, str] = {}
-    parents: dict[str, str | None] = {}
-
-    for _, _, element, parent_id in iter_page_elements(data):
-        object_id = element.get("objectId")
-        if not isinstance(object_id, str) or not object_id:
-            continue
-        if "elementGroup" in element:
-            element_type = "GROUP"
-        elif "shape" in element:
-            element_type = element.get("shape", {}).get("shapeType", "SHAPE")
-        elif "line" in element:
-            element_type = "LINE"
-        elif "image" in element:
-            element_type = "IMAGE"
-        elif "table" in element:
-            element_type = "TABLE"
-        elif "video" in element:
-            element_type = "VIDEO"
-        elif "sheetsChart" in element:
-            element_type = "SHEETS_CHART"
-        else:
-            element_type = "UNKNOWN"
-        types[object_id] = element_type
-        parents[object_id] = parent_id
-    return types, parents
-
-
-def _index_parsed_elements(
-    slides: dict[str, list[Any]],
-) -> dict[tuple[str, str], ParsedElement]:
-    """Index refreshed or intended SML elements by slide and clean ID."""
-    return {
-        (slide_index, clean_id): element
-        for slide_index, roots in slides.items()
-        for clean_id, element in flatten_elements(roots).items()
-    }
-
-
-def _format_geometry(position: dict[str, float] | None) -> str:
-    if position is None:
-        return ""
-    return ", ".join(
-        f"{field}={position[field]:g}"
-        for field in ("x", "y", "w", "h")
-        if field in position
-    )
-
-
-def _format_run_style_classes(runs: list[list[ParsedRun]] | None) -> str:
-    if not runs:
-        return "(none)"
-    values = [
-        " ".join(run.text_style.to_classes()) if run.text_style is not None else ""
-        for paragraph in runs
-        for run in paragraph
-    ]
-    return " | ".join(values) if any(values) else "(none)"
-
-
-def _format_paragraph_style_classes(change: Change, *, remote: bool) -> str:
-    values: list[str] = []
-    for update in change.paragraph_style_updates or []:
-        styles = update.old_styles if remote else update.new_styles
-        classes: list[str] = []
-        if styles is not None:
-            if styles.text_style is not None:
-                classes.extend(styles.text_style.to_classes())
-            if styles.paragraph_style is not None:
-                classes.extend(styles.paragraph_style.to_classes())
-        values.append(f"P{update.paragraph_index + 1}={' '.join(classes) or '(none)'}")
-    return "; ".join(values)
-
-
-def _format_changed_element_style_classes(
-    change: Change,
-    element: ParsedElement,
-) -> str:
-    styles = element.styles
-    if styles is None:
-        return "(none)"
-    changed = change.new_styles
-    classes: list[str] = []
-    if changed is not None and changed.fill is not None and styles.fill is not None:
-        fill_class = styles.fill.to_class()
-        if fill_class:
-            classes.append(fill_class)
-    if (
-        changed is not None and changed.stroke is not None
-    ) or change.stroke_reset_fields:
-        if styles.stroke is not None:
-            classes.extend(styles.stroke.to_classes())
-    if (
-        changed is not None and changed.text_style is not None
-    ) or change.text_style_reset_fields:
-        if styles.text_style is not None:
-            classes.extend(styles.text_style.to_classes())
-    if (
-        changed is not None and changed.paragraph_style is not None
-    ) or change.paragraph_style_reset_fields:
-        if styles.paragraph_style is not None:
-            classes.extend(styles.paragraph_style.to_classes())
-    if (
-        (changed is not None and changed.content_alignment is not None)
-        or change.reset_content_alignment
-    ) and styles.content_alignment is not None:
-        classes.append(styles.content_alignment.to_class())
-    return " ".join(classes) or "(none)"
-
-
-def _normalized_persistence_detail(
-    change: Change,
-    remote_elements: dict[tuple[str, str], ParsedElement],
-    intended_elements: dict[tuple[str, str], ParsedElement],
-) -> str | None:
-    """Describe sent and refreshed values when both are cheaply available."""
-    if change.change_type == ChangeType.MOVE:
-        sent = _format_geometry(change.new_position)
-        remote = _format_geometry(change.old_position)
-        if sent and remote:
-            return (
-                f"geometry on {change.target_id} did not persist "
-                f"(sent {sent!r}, remote now {remote!r})"
-            )
-
-    if change.change_type == ChangeType.TEXT_UPDATE:
-        sent_text = "\n".join(change.new_text or [])
-        remote_text = "\n".join(change.old_text or [])
-        if change.new_text != change.old_text:
-            return (
-                f"text on {change.target_id} did not persist "
-                f"(sent {sent_text!r}, remote now {remote_text!r})"
-            )
-        sent_styles = _format_run_style_classes(change.new_runs)
-        remote_styles = _format_run_style_classes(change.old_runs)
-        return (
-            f"text run style classes on {change.target_id} did not persist "
-            f"(sent {sent_styles!r}, remote now {remote_styles!r})"
-        )
-
-    if change.change_type == ChangeType.PARAGRAPH_STYLE_UPDATE:
-        sent = _format_paragraph_style_classes(change, remote=False)
-        remote = _format_paragraph_style_classes(change, remote=True)
-        if sent and remote:
-            return (
-                f"paragraph style classes on {change.target_id} did not persist "
-                f"(sent {sent!r}, remote now {remote!r})"
-            )
-
-    if change.change_type == ChangeType.STYLE_UPDATE:
-        key = (change.slide_index or "", change.target_id)
-        remote_element = remote_elements.get(key)
-        intended_element = intended_elements.get(key)
-        if remote_element is not None and intended_element is not None:
-            sent = _format_changed_element_style_classes(change, intended_element)
-            remote = _format_changed_element_style_classes(change, remote_element)
-            return (
-                f"style classes on {change.target_id} did not persist "
-                f"(sent {sent!r}, remote now {remote!r})"
-            )
-
-    return None
-
-
-def _is_normalized_persistence_change(
-    change: Change,
-    remote_elements: dict[tuple[str, str], ParsedElement],
-    intended_elements: dict[tuple[str, str], ParsedElement],
-    *,
-    newly_created: bool,
-) -> bool:
-    """Return whether a refresh difference is known Google normalization."""
-    if change.change_type == ChangeType.MOVE:
-        old = change.old_position
-        new = change.new_position
-        if old is None or new is None or set(old) != set(new):
-            return False
-        return all(
-            abs(float(new[key]) - float(old[key]))
-            < PERSISTENCE_GEOMETRY_TOLERANCE_PT
-            for key in new
-        )
-
-    if not newly_created:
-        return False
-
-    if change.change_type == ChangeType.STYLE_UPDATE:
-        key = (change.slide_index or "", change.target_id)
-        remote_element = remote_elements.get(key)
-        intended_element = intended_elements.get(key)
-        if remote_element is None or intended_element is None:
-            return False
-        sent = _format_changed_element_style_classes(change, intended_element)
-        remote = _format_changed_element_style_classes(change, remote_element)
-        return _only_google_default_class_additions(
-            sent,
-            remote,
-            remote_element,
-        )
-
-    if change.change_type == ChangeType.PARAGRAPH_STYLE_UPDATE:
-        for update in change.paragraph_style_updates or []:
-            sent = _paragraph_style_classes(update.new_styles)
-            remote = _paragraph_style_classes(update.old_styles)
-            if not _only_google_default_class_additions(sent, remote):
-                return False
-        return bool(change.paragraph_style_updates)
-
-    if change.change_type == ChangeType.TEXT_UPDATE:
-        return (
-            change.new_text == change.old_text
-            and _runs_only_gain_google_defaults(change.new_runs, change.old_runs)
-        )
-
-    return False
-
-
-def _only_google_default_class_additions(
-    sent: str | set[str],
-    remote: str | set[str],
-    element: ParsedElement | None = None,
-) -> bool:
-    sent_classes = (
-        set()
-        if sent == "(none)"
-        else set(sent.split() if isinstance(sent, str) else sent)
-    )
-    remote_classes = (
-        set()
-        if remote == "(none)"
-        else set(remote.split() if isinstance(remote, str) else remote)
-    )
-    added = remote_classes - sent_classes
-    if not added or not sent_classes <= remote_classes:
-        return False
-    if not added <= GOOGLE_DEFAULT_TEXT_LAYOUT_CLASSES:
-        return False
-    if "content-align-top" in added:
-        if element is None or TAG_TO_TYPE.get(element.tag) != "TEXT_BOX":
-            return False
-    if "content-align-middle" in added:
-        element_type = TAG_TO_TYPE.get(element.tag) if element is not None else None
-        if element_type not in VALID_GOOGLE_TYPES or element_type == "TEXT_BOX":
-            return False
-    return True
-
-
-def _runs_only_gain_google_defaults(
-    sent: list[list[ParsedRun]] | None,
-    remote: list[list[ParsedRun]] | None,
-) -> bool:
-    if sent is None or remote is None or len(sent) != len(remote):
-        return False
-    saw_default = False
-    for sent_paragraph, remote_paragraph in zip(sent, remote, strict=True):
-        if len(sent_paragraph) != len(remote_paragraph):
-            return False
-        for sent_run, remote_run in zip(
-            sent_paragraph, remote_paragraph, strict=True
-        ):
-            if (
-                sent_run.text != remote_run.text
-                or sent_run.auto_text_type != remote_run.auto_text_type
-            ):
-                return False
-            sent_classes = (
-                set(sent_run.text_style.to_classes())
-                if sent_run.text_style is not None
-                else set()
-            )
-            remote_classes = (
-                set(remote_run.text_style.to_classes())
-                if remote_run.text_style is not None
-                else set()
-            )
-            if sent_classes == remote_classes:
-                continue
-            if not _only_google_default_class_additions(sent_classes, remote_classes):
-                return False
-            saw_default = True
-    return saw_default
-
-
-def _paragraph_style_classes(styles: Any) -> set[str]:
-    if styles is None:
-        return set()
-    classes: set[str] = set()
-    if styles.text_style is not None:
-        classes.update(styles.text_style.to_classes())
-    if styles.paragraph_style is not None:
-        classes.update(styles.paragraph_style.to_classes())
-    return classes
-
-
-def _enrich_pristine_geometry(
-    styles: dict[str, dict[str, Any]],
-    id_mapping: dict[str, str],
-    base_raw: dict[str, Any],
-) -> None:
-    """Backfill native geometry for workspaces pulled by older versions."""
-    elements, _, _ = index_presentation(base_raw)
-    for clean_id, google_id in id_mapping.items():
-        element = elements.get(google_id)
-        if element is None:
-            continue
-        size = element.get("size")
-        transform = element.get("transform")
-        style = styles.setdefault(clean_id, {})
-        if isinstance(size, dict):
-            style.setdefault(
-                "nativeSize",
-                {
-                    "w": size.get("width", {}).get("magnitude", 0),
-                    "h": size.get("height", {}).get("magnitude", 0),
-                },
-            )
-        if isinstance(transform, dict):
-            style.setdefault(
-                "nativeTransform",
-                {
-                    "scaleX": transform.get("scaleX", 1),
-                    "scaleY": transform.get("scaleY", 1),
-                    "shearX": transform.get("shearX", 0),
-                    "shearY": transform.get("shearY", 0),
-                    "translateX": transform.get("translateX", 0),
-                    "translateY": transform.get("translateY", 0),
-                },
-            )
-
-    clean_id_by_google_id = {
-        google_id: clean_id for clean_id, google_id in id_mapping.items()
-    }
-
-    def walk(
-        element: dict[str, Any],
-        parent_group_transform: Transform | None = None,
-    ) -> None:
-        google_id = element.get("objectId")
-        clean_id = clean_id_by_google_id.get(google_id)
-        if clean_id is not None and parent_group_transform is not None:
-            styles.setdefault(clean_id, {}).setdefault(
-                "parentTransform",
-                {
-                    "scaleX": parent_group_transform.scale_x,
-                    "scaleY": parent_group_transform.scale_y,
-                    "shearX": parent_group_transform.shear_x,
-                    "shearY": parent_group_transform.shear_y,
-                    "translateX": parent_group_transform.translate_x,
-                    "translateY": parent_group_transform.translate_y,
-                },
-            )
-
-        child_group_transform = parent_group_transform
-        if "elementGroup" in element:
-            group_transform = Transform.from_element(element)
-            child_group_transform = (
-                parent_group_transform.compose(group_transform)
-                if parent_group_transform is not None
-                else group_transform
-            )
-        for child in element.get("elementGroup", {}).get("children", []):
-            walk(child, child_group_transform)
-
-    for page_kind in ("slides", "layouts", "masters"):
-        for page in base_raw.get(page_kind, []) or []:
-            for element in page.get("pageElements", []) or []:
-                walk(element)
 
 
 class SlidesClient:
@@ -1061,10 +490,11 @@ class SlidesClient:
         folder_path: Path, source: str
     ) -> tuple[int, int]:
         """Read replacement pixels through the same bounded source paths as create."""
-        if image_source_kind(source) == "local":
-            path = resolve_local_image_path(folder_path, source)
-            return inspect_local_image(path, source=source)[:2]
-        return fetch_image_dimensions(source)
+        return _replacement_image_dimensions(
+            folder_path,
+            source,
+            fetch_image_dimensions,
+        )
 
     async def _resolve_local_asset_requests(
         self,
@@ -1083,13 +513,11 @@ class SlidesClient:
             )
 
     async def _resolve_asset_source(self, folder_path: Path, source: str) -> str:
-        if image_source_kind(source) == "remote":
-            return source
-        if self._asset_uploader is None:
-            raise RuntimeError(
-                f"Local image {source!r} requires a Drive asset uploader at push time"
-            )
-        return await AssetCache(folder_path).resolve(source, self._asset_uploader)
+        return await resolve_asset_source(
+            folder_path,
+            source,
+            self._asset_uploader,
+        )
 
     async def _push_per_slide(
         self,
@@ -1225,58 +653,13 @@ class SlidesClient:
         response: dict[str, Any],
     ) -> None:
         """Warn when pushed semantic changes differ from refreshed truth."""
-        refreshed_slides, refreshed_styles = self._read_pristine(folder_path)
-        divergence = diff_presentation(
-            refreshed_slides,
+        append_persistence_warning(
+            folder_path,
             intended_slides,
-            refreshed_styles,
-            workspace_root=folder_path,
-            allow_remote_image_fetch=True,
-        )
-        unpersisted = [
-            change
-            for change in divergence.changes
-            if (change.target_id, change.change_type) in intended_change_keys
-            or (change.slide_index or "", change.target_id) in create_copy_targets
-        ]
-        remote_elements = _index_parsed_elements(refreshed_slides)
-        intended_elements = _index_parsed_elements(intended_slides)
-        meaningful = [
-            change
-            for change in unpersisted
-            if not _is_normalized_persistence_change(
-                change,
-                remote_elements,
-                intended_elements,
-                newly_created=(
-                    change.slide_index or "", change.target_id
-                )
-                in create_copy_targets,
-            )
-        ]
-        if not meaningful:
-            return
-
-        changes = sorted(
-            meaningful,
-            key=lambda change: (
-                change.slide_index or "",
-                change.target_id,
-                change.change_type.value,
-            ),
-        )
-        details = ", ".join(
-            _normalized_persistence_detail(
-                change,
-                remote_elements,
-                intended_elements,
-            )
-            or f"{change.target_id} ({change.change_type.value.replace('_', ' ')})"
-            for change in changes
-        )
-        response.setdefault("warnings", []).append(
-            f"{len(changes)} change(s) did not persist remotely: {details} "
-            "— the API may not support these values"
+            intended_change_keys,
+            create_copy_targets,
+            response,
+            read_pristine=self._read_pristine,
         )
 
     def _read_base_raw(self, folder_path: Path) -> dict[str, Any] | None:
@@ -1286,64 +669,18 @@ class SlidesClient:
         back to .raw/presentation.json (older pulls with save_raw=True).
         Returns None when neither exists (folder pulled by old code).
         """
-        candidates = (
-            folder_path / PRISTINE_DIR / PRISTINE_BASE_FILE,
-            folder_path / RAW_DIR / "presentation.json",
-        )
-        for candidate in candidates:
-            if candidate.exists():
-                return read_json(candidate, missing_ok=False)
-        return None
-
+        return _read_base_raw(folder_path)
 
     def _read_current_slides(self, folder_path: Path) -> dict[str, list[Any]]:
         """Read current slide content files."""
-        slides_dir = folder_path / SLIDES_DIR
-        components = load_components(folder_path)
-        result: dict[str, list[Any]] = {}
-
-        if not slides_dir.exists():
-            return result
-
-        for slide_folder in sorted(slides_dir.iterdir()):
-            if slide_folder.is_dir():
-                content_file = slide_folder / "content.sml"
-                if content_file.exists():
-                    content = content_file.read_text(encoding="utf-8")
-                    result[slide_folder.name] = parse_slide_content(
-                        content, components=components
-                    )
-
-        return result
+        return _read_current_slides(folder_path)
 
     def _read_pristine(
         self,
         folder_path: Path,
     ) -> tuple[dict[str, list[Any]], dict[str, dict[str, Any]]]:
         """Read pristine slides and styles from zip."""
-        zip_path = folder_path / PRISTINE_DIR / PRISTINE_ZIP
-        if not zip_path.exists():
-            raise FileNotFoundError(f"Pristine zip not found: {zip_path}")
-
-        slides: dict[str, list[Any]] = {}
-        styles: dict[str, dict[str, Any]] = {}
-
-        with zipfile.ZipFile(zip_path, "r") as zf:
-            # Read styles.json
-            if STYLES_FILE in zf.namelist():
-                styles = json.loads(zf.read(STYLES_FILE).decode("utf-8"))
-
-            # Read slide content files
-            for name in zf.namelist():
-                if name.startswith(f"{SLIDES_DIR}/") and name.endswith("/content.sml"):
-                    # Extract slide index from path like "slides/01/content.sml"
-                    parts = name.split("/")
-                    if len(parts) >= 2:
-                        slide_index = parts[1]
-                        content = zf.read(name).decode("utf-8")
-                        slides[slide_index] = parse_slide_content(content)
-
-        return slides, styles
+        return _read_pristine(folder_path)
 
     def _build_slide_id_mapping(
         self,
@@ -1355,24 +692,7 @@ class SlidesClient:
         Slide clean IDs are like "s1", "s2", etc.
         Slide indices are like "01", "02", etc.
         """
-        result: dict[str, str] = {}
-
-        ordered_ids = slide_order
-        if not isinstance(ordered_ids, list):
-            ordered_ids = sorted(
-                (
-                    clean_id
-                    for clean_id in id_mapping
-                    if re.fullmatch(r"s\d+", clean_id)
-                ),
-                key=lambda value: int(value[1:]),
-            )
-        for index, clean_id in enumerate(ordered_ids, 1):
-            google_id = id_mapping.get(clean_id)
-            if google_id:
-                result[f"{index:02d}"] = google_id
-
-        return result
+        return _build_slide_id_mapping(id_mapping, slide_order)
 
 def diff_folder(
     folder_path: str | Path,

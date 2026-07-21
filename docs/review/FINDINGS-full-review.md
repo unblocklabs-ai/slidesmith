@@ -23,7 +23,7 @@ deferred to a deliberate pass). Loop: fix → re-review until no real defect rem
 - [x] FR-5 [MEDIUM] `assets._request` malformed Drive JSON raises `ValueError` while
   every adjacent Drive failure raises `AssetUploadError` (assets.py:268). Wrap
   `response.json()` decode in AssetUploadError.
-- [ ] FR-6 [MEDIUM] `browser_flow` missing-refresh-token raises `RuntimeError` not the
+- [x] FR-6 [MEDIUM] `browser_flow` missing-refresh-token raises `RuntimeError` not the
   established `AuthError` (browser_flow.py:126). Raise AuthError.
 
 ### Consistency / contracts

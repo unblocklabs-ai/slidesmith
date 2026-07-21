@@ -15,6 +15,7 @@ import pytest
 
 from slidesmith import cli, credentials
 from slidesmith.credentials import (
+    AuthError,
     CredentialsManager,
     FallbackSessionStore,
     FileSessionStore,
@@ -47,6 +48,24 @@ class BrokenKeyring:
 
     def delete_password(self, service: str, profile: str) -> None:
         raise RuntimeError((-50, "Unknown Error"))
+
+
+def test_oauth_browser_flow_missing_refresh_token_raises_auth_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = object.__new__(CredentialsManager)
+    monkeypatch.setattr(
+        manager,
+        "_run_browser_flow",
+        lambda _auth_url_for_port, _display_msg: ("auth-code", 43123),
+    )
+    monkeypatch.setattr(
+        "slidesmith.auth.browser_flow._post_form_json",
+        lambda _url, _fields: {"access_token": "access-token"},
+    )
+
+    with pytest.raises(AuthError, match="did not return a refresh token"):
+        manager._run_oauth_browser_flow("client-id", "client-secret")
 
 
 def _token(*, expires_at: float | None = None) -> SessionToken:

@@ -123,7 +123,7 @@ class BrowserFlowMixin:
             raise AuthError(f"Google token exchange failed: {error_body}") from e
 
         if "refresh_token" not in result:
-            raise RuntimeError(
+            raise AuthError(
                 "Google did not return a refresh token. "
                 "This can happen if you have already authorized this app. "
                 "Visit https://myaccount.google.com/permissions to revoke access, "

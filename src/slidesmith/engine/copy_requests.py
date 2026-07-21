@@ -7,6 +7,7 @@ from typing import Any
 
 from slidesmith.engine.content_diff import Change
 from slidesmith.engine.content_parser import ParagraphStyles, ParsedRun
+from slidesmith.engine.diff_model import PushWarning, WarningSeverity
 from slidesmith.engine.duplicate_copy_requests import (
     _apply_duplicate_descendant_edits,
     _contains_auto_text,
@@ -64,7 +65,7 @@ def _create_copy_requests(
     id_mapping: dict[str, str] | None = None,
     allocate_object_id: Callable[[str, set[str]], str],
     unique_suffix: Callable[[], str],
-    warnings: list[str],
+    warnings: list[PushWarning],
     pristine_element_types: dict[str, str] | None = None,
     pristine_element_parents: dict[str, str | None] | None = None,
 ) -> list[dict[str, Any]]:
@@ -169,7 +170,7 @@ def _create_one_copied_element(
     child_depth: int,
     reserved_ids: set[str],
     allocate_object_id: Callable[[str, set[str]], str],
-    warnings: list[str],
+    warnings: list[PushWarning],
 ) -> None:
     """Recreate one copied element using the shared root/descendant pipeline."""
     if elem_type == "GROUP":
@@ -248,10 +249,13 @@ def _create_one_copied_element(
         dropped = _dropped_image_property_names(image_properties)
         if dropped:
             warnings.append(
-                f"copy '{source_id}': image adjustments {', '.join(dropped)} "
-                "cannot be preserved because the Google Slides API exposes them "
-                "as read-only; the copy uses the source image without those "
-                "adjustments"
+                PushWarning(
+                    WarningSeverity.WARNING,
+                    f"copy '{source_id}': image adjustments {', '.join(dropped)} "
+                    "cannot be preserved because the Google Slides API exposes "
+                    "them as read-only; the copy uses the source image without "
+                    "those adjustments",
+                )
             )
 
     if children:
@@ -282,7 +286,7 @@ def _create_children_from_data(
     *,
     reserved_ids: set[str],
     allocate_object_id: Callable[[str, set[str]], str],
-    warnings: list[str],
+    warnings: list[PushWarning],
 ) -> list[str]:
     """Create child elements from serialized children data.
 

@@ -18,6 +18,7 @@ from slidesmith.engine.content_diff import (
 )
 from slidesmith.engine.content_parser import ParsedRun
 from slidesmith.engine.content_requests import generate_batch_requests
+from slidesmith.engine.diff_model import PushWarning, WarningSeverity
 from slidesmith.engine.transport import PresentationData, Transport
 from slidesmith.engine.units import pt_to_emu
 from slidesmith.workspace import materialize
@@ -233,10 +234,13 @@ def test_image_copy_emits_only_writable_properties_and_records_dropped_warning()
         "fields": "outline,link",
     }
     assert diff_result.warnings == [
-        "copy 'photo': image adjustments transparency, brightness, contrast, "
-        "crop, recolor, shadow cannot be preserved because the Google Slides "
-        "API exposes them as read-only; the copy uses the source image without "
-        "those adjustments"
+        PushWarning(
+            WarningSeverity.WARNING,
+            "copy 'photo': image adjustments transparency, brightness, contrast, "
+            "crop, recolor, shadow cannot be preserved because the Google Slides "
+            "API exposes them as read-only; the copy uses the source image without "
+            "those adjustments",
+        )
     ]
 
 
@@ -249,7 +253,10 @@ async def test_copy_generation_warnings_are_returned_by_push(
     (folder / "presentation.json").write_text(
         json.dumps({"presentationId": "pid"}), encoding="utf-8"
     )
-    warning = "copy 'photo': image adjustments cannot be preserved"
+    warning = PushWarning(
+        WarningSeverity.WARNING,
+        "copy 'photo': image adjustments cannot be preserved",
+    )
     diff_result = DiffResult()
     diff_result.warnings = [warning]
     client = SlidesClient(_WarningTransport())
@@ -399,7 +406,11 @@ def test_ambiguous_authored_copy_child_position_records_warning() -> None:
     )
 
     assert diff_result.warnings == [
-        "copy 'group' child 'child': authored position (35, 10) matches neither "
-        "the source position (10, 10) nor the translated copy position (110, 10); "
-        "Slidesmith applied the parent translation, so verify the copied child position"
+        PushWarning(
+            WarningSeverity.WARNING,
+            "copy 'group' child 'child': authored position (35, 10) matches neither "
+            "the source position (10, 10) nor the translated copy position (110, 10); "
+            "Slidesmith applied the parent translation, so verify the copied child "
+            "position",
+        )
     ]

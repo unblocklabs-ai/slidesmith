@@ -42,6 +42,21 @@ class ChangeType(Enum):
     IMAGE_UPDATE = "image_update"
 
 
+class WarningSeverity(Enum):
+    """Operator-visible severity for lossy push decisions."""
+
+    NOTICE = "notice"
+    WARNING = "warning"
+
+
+@dataclass(frozen=True)
+class PushWarning:
+    """A structured message surfaced by diff or push."""
+
+    severity: WarningSeverity
+    message: str
+
+
 @dataclass
 class ParagraphClassUpdate:
     """One changed paragraph's scoped text/paragraph defaults."""
@@ -105,6 +120,11 @@ class Change:
     # For PARAGRAPH_STYLE_UPDATE: only paragraphs whose class changed.
     paragraph_style_updates: list[ParagraphClassUpdate] | None = None
 
+    # Classes explicitly removed by the author in this edit. Persistence
+    # verification uses this to distinguish a Google-added default from a
+    # Google-restored authored value.
+    author_removed_classes: frozenset[str] = field(default_factory=frozenset)
+
     # Slide index where this change occurs
     slide_index: str | None = None
 
@@ -143,4 +163,4 @@ class DiffResult:
     pristine_styles: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     # Lossy-but-safe request-generation decisions surfaced by push/CLI.
-    warnings: list[str] = field(default_factory=list)
+    warnings: list[PushWarning] = field(default_factory=list)

@@ -15,6 +15,7 @@ from tempfile import TemporaryDirectory
 from typing import Any
 
 from slidesmith.engine.slide_processor import process_presentation, write_new_format
+from slidesmith.engine.diff_model import PushWarning, WarningSeverity
 from slidesmith.engine.transport import Transport
 
 PRESENTATION_FILE = "presentation.json"
@@ -143,9 +144,10 @@ async def refresh_after_success(
     try:
         await refresh_after_push(transport, folder_path, presentation_id)
     except Exception as exc:
-        warning = (
+        warning = PushWarning(
+            WarningSeverity.WARNING,
             "push applied; workspace stale; re-pull required "
-            f"(post-push refresh failed: {exc})"
+            f"(post-push refresh failed: {exc})",
         )
         response.setdefault("warnings", []).append(warning)
         return False

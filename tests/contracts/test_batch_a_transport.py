@@ -12,6 +12,7 @@ import pytest
 
 from slidesmith.engine.client import SlidesClient
 from slidesmith.engine.conflicts import collect_request_object_ids, detect_conflicts
+from slidesmith.engine.diff_model import PushWarning, WarningSeverity
 from slidesmith.engine.transport import (
     APIError,
     AuthenticationError,
@@ -236,8 +237,14 @@ async def test_committed_push_with_failed_refresh_returns_warning_and_keeps_work
     assert transport.batch_calls == 1
     assert before == after
     assert response["warnings"] == [
-        "push --force: conflict guard and revision lock bypassed; concurrent "
-        "human edits to the touched properties will be overwritten",
-        "push applied; workspace stale; re-pull required "
-        "(post-push refresh failed: refresh unavailable)"
+        PushWarning(
+            WarningSeverity.WARNING,
+            "push --force: conflict guard and revision lock bypassed; concurrent "
+            "human edits to the touched properties will be overwritten",
+        ),
+        PushWarning(
+            WarningSeverity.WARNING,
+            "push applied; workspace stale; re-pull required "
+            "(post-push refresh failed: refresh unavailable)",
+        ),
     ]

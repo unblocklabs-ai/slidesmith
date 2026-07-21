@@ -20,6 +20,7 @@ from slidesmith.engine.assets import (
 from slidesmith.engine.client import SlidesClient
 from slidesmith.engine.content_diff import ChangeType
 from slidesmith.engine.content_parser import parse_slide_content
+from slidesmith.engine.diff_model import WarningSeverity
 from slidesmith.engine.transport import APIError, PresentationData, Transport
 from slidesmith.engine.units import pt_to_emu
 
@@ -294,11 +295,11 @@ async def test_local_image_create_warns_when_refreshed_source_differs(
     response = await client.push(folder)
 
     assert any(
-        "image replacement did not persist" in warning
+        "image replacement did not persist" in warning.message
         for warning in response["warnings"]
     )
     assert any(
-        "https://drive.google.com/other-file" in warning
+        "https://drive.google.com/other-file" in warning.message
         for warning in response["warnings"]
     )
 
@@ -385,7 +386,7 @@ async def test_existing_image_replace_warns_when_remote_geometry_differs(
     response = await client.push(folder)
 
     assert any(
-        "geometry on" in warning and "did not persist" in warning
+        "geometry on" in warning.message and "did not persist" in warning.message
         for warning in response["warnings"]
     )
 
@@ -405,7 +406,9 @@ async def test_existing_image_replace_accepts_geometry_within_tolerance(
     response = await client.push(folder)
 
     assert not any(
-        "did not persist" in warning for warning in response.get("warnings", [])
+        "did not persist"
+        in warning.message
+        for warning in response.get("warnings", [])
     )
 
 
@@ -424,10 +427,10 @@ async def test_existing_image_replace_warns_when_remote_source_differs(
     response = await client.push(folder)
 
     assert any(
-        "image replacement did not persist" in warning
+        "image replacement did not persist" in warning.message
         for warning in response["warnings"]
     )
-    assert any(FAKE_URL in warning for warning in response["warnings"])
+    assert any(FAKE_URL in warning.message for warning in response["warnings"])
 
 
 @pytest.mark.asyncio
@@ -445,7 +448,7 @@ async def test_existing_image_replace_accepts_omitted_remote_source_url(
     response = await client.push(folder)
 
     assert not any(
-        "image replacement did not persist" in warning
+        "image replacement did not persist" in warning.message
         for warning in response.get("warnings", [])
     )
 
@@ -472,7 +475,8 @@ async def test_remote_stretch_dimension_fetch_failure_falls_back_with_notice(
     response = await client.push(folder)
 
     assert any(
-        warning.startswith("NOTICE:") and "follow-up resize" in warning
+        warning.severity is WarningSeverity.NOTICE
+        and "follow-up resize" in warning.message
         for warning in response["warnings"]
     )
     create = next(

@@ -18,6 +18,7 @@ from slidesmith.engine.client import (
 )
 from slidesmith.engine.content_diff import Change, ChangeType, DiffResult
 from slidesmith.engine.content_requests import generate_batch_requests
+from slidesmith.engine.diff_model import WarningSeverity
 from slidesmith.engine.push_progress import (
     PUSH_PROGRESS_FILE,
     load_progress_ledger,
@@ -492,7 +493,9 @@ async def test_per_slide_force_still_refreshes_and_carries_revision_locks(
         "resume-rev-3",
     ]
     assert any(
-        "conflict guard bypassed" in warning for warning in response["warnings"]
+        warning.severity is WarningSeverity.WARNING
+        and "conflict guard bypassed" in warning.message
+        for warning in response["warnings"]
     )
 
 

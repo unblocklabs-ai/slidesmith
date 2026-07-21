@@ -12,6 +12,7 @@ from slidesmith.engine.content_parser import (
     ParsedRun,
     flatten_elements,
 )
+from slidesmith.engine.diff_model import PushWarning, WarningSeverity
 from slidesmith.engine.json_utils import read_json
 from slidesmith.engine.shape_types import TAG_TO_TYPE, VALID_GOOGLE_TYPES
 
@@ -30,6 +31,8 @@ GOOGLE_DEFAULT_TEXT_LAYOUT_CLASSES = frozenset(
         "spacing-never-collapse",
         "spacing-collapse-lists",
         "font-weight-400",
+        "font-weight-700",
+        "font-family-arial",
     }
 )
 
@@ -241,16 +244,50 @@ def _is_normalized_persistence_change(
     expected_image_sources: dict[tuple[str, str], str] | None = None,
 ) -> bool:
     """Return whether a refresh difference is known Google normalization."""
+    return (
+        _persistence_warning_severity(
+            change,
+            remote_elements,
+            intended_elements,
+            newly_created=newly_created,
+            remote_image_sources=remote_image_sources,
+            expected_image_sources=expected_image_sources,
+        )
+        in (None, WarningSeverity.NOTICE)
+    )
+
+
+def _persistence_warning_severity(
+    change: Change,
+    remote_elements: dict[tuple[str, str], ParsedElement],
+    intended_elements: dict[tuple[str, str], ParsedElement],
+    *,
+    newly_created: bool,
+    author_removed_classes: frozenset[str] | set[str] | None = None,
+    remote_image_sources: dict[tuple[str, str], str] | None = None,
+    expected_image_sources: dict[tuple[str, str], str] | None = None,
+) -> WarningSeverity | None:
+    """Classify a refreshed divergence, suppressing harmless geometry/defaults."""
+    removed_classes = (
+        change.author_removed_classes
+        if author_removed_classes is None
+        else author_removed_classes
+    )
+
     if change.change_type == ChangeType.MOVE:
         old = change.old_position
         new = change.new_position
-        return _geometry_matches_within_tolerance(new, old)
+        return (
+            None
+            if _geometry_matches_within_tolerance(new, old)
+            else WarningSeverity.WARNING
+        )
 
     if change.change_type == ChangeType.IMAGE_UPDATE:
         if not _geometry_matches_within_tolerance(
             change.new_position, change.old_position
         ):
-            return False
+            return WarningSeverity.WARNING
         key = (change.slide_index or "", change.target_id)
         remote_element = remote_elements.get(key)
         intended_element = intended_elements.get(key)
@@ -261,53 +298,68 @@ def _is_normalized_persistence_change(
             and remote_element.src is None
             and remote_element.fit is None
         ):
-            return False
+            return WarningSeverity.WARNING
         remote_source = (remote_image_sources or {}).get(key)
         if remote_source is None:
             # Google may omit sourceUrl on refresh; retain the prior
             # unverifiable-success behavior rather than inventing a warning.
-            return True
+            return None
         expected_source = (expected_image_sources or {}).get(key, change.src)
-        return expected_source is not None and remote_source == expected_source
-
-    if not newly_created:
-        return False
+        return (
+            None
+            if expected_source is not None and remote_source == expected_source
+            else WarningSeverity.WARNING
+        )
 
     if change.change_type == ChangeType.STYLE_UPDATE:
         key = (change.slide_index or "", change.target_id)
         remote_element = remote_elements.get(key)
         intended_element = intended_elements.get(key)
         if remote_element is None or intended_element is None:
-            return False
+            return WarningSeverity.WARNING
         sent = _format_changed_element_style_classes(change, intended_element)
         remote = _format_changed_element_style_classes(change, remote_element)
-        return _only_google_default_class_additions(
+        if not _only_google_default_class_additions(
             sent,
             remote,
             remote_element,
-        )
+            removed_classes,
+        ):
+            return WarningSeverity.WARNING
+        return None if newly_created else WarningSeverity.NOTICE
 
     if change.change_type == ChangeType.PARAGRAPH_STYLE_UPDATE:
         for update in change.paragraph_style_updates or []:
             sent = _paragraph_style_classes(update.new_styles)
             remote = _paragraph_style_classes(update.old_styles)
-            if not _only_google_default_class_additions(sent, remote):
-                return False
-        return bool(change.paragraph_style_updates)
+            if not _only_google_default_class_additions(
+                sent, remote, author_removed_classes=removed_classes
+            ):
+                return WarningSeverity.WARNING
+        if not change.paragraph_style_updates:
+            return WarningSeverity.WARNING
+        return None if newly_created else WarningSeverity.NOTICE
 
     if change.change_type == ChangeType.TEXT_UPDATE:
-        return (
+        if (
             change.new_text == change.old_text
-            and _runs_only_gain_google_defaults(change.new_runs, change.old_runs)
-        )
+            and _runs_only_gain_google_defaults(
+                change.new_runs,
+                change.old_runs,
+                author_removed_classes=removed_classes,
+            )
+        ):
+            return None if newly_created else WarningSeverity.NOTICE
+        return WarningSeverity.WARNING
 
-    return False
+    return WarningSeverity.WARNING
 
 
 def _only_google_default_class_additions(
     sent: str | set[str],
     remote: str | set[str],
     element: ParsedElement | None = None,
+    author_removed_classes: frozenset[str] | set[str] | None = None,
 ) -> bool:
     sent_classes = (
         set()
@@ -324,6 +376,17 @@ def _only_google_default_class_additions(
         return False
     if not added <= GOOGLE_DEFAULT_TEXT_LAYOUT_CLASSES:
         return False
+    if added & (author_removed_classes or set()):
+        return False
+    if "font-family-arial" in added and any(
+        class_name.startswith("font-family-") for class_name in sent_classes
+    ):
+        return False
+    if any(class_name.startswith("font-weight-") for class_name in added):
+        if any(
+            class_name.startswith("font-weight-") for class_name in sent_classes
+        ):
+            return False
     if "content-align-top" in added:
         if element is None or TAG_TO_TYPE.get(element.tag) != "TEXT_BOX":
             return False
@@ -337,6 +400,8 @@ def _only_google_default_class_additions(
 def _runs_only_gain_google_defaults(
     sent: list[list[ParsedRun]] | None,
     remote: list[list[ParsedRun]] | None,
+    *,
+    author_removed_classes: frozenset[str] | set[str] | None = None,
 ) -> bool:
     if sent is None or remote is None or len(sent) != len(remote):
         return False
@@ -364,7 +429,11 @@ def _runs_only_gain_google_defaults(
             )
             if sent_classes == remote_classes:
                 continue
-            if not _only_google_default_class_additions(sent_classes, remote_classes):
+            if not _only_google_default_class_additions(
+                sent_classes,
+                remote_classes,
+                author_removed_classes=author_removed_classes,
+            ):
                 return False
             saw_default = True
     return saw_default
@@ -388,6 +457,7 @@ def append_persistence_warning(
     create_copy_targets: set[tuple[str, str]],
     response: dict[str, Any],
     *,
+    author_changes: list[Change] | None = None,
     read_pristine: Callable[
         [Path], tuple[dict[str, list[Any]], dict[str, dict[str, Any]]]
     ],
@@ -411,47 +481,85 @@ def append_persistence_warning(
     remote_elements = _index_parsed_elements(refreshed_slides)
     intended_elements = _index_parsed_elements(intended_slides)
     remote_image_sources = _remote_image_source_urls(folder_path)
-    meaningful = [
-        change
-        for change in unpersisted
-        if not _is_normalized_persistence_change(
+    author_removed_by_key: dict[
+        tuple[str, str, ChangeType], frozenset[str]
+    ] = {}
+    for authored_change in author_changes or []:
+        if authored_change.author_removed_classes:
+            author_removed_by_key[
+                (
+                    authored_change.slide_index or "",
+                    authored_change.target_id,
+                    authored_change.change_type,
+                )
+            ] = authored_change.author_removed_classes
+    classified = [
+        (
             change,
-            remote_elements,
-            intended_elements,
-            newly_created=(
-                change.slide_index or "", change.target_id
-            )
-            in create_copy_targets,
-            remote_image_sources=remote_image_sources,
-            expected_image_sources=expected_image_sources,
+            _persistence_warning_severity(
+                change,
+                remote_elements,
+                intended_elements,
+                newly_created=(
+                    change.slide_index or "", change.target_id
+                )
+                in create_copy_targets,
+                author_removed_classes=author_removed_by_key.get(
+                    (change.slide_index or "", change.target_id, change.change_type),
+                    frozenset(),
+                ),
+                remote_image_sources=remote_image_sources,
+                expected_image_sources=expected_image_sources,
+            ),
         )
+        for change in unpersisted
     ]
-    if not meaningful:
+    classified = [
+        (change, severity)
+        for change, severity in classified
+        if severity is not None
+    ]
+    if not classified:
         return
 
-    changes = sorted(
-        meaningful,
-        key=lambda change: (
-            change.slide_index or "",
-            change.target_id,
-            change.change_type.value,
-        ),
-    )
-    details = ", ".join(
-        _normalized_persistence_detail(
-            change,
-            remote_elements,
-            intended_elements,
-            remote_image_sources,
-            expected_image_sources,
+    for severity in (WarningSeverity.WARNING, WarningSeverity.NOTICE):
+        changes = sorted(
+            [
+                change
+                for change, item_severity in classified
+                if item_severity == severity
+            ],
+            key=lambda change: (
+                change.slide_index or "",
+                change.target_id,
+                change.change_type.value,
+            ),
         )
-        or f"{change.target_id} ({change.change_type.value.replace('_', ' ')})"
-        for change in changes
-    )
-    response.setdefault("warnings", []).append(
-        f"{len(changes)} change(s) did not persist remotely: {details} "
-        "— the API may not support these values"
-    )
+        if not changes:
+            continue
+        details = ", ".join(
+            _normalized_persistence_detail(
+                change,
+                remote_elements,
+                intended_elements,
+                remote_image_sources,
+                expected_image_sources,
+            )
+            or f"{change.target_id} ({change.change_type.value.replace('_', ' ')})"
+            for change in changes
+        )
+        if severity == WarningSeverity.NOTICE:
+            message = (
+                f"{len(changes)} change(s) were normalized by Google: {details}"
+            )
+        else:
+            message = (
+                f"{len(changes)} change(s) did not persist remotely: {details} "
+                "— the API may not support these values"
+            )
+        response.setdefault("warnings", []).append(
+            PushWarning(severity, message)
+        )
 
 
 __all__ = [

@@ -24,9 +24,10 @@ from PIL import Image
 
 from slidesmith.engine.client import ConflictError, SlidesClient
 from slidesmith.engine.components import load_components
-from slidesmith.engine.content_diff import ChangeType
+from slidesmith.engine.content_diff import ChangeType, diff_presentation
 from slidesmith.engine.content_parser import ParsedElement, parse_slide_content
 from slidesmith.engine.slide_processor import process_presentation
+from slidesmith.engine.diff_model import PushWarning, WarningSeverity
 from slidesmith.engine.transport import (
     APIError,
     GoogleSlidesTransport,
@@ -125,6 +126,31 @@ class Workspace:
         self.id_mapping: dict[str, str] = json.loads(
             (folder / "id_mapping.json").read_text(encoding="utf-8")
         )
+
+
+def append_persistence_warning_for_test(
+    tmp_path: Path,
+    intended: list[Any],
+    remote: list[Any],
+    author_changes: list[Any],
+) -> dict[str, Any]:
+    folder = tmp_path / "deck"
+    folder.mkdir()
+    client = SlidesClient()
+    client._read_pristine = lambda _folder: ({"01": remote}, {})
+    response: dict[str, Any] = {}
+    client._append_persistence_warning(
+        folder,
+        {"01": intended},
+        {
+            (change.target_id, change.change_type)
+            for change in author_changes
+        },
+        set(),
+        response,
+        author_changes=author_changes,
+    )
+    return response
 
 
 @pytest.fixture
@@ -438,9 +464,12 @@ async def test_folder_without_base_snapshot_degrades_gracefully(
 
     assert response["replies"], "old folders must still push (guard skipped)"
     assert response["warnings"] == [
-        "no pristine base snapshot found (.pristine/base.json); this folder was "
-        "pulled by an older slidesmith. Remote-change detection skipped for this "
-        "push -- re-pull to re-enable the guard."
+        PushWarning(
+            WarningSeverity.WARNING,
+            "no pristine base snapshot found (.pristine/base.json); this folder was "
+            "pulled by an older slidesmith. Remote-change detection skipped for "
+            "this push -- re-pull to re-enable the guard.",
+        )
     ]
     # The revision lock still applies even in degraded mode.
     assert ws.stub.batch_calls[0]["required_revision_id"] is not None
@@ -459,8 +488,11 @@ async def test_force_bypasses_guard_with_warning(
     assert len(ws.stub.batch_calls) == 1
     assert ws.stub.batch_calls[0]["required_revision_id"] is None
     assert response["warnings"] == [
-        "push --force: conflict guard and revision lock bypassed; concurrent "
-        "human edits to the touched properties will be overwritten"
+        PushWarning(
+            WarningSeverity.WARNING,
+            "push --force: conflict guard and revision lock bypassed; concurrent "
+            "human edits to the touched properties will be overwritten",
+        )
     ]
     metadata = json.loads(
         (ws.folder / "presentation.json").read_text(encoding="utf-8")
@@ -516,9 +548,12 @@ async def test_push_warns_when_an_intended_change_does_not_persist(
     response = await ws.client.push(ws.folder)
 
     assert response["warnings"] == [
-        "1 change(s) did not persist remotely: style classes on e121 did not "
-        "persist (sent 'fill-#00ff00', remote now '(none)') "
-        "— the API may not support these values"
+        PushWarning(
+            WarningSeverity.WARNING,
+            "1 change(s) did not persist remotely: style classes on e121 did not "
+            "persist (sent 'fill-#00ff00', remote now '(none)') "
+            "— the API may not support these values",
+        )
     ]
 
 
@@ -532,9 +567,10 @@ async def test_push_persistence_warning_shows_sent_and_remote_text(
 
     assert len(response["warnings"]) == 1
     warning = response["warnings"][0]
-    assert "text on e121 did not persist" in warning
-    assert "sent " in warning and replacement in warning
-    assert "remote now " in warning and remote_text in warning
+    assert warning.severity is WarningSeverity.WARNING
+    assert "text on e121 did not persist" in warning.message
+    assert "sent " in warning.message and replacement in warning.message
+    assert "remote now " in warning.message and remote_text in warning.message
 
 
 async def test_push_warns_when_created_box_text_does_not_persist(
@@ -557,7 +593,248 @@ async def test_push_warns_when_created_box_text_does_not_persist(
     assert response.get("warnings"), (
         "a partial CREATE must not be hidden when it re-diffs as TEXT_UPDATE"
     )
-    assert "text on brand_new_box did not persist" in response["warnings"][0]
+    assert (
+        "text on brand_new_box did not persist"
+        in response["warnings"][0].message
+    )
+
+
+def test_persistence_warning_suppresses_created_weight_and_arial_defaults(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    folder = tmp_path / "deck"
+    folder.mkdir()
+    (folder / "id_mapping.json").write_text("{}", encoding="utf-8")
+    intended = parse_slide_content(
+        '<Slide id="s1"><TextBox id="new_box" x="10" y="20" w="100" h="30">'
+        "<P><T>Authored</T></P></TextBox></Slide>"
+    )
+    remote = parse_slide_content(
+        '<Slide id="s1"><TextBox id="new_box" x="10" y="20" w="100" h="30">'
+        '<P><T class="font-weight-700 font-family-arial">Authored</T></P>'
+        "</TextBox></Slide>"
+    )
+    client = SlidesClient()
+    monkeypatch.setattr(
+        client,
+        "_read_pristine",
+        lambda _folder: ({"01": remote}, {}),
+    )
+    response: dict[str, Any] = {}
+
+    client._append_persistence_warning(
+        folder,
+        {"01": intended},
+        {("new_box", ChangeType.CREATE)},
+        {("01", "new_box")},
+        response,
+    )
+
+    assert "warnings" not in response
+
+
+def test_persistence_warning_notices_existing_paragraph_defaults(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    folder = tmp_path / "deck"
+    folder.mkdir()
+    (folder / "id_mapping.json").write_text("{}", encoding="utf-8")
+    intended = parse_slide_content(
+        '<Slide id="s1"><TextBox id="box" x="10" y="20" w="100" h="30">'
+        '<P class="text-align-center">Authored</P></TextBox></Slide>'
+    )
+    remote = parse_slide_content(
+        '<Slide id="s1"><TextBox id="box" x="10" y="20" w="100" h="30">'
+        '<P class="text-align-center leading-100 space-above-0 space-below-0 '
+        'indent-start-0 indent-first-0 spacing-never-collapse">Authored</P>'
+        "</TextBox></Slide>"
+    )
+    client = SlidesClient()
+    monkeypatch.setattr(
+        client,
+        "_read_pristine",
+        lambda _folder: ({"01": remote}, {}),
+    )
+    response: dict[str, Any] = {}
+
+    client._append_persistence_warning(
+        folder,
+        {"01": intended},
+        {("box", ChangeType.PARAGRAPH_STYLE_UPDATE)},
+        set(),
+        response,
+    )
+
+    assert response["warnings"]
+    assert response["warnings"][0].severity is WarningSeverity.NOTICE
+    assert "normalized by Google" in response["warnings"][0].message
+
+
+def test_persistence_warning_keeps_arial_replacement_as_warning(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    folder = tmp_path / "deck"
+    folder.mkdir()
+    (folder / "id_mapping.json").write_text("{}", encoding="utf-8")
+    intended = parse_slide_content(
+        '<Slide id="s1"><TextBox id="box" x="10" y="20" w="100" h="30">'
+        '<P><T class="font-family-roboto">Authored</T></P></TextBox></Slide>'
+    )
+    remote = parse_slide_content(
+        '<Slide id="s1"><TextBox id="box" x="10" y="20" w="100" h="30">'
+        '<P><T class="font-family-arial">Authored</T></P></TextBox></Slide>'
+    )
+    client = SlidesClient()
+    monkeypatch.setattr(
+        client,
+        "_read_pristine",
+        lambda _folder: ({"01": remote}, {}),
+    )
+    response: dict[str, Any] = {}
+
+    client._append_persistence_warning(
+        folder,
+        {"01": intended},
+        {("box", ChangeType.TEXT_UPDATE)},
+        set(),
+        response,
+    )
+
+    assert response["warnings"]
+    assert response["warnings"][0].severity is WarningSeverity.WARNING
+    assert "font-family-roboto" in response["warnings"][0].message
+
+
+def test_persistence_warning_warns_when_existing_arial_is_restored(
+    tmp_path: Path,
+) -> None:
+    pristine = parse_slide_content(
+        '<Slide id="s1"><TextBox id="box" x="10" y="20" w="100" h="30">'
+        '<P><T class="font-family-arial">Authored</T></P></TextBox></Slide>'
+    )
+    intended = parse_slide_content(
+        '<Slide id="s1"><TextBox id="box" x="10" y="20" w="100" h="30">'
+        "<P><T>Authored</T></P></TextBox></Slide>"
+    )
+    remote = parse_slide_content(
+        '<Slide id="s1"><TextBox id="box" x="10" y="20" w="100" h="30">'
+        '<P><T class="font-family-arial">Authored</T></P></TextBox></Slide>'
+    )
+    author_change = diff_presentation(
+        {"01": pristine}, {"01": intended}, {}
+    ).changes[0]
+    response = append_persistence_warning_for_test(
+        tmp_path, intended, remote, [author_change]
+    )
+
+    assert response["warnings"][0].severity is WarningSeverity.WARNING
+    assert author_change.change_type is ChangeType.TEXT_UPDATE
+    assert author_change.author_removed_classes == frozenset(
+        {"font-family-arial"}
+    )
+
+
+def test_persistence_warning_detects_class_removed_by_split_run(
+    tmp_path: Path,
+) -> None:
+    pristine = parse_slide_content(
+        '<Slide id="s1"><TextBox id="box" x="10" y="20" w="100" h="30">'
+        '<P><T class="font-family-arial">Authored</T></P></TextBox></Slide>'
+    )
+    intended = parse_slide_content(
+        '<Slide id="s1"><TextBox id="box" x="10" y="20" w="100" h="30">'
+        '<P><T class="font-family-arial">Auth</T><T>ored</T></P></TextBox></Slide>'
+    )
+    remote = pristine
+    author_change = diff_presentation(
+        {"01": pristine}, {"01": intended}, {}
+    ).changes[0]
+    response = append_persistence_warning_for_test(
+        tmp_path, intended, remote, [author_change]
+    )
+
+    assert response["warnings"][0].severity is WarningSeverity.WARNING
+    assert author_change.author_removed_classes == frozenset(
+        {"font-family-arial"}
+    )
+
+
+def test_persistence_warning_does_not_treat_pure_run_split_as_class_removal(
+    tmp_path: Path,
+) -> None:
+    pristine = parse_slide_content(
+        '<Slide id="s1"><TextBox id="box" x="10" y="20" w="100" h="30">'
+        '<P><T class="font-family-arial">Authored</T></P></TextBox></Slide>'
+    )
+    intended = parse_slide_content(
+        '<Slide id="s1"><TextBox id="box" x="10" y="20" w="100" h="30">'
+        '<P><T class="font-family-arial">Auth</T><T class="font-family-arial">ored</T></P></TextBox></Slide>'
+    )
+    remote = intended
+    author_change = diff_presentation(
+        {"01": pristine}, {"01": intended}, {}
+    ).changes[0]
+    response = append_persistence_warning_for_test(
+        tmp_path, intended, remote, [author_change]
+    )
+
+    assert not response.get("warnings")
+    assert not author_change.author_removed_classes
+
+
+def test_persistence_warning_warns_when_existing_leading_is_restored(
+    tmp_path: Path,
+) -> None:
+    pristine = parse_slide_content(
+        '<Slide id="s1"><TextBox id="box" x="10" y="20" w="100" h="30">'
+        '<P class="leading-100">Authored</P></TextBox></Slide>'
+    )
+    intended = parse_slide_content(
+        '<Slide id="s1"><TextBox id="box" x="10" y="20" w="100" h="30">'
+        "<P>Authored</P></TextBox></Slide>"
+    )
+    remote = parse_slide_content(
+        '<Slide id="s1"><TextBox id="box" x="10" y="20" w="100" h="30">'
+        '<P class="leading-100">Authored</P></TextBox></Slide>'
+    )
+    author_change = diff_presentation(
+        {"01": pristine}, {"01": intended}, {}
+    ).changes[0]
+    response = append_persistence_warning_for_test(
+        tmp_path, intended, remote, [author_change]
+    )
+
+    assert response["warnings"][0].severity is WarningSeverity.WARNING
+    assert author_change.author_removed_classes == frozenset({"leading-100"})
+
+
+def test_persistence_warning_notices_untouched_existing_weight_addition(
+    tmp_path: Path,
+) -> None:
+    pristine = parse_slide_content(
+        '<Slide id="s1"><TextBox id="box" x="10" y="20" w="100" h="30">'
+        "<P><T>Original</T></P></TextBox></Slide>"
+    )
+    intended = parse_slide_content(
+        '<Slide id="s1"><TextBox id="box" x="10" y="20" w="100" h="30">'
+        "<P><T>Edited</T></P></TextBox></Slide>"
+    )
+    remote = parse_slide_content(
+        '<Slide id="s1"><TextBox id="box" x="10" y="20" w="100" h="30">'
+        '<P><T class="font-weight-700">Edited</T></P></TextBox></Slide>'
+    )
+    author_change = diff_presentation(
+        {"01": pristine}, {"01": intended}, {}
+    ).changes[0]
+    response = append_persistence_warning_for_test(
+        tmp_path, intended, remote, [author_change]
+    )
+
+    assert response["warnings"][0].severity is WarningSeverity.NOTICE
+    assert not author_change.author_removed_classes
 
 
 async def test_push_without_remote_divergence_returns_no_warning(
@@ -753,7 +1030,8 @@ def test_persistence_warning_keeps_dropped_authored_class_on_create(
     )
 
     assert response.get("warnings")
-    assert "text-color-#5df2b2" in response["warnings"][0]
+    assert response["warnings"][0].severity is WarningSeverity.WARNING
+    assert "text-color-#5df2b2" in response["warnings"][0].message
 
 
 def test_persistence_warning_keeps_middle_alignment_on_textbox_create(
@@ -788,7 +1066,7 @@ def test_persistence_warning_keeps_middle_alignment_on_textbox_create(
     )
 
     assert response.get("warnings")
-    assert "content-align-middle" in response["warnings"][0]
+    assert "content-align-middle" in response["warnings"][0].message
 
 
 def test_created_image_keeps_sub_point_zero_two_geometry_suppression(

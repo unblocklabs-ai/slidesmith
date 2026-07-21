@@ -11,6 +11,7 @@ from slidesmith.engine.assets import (
     resolve_local_image_path,
 )
 from slidesmith.engine.content_parser import ParsedElement, validate_authored_image_geometry
+from slidesmith.engine.diff_model import PushWarning, WarningSeverity
 from slidesmith.engine.image_fetch import fetch_image_dimensions as _fetch_image_dimensions
 
 _ORIGINAL_FETCH_IMAGE_DIMENSIONS = _fetch_image_dimensions
@@ -97,7 +98,7 @@ def get_image_source_dimensions(
     workspace_root: Path | None = None,
     allow_remote_image_fetch: bool = False,
     fetch_remote_stretch: bool = False,
-    warnings: MutableSequence[str] | None = None,
+    warnings: MutableSequence[PushWarning] | None = None,
     fetch_failure: MutableSequence[bool] | None = None,
 ) -> tuple[int, int] | None:
     """Resolve authored image pixels without fetching remote stretch sources by default."""
@@ -135,10 +136,13 @@ def get_image_source_dimensions(
                 fetch_failure.append(True)
             if warnings is not None:
                 warnings.append(
-                    f"NOTICE: could not fetch dimensions for remote stretch "
-                    f"image '{elem.clean_id}'; using target-shaped geometry. "
-                    "The image may need a follow-up resize; persistence "
-                    f"verification will report actual drift ({exc})"
+                    PushWarning(
+                        WarningSeverity.NOTICE,
+                        f"could not fetch dimensions for remote stretch image "
+                        f"'{elem.clean_id}'; using target-shaped geometry. The "
+                        "image may need a follow-up resize; persistence "
+                        f"verification will report actual drift ({exc})",
+                    )
                 )
             return None
     return _fetch_dimensions_at_call_time(elem.src)

@@ -13,6 +13,7 @@ import pytest
 from slidesmith.engine.content_diff import ChangeType, DiffResult, diff_slide_content
 from slidesmith.engine.content_parser import parse_slide_content
 from slidesmith.engine.content_requests import generate_batch_requests
+from slidesmith.engine.diff_model import PushWarning, WarningSeverity
 from slidesmith.engine.text_requests import _create_text_update_requests
 from slidesmith.engine.units import pt_to_emu
 from slidesmith.workspace import materialize
@@ -392,7 +393,10 @@ def test_golden_image_copy_replays_writable_properties_and_warns_on_dropped_adju
     assert image_update["fields"] == "outline"
     assert set(image_update["imageProperties"]) == {"outline"}
     assert diff_result.warnings == [
-        "copy 'e125': image adjustments crop, shadow cannot be preserved because "
-        "the Google Slides API exposes them as read-only; the copy uses the source "
-        "image without those adjustments"
+        PushWarning(
+            WarningSeverity.WARNING,
+            "copy 'e125': image adjustments crop, shadow cannot be preserved because "
+            "the Google Slides API exposes them as read-only; the copy uses the source "
+            "image without those adjustments",
+        )
     ]

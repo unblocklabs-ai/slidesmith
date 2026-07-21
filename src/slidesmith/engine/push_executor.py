@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from slidesmith.engine.conflicts import ConflictError, ensure_no_conflicts
+from slidesmith.engine.diff_model import PushWarning, WarningSeverity
 from slidesmith.engine.push_progress import (
     SlideBatch,
     clear_progress_ledger,
@@ -20,12 +21,13 @@ from slidesmith.engine.workspace_layout import (
 )
 
 
-def _missing_base_warning() -> str:
-    return (
+def _missing_base_warning() -> PushWarning:
+    return PushWarning(
+        WarningSeverity.WARNING,
         "no pristine base snapshot found "
         f"({PRISTINE_DIR}/{PRISTINE_BASE_FILE}); this folder was "
         "pulled by an older slidesmith. Remote-change detection "
-        "skipped for this push -- re-pull to re-enable the guard."
+        "skipped for this push -- re-pull to re-enable the guard.",
     )
 
 
@@ -70,9 +72,9 @@ async def _finalize_push(
     folder_path: Path,
     presentation_id: str,
     response: dict[str, Any],
-    diff_warnings: list[str],
-    base_warning: str | None,
-    force_warning: str | None,
+    diff_warnings: list[PushWarning],
+    base_warning: PushWarning | None,
+    force_warning: PushWarning | None,
     verify_persistence: Callable[[dict[str, Any]], None],
     clear_progress: bool,
     refresh: Callable[..., Any],
@@ -100,9 +102,9 @@ async def finalize_push(
     folder_path: Path,
     presentation_id: str,
     response: dict[str, Any],
-    diff_warnings: list[str],
-    base_warning: str | None,
-    force_warning: str | None,
+    diff_warnings: list[PushWarning],
+    base_warning: PushWarning | None,
+    force_warning: PushWarning | None,
     verify_persistence: Callable[[dict[str, Any]], None],
     clear_progress: bool,
 ) -> dict[str, Any]:

@@ -7,6 +7,7 @@ from typing import Any
 
 from slidesmith.engine.content_diff import Change, ParagraphClassUpdate
 from slidesmith.engine.content_parser import ParagraphStyles, ParsedRun
+from slidesmith.engine.diff_model import PushWarning, WarningSeverity
 from slidesmith.engine.element_factories import _create_move_request
 from slidesmith.engine.hierarchy import has_ancestor_in_set
 from slidesmith.engine.text_requests import (
@@ -27,7 +28,7 @@ def _create_duplicate_copy_requests(
     allocate_object_id: Callable[[str, set[str]], str],
     pristine_element_types: dict[str, str] | None,
     pristine_element_parents: dict[str, str | None] | None,
-    warnings: list[str],
+    warnings: list[PushWarning],
 ) -> list[dict[str, Any]]:
     if source_google_id is None:
         raise ValueError(
@@ -240,7 +241,7 @@ def _apply_duplicate_descendant_edits(
     requests: list[dict[str, Any]],
     translation: dict[str, float],
     copy_source_id: str,
-    warnings: list[str],
+    warnings: list[PushWarning],
 ) -> None:
     """Replay authored descendant deltas and report positional ambiguity."""
     for child in children:
@@ -314,7 +315,7 @@ def _warn_for_ambiguous_child_position(
     child: dict[str, Any],
     translation: dict[str, float],
     copy_source_id: str,
-    warnings: list[str],
+    warnings: list[PushWarning],
 ) -> None:
     """Apply the R3-7 warning contract to either copy implementation path."""
     position = child.get("position", {})
@@ -336,14 +337,17 @@ def _warn_for_ambiguous_child_position(
         return
 
     warnings.append(
-        f"copy '{copy_source_id}' child '{child.get('id', '')}': "
-        f"authored position ({_format_number(position.get('x', 0))}, "
-        f"{_format_number(position.get('y', 0))}) matches neither "
-        f"the source position ({_format_number(source_position.get('x', 0))}, "
-        f"{_format_number(source_position.get('y', 0))}) nor the translated "
-        f"copy position ({_format_number(expected_final_x)}, "
-        f"{_format_number(expected_final_y)}); Slidesmith applied the parent "
-        "translation, so verify the copied child position"
+        PushWarning(
+            WarningSeverity.WARNING,
+            f"copy '{copy_source_id}' child '{child.get('id', '')}': "
+            f"authored position ({_format_number(position.get('x', 0))}, "
+            f"{_format_number(position.get('y', 0))}) matches neither "
+            f"the source position ({_format_number(source_position.get('x', 0))}, "
+            f"{_format_number(source_position.get('y', 0))}) nor the translated "
+            f"copy position ({_format_number(expected_final_x)}, "
+            f"{_format_number(expected_final_y)}); Slidesmith applied the parent "
+            "translation, so verify the copied child position",
+        )
     )
 
 

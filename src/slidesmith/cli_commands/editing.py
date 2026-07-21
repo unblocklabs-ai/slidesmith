@@ -9,7 +9,11 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from slidesmith.cli_commands._support import _token, _warn_if_stale
+from slidesmith.cli_commands._support import (
+    _token,
+    _warn_if_stale,
+    print_push_warnings,
+)
 
 
 SELECTOR_GRAMMAR = """Selector grammar:
@@ -65,8 +69,7 @@ def cmd_replace_image(args: Any) -> None:
             if response.get("dryRun"):
                 print(json.dumps(response, indent=2))
                 return
-            for warning in response.get("warnings", []):
-                print(f"warning: {warning}", file=sys.stderr)
+            print_push_warnings(response.get("warnings", []))
             print(f"Replaced image {args.element_id}.")
         finally:
             await uploader.close()

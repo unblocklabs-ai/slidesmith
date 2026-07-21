@@ -14,6 +14,11 @@ agent-legible: name the command/flag and what an operator can now do.
 
 ## [Unreleased]
 
+### Changed
+- Push and `replace-image` diagnostics now carry `WARNING` versus `NOTICE`
+  severity, render notices after actionable warnings, and summarize mixed
+  counts in the CLI.
+
 ### Fixed
 - **`slidesmith --version`** now prints the package version without requiring a
   subcommand.
@@ -34,6 +39,10 @@ agent-legible: name the command/flag and what an operator can now do.
 - Push-time remote `fit="stretch"` dimension-fetch failures now fall back to
   deterministic target-shaped geometry and return a NOTICE about a possible
   follow-up resize.
+- Persistence verification now recognizes Google `font-weight-700` and
+  `font-family-arial` additions, reports harmless defaults on existing edited
+  elements as notices, and keeps authored font-family, weight, and class drops
+  as warnings.
 
 ## [0.4.0] — 2026-07-20 — Design-agent roadmap
 

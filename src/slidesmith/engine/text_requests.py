@@ -13,15 +13,11 @@ from slidesmith.engine.class_style_requests import (
 from slidesmith.engine.content_diff import (
     _PARAGRAPH_STYLE_FIELD_NAMES,
     _TEXT_STYLE_FIELD_NAMES,
+    _utf16_len,
     ParagraphClassUpdate,
     _changed_style_fields,
 )
 from slidesmith.engine.content_parser import ParagraphStyles, ParsedRun
-
-
-def _utf16_len(text: str) -> int:
-    """Length of text in UTF-16 code units (the Slides API index space)."""
-    return sum(2 if ord(ch) > 0xFFFF else 1 for ch in text)
 
 
 def _common_prefix_chars(a: str, b: str) -> int:

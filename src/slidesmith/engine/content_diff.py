@@ -38,6 +38,7 @@ from slidesmith.engine.diff_model import (
     ChangeType,
     DiffResult,
     ParagraphClassUpdate,
+    PushWarning,
 )
 from slidesmith.engine.diff_summary import format_diff_summary  # noqa: F401
 from slidesmith.engine.image_geometry import (  # noqa: F401
@@ -58,6 +59,11 @@ from slidesmith.engine.style_delta import (  # noqa: F401
     _text_style_fields,
     _text_style_font_family_field,
 )
+
+
+def _utf16_len(text: str) -> int:
+    """Length of text in UTF-16 code units (the Slides API index space)."""
+    return sum(2 if ord(ch) > 0xFFFF else 1 for ch in text)
 
 
 def diff_presentation(
@@ -298,7 +304,7 @@ def _compare_elements(
     workspace_root: Path | None = None,
     allow_remote_image_fetch: bool = False,
     fetch_remote_stretch_dimensions: bool = False,
-    warnings: list[str] | None = None,
+    warnings: list[PushWarning] | None = None,
 ) -> list[Change]:
     """Compare two elements with the same ID and generate changes."""
     changes: list[Change] = []
@@ -372,6 +378,9 @@ def _compare_elements(
                 new_runs=edited.runs if edited.runs else None,
                 old_text=pristine.paragraphs,
                 old_runs=pristine.runs if pristine.runs else None,
+                author_removed_classes=_removed_run_classes(
+                    pristine.runs, edited.runs
+                ),
             )
         )
 
@@ -403,6 +412,13 @@ def _compare_elements(
                 new_text=edited.paragraphs,
                 new_runs=edited.runs,
                 paragraph_style_updates=paragraph_updates,
+                author_removed_classes=frozenset(
+                    removed
+                    for update in paragraph_updates
+                    for removed in _removed_paragraph_classes(
+                        update.old_styles, update.new_styles
+                    )
+                ),
             )
         )
 
@@ -479,6 +495,9 @@ def _compare_elements(
                     pristine_styles.content_alignment is not None
                     and edited_styles.content_alignment is None
                 ),
+                author_removed_classes=_removed_element_classes(
+                    pristine_styles, edited_styles
+                ),
                 new_text=edited.paragraphs if edited.paragraphs else None,
                 new_runs=edited.runs if edited.runs else None,
                 new_paragraph_styles=edited.paragraph_styles
@@ -489,6 +508,83 @@ def _compare_elements(
         )
 
     return changes
+
+
+def _style_classes(style: Any | None) -> set[str]:
+    return set(style.to_classes()) if style is not None else set()
+
+
+def _paragraph_classes(styles: Any | None) -> set[str]:
+    if styles is None:
+        return set()
+    return _style_classes(styles.text_style) | _style_classes(styles.paragraph_style)
+
+
+def _removed_paragraph_classes(old: Any | None, new: Any | None) -> frozenset[str]:
+    return frozenset(_paragraph_classes(old) - _paragraph_classes(new))
+
+
+def _removed_element_classes(old: ElementStyles, new: ElementStyles) -> frozenset[str]:
+    old_classes: set[str] = set()
+    new_classes: set[str] = set()
+    for styles, target in ((old, old_classes), (new, new_classes)):
+        if styles.fill is not None:
+            target.add(styles.fill.to_class())
+        for style in (
+            styles.stroke,
+            styles.text_style,
+            styles.paragraph_style,
+        ):
+            target.update(_style_classes(style))
+        if styles.content_alignment is not None:
+            target.add(styles.content_alignment.to_class())
+    return frozenset(old_classes - new_classes)
+
+
+def _removed_run_classes(
+    old_runs: list[list[Any]], new_runs: list[list[Any]]
+) -> frozenset[str]:
+    """Find classes removed from any covered character range.
+
+    Run boundaries are not stable: an author can split one run without
+    changing its text. Compare the UTF-16 ranges covered by each run instead
+    of assuming that matching list positions represent matching text.
+    """
+    removed: set[str] = set()
+    for paragraph_index, old_paragraph in enumerate(old_runs):
+        new_paragraph = (
+            new_runs[paragraph_index] if paragraph_index < len(new_runs) else []
+        )
+        old_spans: list[tuple[int, int, set[str]]] = []
+        offset = 0
+        for old_run in old_paragraph:
+            end = offset + _utf16_len(old_run.text)
+            if end > offset:
+                old_spans.append((offset, end, _style_classes(old_run.text_style)))
+            offset = end
+
+        new_spans: list[tuple[int, int, set[str]]] = []
+        offset = 0
+        for new_run in new_paragraph:
+            end = offset + _utf16_len(new_run.text)
+            if end > offset:
+                new_spans.append((offset, end, _style_classes(new_run.text_style)))
+            offset = end
+
+        for old_start, old_end, old_classes in old_spans:
+            for class_name in old_classes:
+                covered_until = old_start
+                for new_start, new_end, new_classes in new_spans:
+                    if class_name not in new_classes or new_end <= old_start:
+                        continue
+                    if new_start > covered_until:
+                        break
+                    covered_until = max(covered_until, new_end)
+                    if covered_until >= old_end:
+                        break
+                if covered_until < old_end:
+                    removed.add(class_name)
+    return frozenset(removed)
 
 
 def _make_copy_change(

@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import re
 import sys
+from collections.abc import Iterable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 from slidesmith.engine.json_utils import read_json
+from slidesmith.engine.diff_model import PushWarning, WarningSeverity
 
 
 def _presentation_id(url_or_id: str) -> str:
@@ -54,6 +56,26 @@ def _warn_if_stale(folder: str | Path, *, now: datetime | None = None) -> None:
         print(
             f"warning: workspace pulled {pulled_at_raw}; deck may have changed — "
             "re-pull recommended",
+            file=sys.stderr,
+        )
+
+
+def print_push_warnings(warnings: Iterable[PushWarning]) -> None:
+    """Render push notices after actionable warnings with a mixed summary."""
+    warnings = list(warnings)
+    warnings_by_severity = {
+        severity: [warning for warning in warnings if warning.severity == severity]
+        for severity in (WarningSeverity.WARNING, WarningSeverity.NOTICE)
+    }
+    for severity in (WarningSeverity.WARNING, WarningSeverity.NOTICE):
+        for warning in warnings_by_severity[severity]:
+            print(f"{severity.value}: {warning.message}", file=sys.stderr)
+    warning_count = len(warnings_by_severity[WarningSeverity.WARNING])
+    notice_count = len(warnings_by_severity[WarningSeverity.NOTICE])
+    if warning_count and notice_count:
+        print(
+            f"push warning summary: {warning_count} warning(s), "
+            f"{notice_count} notice(s)",
             file=sys.stderr,
         )
 

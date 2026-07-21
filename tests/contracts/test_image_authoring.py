@@ -16,6 +16,7 @@ from slidesmith.engine import image_fetch
 from slidesmith.engine.content_diff import Change, ChangeType, DiffResult, diff_presentation
 from slidesmith.engine.content_parser import parse_slide_content
 from slidesmith.engine.content_requests import generate_batch_requests
+from slidesmith.engine.diff_model import WarningSeverity
 from slidesmith.engine.element_factories import _create_image_request
 from slidesmith.engine.units import pt_to_emu
 
@@ -529,7 +530,9 @@ def test_failed_push_stretch_fetch_keeps_image_update_geometry_transform(
         "replaceImage",
         "updatePageElementTransform",
     ]
-    assert result.warnings and result.warnings[0].startswith("NOTICE:")
+    assert result.warnings
+    assert result.warnings[0].severity is WarningSeverity.NOTICE
+    assert result.warnings[0].message.startswith("could not fetch dimensions")
 
 
 def test_contain_push_dimension_fetch_failure_still_raises(

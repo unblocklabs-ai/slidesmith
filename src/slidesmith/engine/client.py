@@ -23,6 +23,7 @@ from slidesmith.engine.content_diff import (
     DiffResult,
     diff_presentation,
 )
+from slidesmith.engine.diff_model import PushWarning, WarningSeverity
 from slidesmith.engine.content_requests import generate_batch_requests
 from slidesmith.engine.json_utils import read_json
 from slidesmith.engine.image_fetch import fetch_image_dimensions
@@ -93,9 +94,9 @@ async def finalize_push(
     folder_path: Path,
     presentation_id: str,
     response: dict[str, Any],
-    diff_warnings: list[str],
-    base_warning: str | None,
-    force_warning: str | None,
+    diff_warnings: list[PushWarning],
+    base_warning: PushWarning | None,
+    force_warning: PushWarning | None,
     verify_persistence: Callable[[dict[str, Any]], None],
     clear_progress: bool,
 ) -> dict[str, Any]:
@@ -363,12 +364,13 @@ class SlidesClient:
                 progress=progress,
             )
 
-        force_warning: str | None = None
+        force_warning: PushWarning | None = None
         if force:
-            force_warning = (
-                "push --force: conflict guard and revision lock "
-                "bypassed; concurrent human edits to the touched properties "
-                "will be overwritten"
+            force_warning = PushWarning(
+                WarningSeverity.WARNING,
+                "push --force: conflict guard and revision lock bypassed; "
+                "concurrent human edits to the touched properties will be "
+                "overwritten",
             )
 
         base_raw = self._read_base_raw(folder_path)
@@ -399,6 +401,7 @@ class SlidesClient:
                     intended_change_keys,
                     create_copy_targets,
                     finalized_response,
+                    author_changes=diff_result.changes,
                     expected_image_sources=expected_image_sources,
                 )
             ),
@@ -629,7 +632,7 @@ class SlidesClient:
         response: dict[str, Any] = {"replies": []}
         transport = self._require_transport()
 
-        warning: str | None = None
+        warning: PushWarning | None = None
         if base_raw is None:
             warning = _missing_base_warning()
 
@@ -686,12 +689,13 @@ class SlidesClient:
             write_progress_ledger(folder_path, presentation_id, succeeded)
             _report_progress(progress, "success", batch, total_slides)
 
-        force_warning: str | None = None
+        force_warning: PushWarning | None = None
         if force:
-            force_warning = (
-                "push --force --per-slide: conflict guard bypassed; "
-                "per-slide revision locks remain enabled, but concurrent human "
-                "edits already present on touched properties will be overwritten"
+            force_warning = PushWarning(
+                WarningSeverity.WARNING,
+                "push --force --per-slide: conflict guard bypassed; per-slide "
+                "revision locks remain enabled, but concurrent human edits "
+                "already present on touched properties will be overwritten",
             )
 
         return await finalize_push(
@@ -709,6 +713,7 @@ class SlidesClient:
                     intended_change_keys,
                     create_copy_targets,
                     finalized_response,
+                    author_changes=diff_result.changes,
                     expected_image_sources=expected_image_sources,
                 )
             ),
@@ -723,6 +728,7 @@ class SlidesClient:
         create_copy_targets: set[tuple[str, str]],
         response: dict[str, Any],
         *,
+        author_changes: list[Any] | None = None,
         expected_image_sources: dict[tuple[str, str], str] | None = None,
     ) -> None:
         """Warn when pushed semantic changes differ from refreshed truth."""
@@ -732,6 +738,7 @@ class SlidesClient:
             intended_change_keys,
             create_copy_targets,
             response,
+            author_changes=author_changes,
             read_pristine=self._read_pristine,
             expected_image_sources=expected_image_sources,
         )

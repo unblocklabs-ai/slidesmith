@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from slidesmith.workspace import materialize
+from slidesmith.engine.diff_model import PushWarning, WarningSeverity
 
 
 GOLDEN = (
@@ -259,7 +260,11 @@ def test_duplicate_warns_when_authored_child_position_is_ambiguous(
     diff_result, requests = diff_folder_with_result(folder)
     assert any("duplicateObject" in request for request in requests)
     assert diff_result.warnings == [
-        "copy 'rg_group' child 'rg_caption': authored position (35, 50) matches neither "
-        "the source position (10, 50) nor the translated copy position (110, 50); "
-        "Slidesmith applied the parent translation, so verify the copied child position"
+        PushWarning(
+            WarningSeverity.WARNING,
+            "copy 'rg_group' child 'rg_caption': authored position (35, 50) matches "
+            "neither the source position (10, 50) nor the translated copy position "
+            "(110, 50); Slidesmith applied the parent translation, so verify the "
+            "copied child position",
+        )
     ]

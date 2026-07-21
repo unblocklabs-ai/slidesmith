@@ -13,6 +13,7 @@ from typing import Any
 from slidesmith.cli_commands._support import (
     _presentation_id,
     _request_id_legend,
+    print_push_warnings,
     _token,
     _warn_if_stale,
 )
@@ -130,8 +131,7 @@ def cmd_push(args: Any) -> None:
                 resume=args.resume,
                 progress=progress if args.per_slide else None,
             )
-            for warning in resp.get("warnings", []):
-                print(f"warning: {warning}", file=sys.stderr)
+            print_push_warnings(resp.get("warnings", []))
             if message := resp.get("message"):
                 print(message)
             else:

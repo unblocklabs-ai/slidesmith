@@ -25,7 +25,12 @@ from slidesmith.engine.push_progress import (
     partition_requests_by_slide,
     write_progress_ledger,
 )
-from slidesmith.engine.transport import APIError, PresentationData, Transport
+from slidesmith.engine.transport import (
+    APIError,
+    AuthenticationError,
+    PresentationData,
+    Transport,
+)
 
 
 GOLDEN = (
@@ -477,6 +482,45 @@ async def test_mid_deck_failure_records_successful_prefix_and_stops(
     assert ledger["presentationId"] == transport.original["presentationId"]
     assert [entry["slideIndex"] for entry in ledger["succeeded"]] == ["01"]
     assert len(ledger["succeeded"][0]["contentHash"]) == 64
+
+
+async def test_per_slide_refreshes_before_each_batch(
+    resumable_workspace: tuple[ResumableStubTransport, SlidesClient, Path],
+) -> None:
+    transport, client, folder = resumable_workspace
+    refresh_calls: list[int] = []
+
+    async def refresh_if_expiring() -> None:
+        refresh_calls.append(len(refresh_calls) + 1)
+
+    transport.refresh_if_expiring = refresh_if_expiring  # type: ignore[method-assign]
+
+    await client.push(folder, per_slide=True)
+
+    assert refresh_calls == [1, 2, 3, 4]
+
+
+async def test_bare_token_auth_failure_keeps_ledger_and_explains_resume(
+    resumable_workspace: tuple[ResumableStubTransport, SlidesClient, Path],
+) -> None:
+    transport, client, folder = resumable_workspace
+    original_batch_update = transport.batch_update
+
+    async def fail_on_second_batch(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        if len(transport.batch_calls) >= 1:
+            raise AuthenticationError(
+                "Invalid or expired access token. Please re-export a fresh token and "
+                "use --resume to pick up where it left off."
+            )
+        return await original_batch_update(*args, **kwargs)
+
+    transport.batch_update = fail_on_second_batch  # type: ignore[method-assign]
+
+    with pytest.raises(PerSlidePushError, match=r"re-export a fresh token.*--resume"):
+        await client.push(folder, per_slide=True)
+
+    ledger = json.loads((folder / PUSH_PROGRESS_FILE).read_text(encoding="utf-8"))
+    assert [entry["slideIndex"] for entry in ledger["succeeded"]] == ["01"]
 
 
 async def test_per_slide_force_still_refreshes_and_carries_revision_locks(

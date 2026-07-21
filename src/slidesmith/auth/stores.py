@@ -56,11 +56,19 @@ def _write_secure_json(path: Path, data: dict[str, Any]) -> None:
 
 @dataclass
 class SessionToken:
-    """Long-lived (30-day) session token for headless agent access."""
+    """Stored authentication token for headless agent access."""
 
-    raw_token: str
-    email: str
-    expires_at: float
+    raw_token: str | None = None
+    email: str = ""
+    expires_at: float = 0.0
+    is_refreshable: bool = True
+    access_token: str | None = None
+
+    def __post_init__(self) -> None:
+        # Accept the earlier in-progress access-only object shape in memory,
+        # but never serialize it back under the legacy raw_token key.
+        if not self.is_refreshable and self.access_token is None:
+            self.access_token = self.raw_token
 
     def is_valid(self, buffer_seconds: int = 300) -> bool:
         """Check if session token is still valid with a 5-minute buffer."""
@@ -68,19 +76,45 @@ class SessionToken:
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for serialization."""
-        return {
-            "raw_token": self.raw_token,
+        payload: dict[str, Any] = {
             "email": self.email,
             "expires_at": self.expires_at,
+            "is_refreshable": self.is_refreshable,
         }
+        if self.is_refreshable:
+            payload["raw_token"] = self.raw_token
+        else:
+            payload["access_token"] = self.access_token
+        return payload
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> SessionToken:
         """Create SessionToken from dictionary."""
+        if not isinstance(data, dict):
+            raise TypeError("session token payload must be an object")
+        is_refreshable = data.get("is_refreshable", True)
+        if not isinstance(is_refreshable, bool):
+            raise TypeError("is_refreshable must be a boolean")
+        if is_refreshable:
+            return cls(
+                raw_token=data["raw_token"],
+                email=data["email"],
+                expires_at=data["expires_at"],
+                is_refreshable=True,
+            )
+        if "access_token" in data:
+            return cls(
+                access_token=data["access_token"],
+                email=data["email"],
+                expires_at=data["expires_at"],
+                is_refreshable=False,
+            )
+        # Read the short-lived shape emitted by the earlier Phase 5 draft too.
         return cls(
             raw_token=data["raw_token"],
             email=data["email"],
             expires_at=data["expires_at"],
+            is_refreshable=False,
         )
 
 
@@ -150,7 +184,10 @@ class FileSessionStore:
                 for name, payload in profiles.items()
                 if isinstance(payload, dict)
             }
-        if {"raw_token", "email", "expires_at"}.issubset(data):
+        if (
+            {"email", "expires_at"}.issubset(data)
+            and ("raw_token" in data or "access_token" in data)
+        ):
             return {_DEFAULT_PROFILE: data}
         return {}
 

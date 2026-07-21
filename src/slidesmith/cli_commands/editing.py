@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from slidesmith.cli_commands._support import (
+    _transport_options,
     _token,
     _warn_if_stale,
     print_push_warnings,
@@ -56,8 +57,8 @@ def cmd_replace_image(args: Any) -> None:
     token = _cli_helper("_token", _token)("slide.push", str(args.folder))
 
     async def run() -> None:
-        transport = GoogleSlidesTransport(token)
-        uploader = GoogleDriveAssetUploader(token)
+        transport = GoogleSlidesTransport(token, **_transport_options(token))
+        uploader = GoogleDriveAssetUploader(str(token))
         try:
             response = await SlidesClient(transport, uploader).replace_image(
                 Path(args.folder),

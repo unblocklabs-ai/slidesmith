@@ -7,10 +7,11 @@ from __future__ import annotations
 
 import asyncio
 import ssl
+import time
 import urllib.parse
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 import certifi
 import httpx
@@ -18,6 +19,8 @@ import httpx
 # API constants
 API_BASE = "https://slides.googleapis.com/v1/presentations"
 DEFAULT_TIMEOUT = 60
+EXPIRY_BUFFER_SECONDS = 120
+CredentialRefresh = Callable[[], Awaitable[Any]]
 
 
 class TransportError(Exception):
@@ -108,6 +111,10 @@ class Transport(ABC):
         """Close any open connections."""
         ...
 
+    async def refresh_if_expiring(self) -> None:
+        """Refresh a short-lived credential before a write when supported."""
+        return None
+
 
 class GoogleSlidesTransport(Transport):
     """Production transport that fetches data from Google Slides API.
@@ -122,6 +129,8 @@ class GoogleSlidesTransport(Transport):
         *,
         retry_attempts: int = 3,
         retry_backoff: float = 0.1,
+        credential_refresh: CredentialRefresh | None = None,
+        expires_at: float | None = None,
     ) -> None:
         """Initialize the transport.
 
@@ -131,6 +140,14 @@ class GoogleSlidesTransport(Transport):
         """
         self._retry_attempts = max(1, retry_attempts)
         self._retry_backoff = max(0.0, retry_backoff)
+        if credential_refresh is None:
+            credential_refresh = getattr(access_token, "refresh_callback", None)
+        if expires_at is None:
+            expires_at = getattr(access_token, "expires_at", None)
+        self._credential_refresh = credential_refresh
+        self._expires_at = expires_at
+        self._refresh_lock = asyncio.Lock()
+        self._refresh_task: asyncio.Task[bool] | None = None
         ssl_context = ssl.create_default_context(cafile=certifi.where())
         self._client = httpx.AsyncClient(
             timeout=timeout,
@@ -206,15 +223,22 @@ class GoogleSlidesTransport(Transport):
         if required_revision_id is not None:
             body["writeControl"] = {"requiredRevisionId": required_revision_id}
 
-        try:
-            response = await self._client.post(url, json=body)
-            response.raise_for_status()
-            result: dict[str, Any] = response.json()
-            return result
-        except httpx.HTTPStatusError as e:
-            raise self._handle_http_error(e) from e
-        except httpx.RequestError as e:
-            raise TransportError(f"Network error: {e}") from e
+        refresh_attempted = False
+        while True:
+            observed_authorization = self._client.headers.get("Authorization")
+            try:
+                response = await self._client.post(url, json=body)
+                response.raise_for_status()
+                result: dict[str, Any] = response.json()
+                return result
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 401 and not refresh_attempted:
+                    refresh_attempted = True
+                    if await self._refresh_after_401(observed_authorization):
+                        continue
+                raise self._handle_http_error(e) from e
+            except httpx.RequestError as e:
+                raise TransportError(f"Network error: {e}") from e
 
     async def _request(self, url: str) -> dict[str, Any]:
         """Make an authenticated GET request."""
@@ -231,27 +255,114 @@ class GoogleSlidesTransport(Transport):
     ) -> httpx.Response:
         """GET with bounded exponential backoff for throttling/server errors."""
         request_client = client or self._client
-        for attempt in range(self._retry_attempts):
+        refresh_attempted = False
+        retry_attempt = 0
+        while True:
+            observed_authorization = (
+                request_client.headers.get("Authorization")
+                if request_client is self._client
+                else None
+            )
             try:
                 response = await request_client.get(url, params=params)
                 response.raise_for_status()
                 return response
             except httpx.HTTPStatusError as exc:
                 status = exc.response.status_code
+                if (
+                    status == 401
+                    and request_client is self._client
+                    and not refresh_attempted
+                ):
+                    refresh_attempted = True
+                    if await self._refresh_after_401(observed_authorization):
+                        continue
                 retryable = status == 429 or 500 <= status <= 599
-                if not retryable or attempt + 1 >= self._retry_attempts:
+                if not retryable or retry_attempt + 1 >= self._retry_attempts:
                     raise self._handle_http_error(exc) from exc
-                await asyncio.sleep(self._retry_backoff * (2**attempt))
+                await asyncio.sleep(self._retry_backoff * (2**retry_attempt))
+                retry_attempt += 1
             except httpx.RequestError as exc:
                 raise TransportError(f"Network error: {exc}") from exc
 
-        raise AssertionError("retry loop exhausted without returning or raising")
+    async def refresh_if_expiring(self) -> None:
+        """Refresh the configured credential when it is within the write buffer."""
+        if self._expires_at is None:
+            return
+        if time.time() < self._expires_at - EXPIRY_BUFFER_SECONDS:
+            return
+        await self._refresh_access_token()
+
+    async def _refresh_access_token(self) -> bool:
+        """Run the one-shot refresh callback and install its new bearer token."""
+        current_task = asyncio.current_task()
+        if current_task is self._refresh_task:
+            raise self._guided_authentication_error()
+        async with self._refresh_lock:
+            if current_task is self._refresh_task:
+                raise self._guided_authentication_error()
+            refresh_task = self._refresh_task
+            if refresh_task is None or refresh_task.done():
+                refresh_task = asyncio.create_task(self._refresh_access_token_unlocked())
+                self._refresh_task = refresh_task
+        return await asyncio.shield(refresh_task)
+
+    async def _refresh_after_401(self, observed_authorization: str | None) -> bool:
+        """Refresh once unless another request already replaced the bearer token."""
+        if self._credential_refresh is None:
+            return False
+        current_task = asyncio.current_task()
+        if current_task is self._refresh_task:
+            raise self._guided_authentication_error()
+        async with self._refresh_lock:
+            if current_task is self._refresh_task:
+                raise self._guided_authentication_error()
+            if self._client.headers.get("Authorization") != observed_authorization:
+                return True
+            refresh_task = self._refresh_task
+            if refresh_task is None or refresh_task.done():
+                refresh_task = asyncio.create_task(self._refresh_access_token_unlocked())
+                self._refresh_task = refresh_task
+        return await asyncio.shield(refresh_task)
+
+    async def _refresh_access_token_unlocked(self) -> bool:
+        """Run the refresh callback outside the bookkeeping lock."""
+        if self._credential_refresh is None:
+            return False
+        try:
+            result = await self._credential_refresh()
+        except Exception:
+            return False
+        if result is None:
+            return False
+
+        token: Any = result
+        expires_at: float | None = None
+        if isinstance(result, tuple):
+            if not result:
+                return False
+            token = result[0]
+            if len(result) > 1 and isinstance(result[1], (int, float)):
+                expires_at = float(result[1])
+        else:
+            candidate_token = getattr(result, "token", None)
+            if candidate_token is not None:
+                token = candidate_token
+                candidate_expiry = getattr(result, "expires_at", None)
+                if isinstance(candidate_expiry, (int, float)):
+                    expires_at = float(candidate_expiry)
+        if not isinstance(token, str) or not token:
+            return False
+
+        self._expires_at = expires_at
+        self._client.headers["Authorization"] = f"Bearer {token}"
+        return True
 
     def _handle_http_error(self, e: httpx.HTTPStatusError) -> TransportError:
         """Convert HTTP errors to appropriate transport exceptions."""
         status = e.response.status_code
         if status == 401:
-            return AuthenticationError("Invalid or expired access token")
+            return self._guided_authentication_error()
         if status == 403:
             return AuthenticationError(
                 "Access denied. Check your scopes and permissions."
@@ -262,6 +373,14 @@ class GoogleSlidesTransport(Transport):
             )
         body = e.response.text
         return APIError(f"API error ({status}): {body}", status_code=status)
+
+    @staticmethod
+    def _guided_authentication_error() -> AuthenticationError:
+        return AuthenticationError(
+            "Invalid or expired access token. Please re-export a fresh token and "
+            "retry. For --per-slide pushes, use --resume to pick up where "
+            "it left off."
+        )
 
     async def close(self) -> None:
         """Close the authenticated API and bare thumbnail HTTP clients."""

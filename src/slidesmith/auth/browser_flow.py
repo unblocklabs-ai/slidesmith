@@ -76,7 +76,7 @@ class BrowserFlowMixin:
 
     def _run_oauth_browser_flow(
         self, client_id: str, client_secret: str
-    ) -> tuple[str, str]:
+    ) -> tuple[str, str | None, float]:
         """Run an OAuth 2.0 authorization code flow with PKCE against Google."""
         import base64
 
@@ -122,14 +122,9 @@ class BrowserFlowMixin:
             error_body = e.read().decode("utf-8") if e.fp else str(e)
             raise AuthError(f"Google token exchange failed: {error_body}") from e
 
-        if "refresh_token" not in result:
-            raise AuthError(
-                "Google did not return a refresh token. "
-                "This can happen if you have already authorized this app. "
-                "Visit https://myaccount.google.com/permissions to revoke access, "
-                "then try again."
-            )
-        return result["access_token"], result["refresh_token"]
+        expires_at = time.time() + int(result.get("expires_in", 3600))
+        refresh_token = result.get("refresh_token")
+        return result["access_token"], refresh_token, expires_at
 
     def _run_browser_flow(
         self,

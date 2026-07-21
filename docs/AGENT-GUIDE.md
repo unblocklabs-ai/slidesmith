@@ -1012,10 +1012,31 @@ expiry, a verdict, and one next command. It distinguishes missing OAuth client
 credentials, denied/broken Keychain access, an absent session, and an expired
 session.
 
-`slidesmith auth login` always forces fresh browser consent. A successful login
-mirrors the long-lived session or refresh token to the OS keyring and
-`~/.config/slidesmith/session.json` when each is available. The file is mode
-0600. OAuth client secrets are never copied into the session file.
+`slidesmith auth login` always forces fresh browser consent. A refreshable
+login stores its refresh token in the OS keyring and
+`~/.config/slidesmith/session.json` when each is available. If Google withholds
+a refresh token, the access-only session stores the short-lived access token
+instead; it expires in about one hour. The file is mode 0600 in either mode.
+OAuth client secrets are never copied into the session file.
+
+### Auth recovery during a run
+
+OAuth access tokens carry their known expiry. Slidesmith re-mints an OAuth
+credential through its stored refresh token before a per-slide batch (and
+before an atomic write when it is near expiry), then retries one request after
+a 401 with the new bearer header. The same recovery applies to presentation
+GETs and `batchUpdate`; a second 401 is terminal. Service-account credentials
+are re-minted through `google-auth` when available.
+
+`GOG_ACCESS_TOKEN` and `GOOGLE_WORKSPACE_CLI_TOKEN` are bare environment
+tokens, so their expiry is unknown (about one hour is typical) and they cannot
+be refreshed by Slidesmith. A terminal 401 explains that a fresh token must be
+re-exported. For a long `--per-slide` push, the progress ledger is written
+before the error; re-export the token and run `slidesmith push <ID>
+--per-slide --resume` to pick up where it left off. An OAuth login where
+Google withheld a refresh token is treated the same way: it remains usable for
+about one hour, and `auth doctor` prints the revoke-at-permissions or own-client
+remedy.
 
 Slidesmith now requests only Google Slides, per-file Drive, OpenID, and email
 scopes. Run `slidesmith auth login` once to re-consent after upgrading to this

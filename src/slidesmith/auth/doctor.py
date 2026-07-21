@@ -39,7 +39,9 @@ def _inspect_session_payload(payload: Any) -> tuple[str, SessionToken | None]:
         token = SessionToken.from_dict(payload)
     except (KeyError, TypeError, ValueError):
         return "invalid", None
-    return ("valid" if token.is_valid() else "expired"), token
+    if not token.is_valid():
+        return "expired", token
+    return ("access-only" if not token.is_refreshable else "valid"), token
 
 
 def _format_expiry(token: SessionToken | None) -> str:
@@ -94,7 +96,10 @@ def auth_doctor_lines(
         sa_state = "FOUND" if sa_path.is_file() else "MISSING"
         lines.append(f"Service account: {sa_state} ({sa_path})")
     if bare_token:
-        lines.append("Pre-obtained access token: FOUND (environment variable)")
+        lines.append(
+            "Pre-obtained access token: FOUND (environment variable); usable now, "
+            "expiry unknown (~1h typical); long pushes may fail mid-run"
+        )
     lines.append(f"Session profile: {profile_name}")
 
     keyring_error: Exception | None = None
@@ -131,10 +136,11 @@ def auth_doctor_lines(
                 payload = data["profiles"].get(profile_name)
                 recognized_format = True
             elif isinstance(data, dict) and {
-                "raw_token",
                 "email",
                 "expires_at",
-            }.issubset(data):
+            }.issubset(data) and (
+                "raw_token" in data or "access_token" in data
+            ):
                 payload = data
                 recognized_format = True
             if not recognized_format:
@@ -155,6 +161,20 @@ def auth_doctor_lines(
     if not credentials_found:
         verdict = "CREDENTIAL ABSENT"
         next_command = "gws auth setup"
+    elif "access-only" in token_statuses:
+        verdict = "USABLE BUT EXPIRING"
+        lines.append(
+            "OAuth session is usable-but-expiring because Google withheld a refresh "
+            "token. Revoke access at https://myaccount.google.com/permissions and "
+            "try again, or use your own OAuth client."
+        )
+        next_command = "slidesmith pull <presentation-url-or-id>"
+    elif immediate_auth and bare_token:
+        verdict = (
+            "READY (usable now, expiry unknown (~1h typical); long pushes may fail "
+            "mid-run)"
+        )
+        next_command = "slidesmith pull <presentation-url-or-id>"
     elif "valid" in token_statuses or immediate_auth:
         verdict = "READY"
         next_command = "slidesmith pull <presentation-url-or-id>"

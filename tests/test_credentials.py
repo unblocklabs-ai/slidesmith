@@ -15,10 +15,10 @@ import pytest
 
 from slidesmith import cli, credentials
 from slidesmith.credentials import (
-    AuthError,
     CredentialsManager,
     FallbackSessionStore,
     FileSessionStore,
+    InMemorySessionStore,
     KeyringSessionStore,
     OAuthClientCredentials,
     SessionToken,
@@ -50,7 +50,7 @@ class BrokenKeyring:
         raise RuntimeError((-50, "Unknown Error"))
 
 
-def test_oauth_browser_flow_missing_refresh_token_raises_auth_error(
+def test_oauth_browser_flow_without_refresh_token_returns_expiring_access_token(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     manager = object.__new__(CredentialsManager)
@@ -61,11 +61,43 @@ def test_oauth_browser_flow_missing_refresh_token_raises_auth_error(
     )
     monkeypatch.setattr(
         "slidesmith.auth.browser_flow._post_form_json",
-        lambda _url, _fields: {"access_token": "access-token"},
+        lambda _url, _fields: {"access_token": "access-token", "expires_in": 2700},
     )
 
-    with pytest.raises(AuthError, match="did not return a refresh token"):
-        manager._run_oauth_browser_flow("client-id", "client-secret")
+    access_token, refresh_token, expires_at = manager._run_oauth_browser_flow(
+        "client-id", "client-secret"
+    )
+
+    assert access_token == "access-token"
+    assert refresh_token is None
+    assert 2690 <= expires_at - time.time() <= 2700
+
+
+def test_oauth_browser_flow_with_refresh_token_keeps_refresh_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = object.__new__(CredentialsManager)
+    monkeypatch.setattr(
+        manager,
+        "_run_browser_flow",
+        lambda _auth_url_for_port, _display_msg: ("auth-code", 43123),
+    )
+    monkeypatch.setattr(
+        "slidesmith.auth.browser_flow._post_form_json",
+        lambda _url, _fields: {
+            "access_token": "access-token",
+            "refresh_token": "refresh-token",
+            "expires_in": 2700,
+        },
+    )
+
+    access_token, refresh_token, expires_at = manager._run_oauth_browser_flow(
+        "client-id", "client-secret"
+    )
+
+    assert access_token == "access-token"
+    assert refresh_token == "refresh-token"
+    assert 2690 <= expires_at - time.time() <= 2700
 
 
 def _token(*, expires_at: float | None = None) -> SessionToken:
@@ -419,6 +451,133 @@ def test_oauth_sessions_mirror_on_login_and_keyring_load_without_client_secret(
     assert "could not mirror session token to file store" in capsys.readouterr().err
 
 
+def test_oauth_access_only_session_is_persisted_and_reported_to_user(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("GOOGLE_WORKSPACE_CLI_CLIENT_ID", "client-id")
+    monkeypatch.setenv("GOOGLE_WORKSPACE_CLI_CLIENT_SECRET", "client-secret")
+    monkeypatch.delenv("GOOGLE_WORKSPACE_CLI_TOKEN", raising=False)
+    monkeypatch.delenv("GOG_ACCESS_TOKEN", raising=False)
+
+    manager = CredentialsManager(session_store=InMemorySessionStore())
+    expires_at = time.time() + 2700
+    monkeypatch.setattr(
+        manager,
+        "_run_oauth_browser_flow",
+        lambda _client_id, _client_secret: ("access-token", None, expires_at),
+    )
+
+    credential = manager.get_credential(
+        command={"type": "slide.pull"}, reason="test access-only login"
+    )
+    session = manager._load_session_token("gws-default")
+
+    assert credential.token == "access-token"
+    assert credential.expires_at == expires_at
+    assert session is not None
+    assert session.access_token == "access-token"
+    assert session.raw_token is None
+    assert session.expires_at == expires_at
+    assert not session.is_refreshable
+    output = capsys.readouterr().err
+    assert "lasts about 1 hour" in output
+    assert "myaccount.google.com/permissions" in output
+    assert "your own OAuth client" in output
+
+
+def test_access_only_payload_omits_raw_token_and_old_reader_degrades_to_no_session(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "session.json"
+    token = SessionToken(
+        access_token="short-lived-access-token",
+        email="",
+        expires_at=time.time() + 3600,
+        is_refreshable=False,
+    )
+    FileSessionStore(path).save("gws-default", token)
+    payload = json.loads(path.read_text(encoding="utf-8"))["profiles"]["gws-default"]
+
+    assert "raw_token" not in payload
+    assert payload["access_token"] == "short-lived-access-token"
+    assert payload["is_refreshable"] is False
+
+    # The old reader from 6b33d94 indexes raw_token, email, and expires_at.
+    # FileSessionStore catches that KeyError and returns None, so this payload
+    # follows the old reader's degrade-to-no-session path.
+    def old_reader_fields(payload: dict[str, Any]) -> tuple[Any, Any, Any] | None:
+        try:
+            return payload["raw_token"], payload["email"], payload["expires_at"]
+        except KeyError:
+            return None
+
+    assert old_reader_fields(payload) is None
+
+
+def test_legacy_refresh_payload_still_loads(tmp_path: Path) -> None:
+    path = tmp_path / "session.json"
+    token = _token()
+    path.write_text(json.dumps(token.to_dict()), encoding="utf-8")
+
+    loaded = FileSessionStore(path).load("default")
+
+    assert loaded == token
+    assert loaded is not None and loaded.raw_token == token.raw_token
+
+
+def test_access_only_file_store_entry_is_mode_0600(tmp_path: Path) -> None:
+    path = tmp_path / "session.json"
+    FileSessionStore(path).save(
+        "gws-default",
+        SessionToken(
+            access_token="short-lived-access-token",
+            email="",
+            expires_at=time.time() + 3600,
+            is_refreshable=False,
+        ),
+    )
+
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+
+def test_expired_access_only_session_prompts_for_consent_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("GOOGLE_WORKSPACE_CLI_CLIENT_ID", "client-id")
+    monkeypatch.setenv("GOOGLE_WORKSPACE_CLI_CLIENT_SECRET", "client-secret")
+    store = FileSessionStore(tmp_path / "session.json")
+    store.save(
+        "gws-default",
+        SessionToken(
+            access_token="expired-access-token",
+            email="",
+            expires_at=time.time() - 1,
+            is_refreshable=False,
+        ),
+    )
+    manager = CredentialsManager(session_store=store)
+    consent_calls = 0
+
+    def consent(_client_id: str, _client_secret: str) -> tuple[str, None, float]:
+        nonlocal consent_calls
+        consent_calls += 1
+        return "new-access-token", None, time.time() + 3600
+
+    monkeypatch.setattr(manager, "_run_oauth_browser_flow", consent)
+
+    credential = manager.get_credential(
+        command={"type": "slide.pull"}, reason="expired access-only test"
+    )
+
+    assert credential.token == "new-access-token"
+    assert consent_calls == 1
+
+
 def test_auth_doctor_reports_credential_absent(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -466,6 +625,45 @@ def test_auth_doctor_reports_expired_file_token(
     assert "token EXPIRED" in output
     assert "Verdict: TOKEN EXPIRED" in output
     assert "Next command: slidesmith auth login" in output
+
+
+def test_auth_doctor_reports_access_only_session_remedy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _doctor_setup(tmp_path, monkeypatch)
+    FileSessionStore().save(
+        "gws-default",
+        SessionToken(
+            raw_token="access-token",
+            email="",
+            expires_at=time.time() + 2700,
+            is_refreshable=False,
+        ),
+    )
+
+    cli.main(["auth", "doctor"])
+
+    output = capsys.readouterr().out
+    assert "token ACCESS-ONLY" in output
+    assert "usable-but-expiring" in output
+    assert "myaccount.google.com/permissions" in output
+    assert "your own OAuth client" in output
+
+
+def test_auth_doctor_warns_bare_tokens_about_unknown_expiry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _doctor_setup(tmp_path, monkeypatch, oauth=False)
+    monkeypatch.setenv("GOG_ACCESS_TOKEN", "bare-access-token")
+
+    cli.main(["auth", "doctor"])
+
+    output = capsys.readouterr().out
+    assert "usable now, expiry unknown (~1h typical); long pushes may fail mid-run" in output
 
 
 def _keyring_store_with(monkeypatch: pytest.MonkeyPatch, raw: str) -> KeyringSessionStore:

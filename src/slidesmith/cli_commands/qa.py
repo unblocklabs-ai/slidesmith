@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from slidesmith.cli_commands._support import _token, _warn_if_stale
+from slidesmith.cli_commands._support import _token, _transport_options, _warn_if_stale
 from slidesmith.engine.json_utils import read_json
 
 
@@ -43,7 +43,7 @@ def cmd_check(args: Any) -> None:
         qa_dir.mkdir(parents=True, exist_ok=True)
 
         async def run() -> list[Path]:
-            transport = GoogleSlidesTransport(token)
+            transport = GoogleSlidesTransport(token, **_transport_options(token))
             try:
                 return await download_thumbnails(
                     transport,

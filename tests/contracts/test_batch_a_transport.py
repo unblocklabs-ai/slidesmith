@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import copy
+import json
 import re
+import time
 from pathlib import Path
 from typing import Any
 
@@ -23,8 +26,12 @@ from slidesmith.engine.transport import (
 )
 
 
-async def _mocked_transport(handler: Any) -> GoogleSlidesTransport:
-    transport = GoogleSlidesTransport("token", retry_backoff=0)
+async def _mocked_transport(
+    handler: Any, *, retry_attempts: int = 3
+) -> GoogleSlidesTransport:
+    transport = GoogleSlidesTransport(
+        "token", retry_attempts=retry_attempts, retry_backoff=0
+    )
     await transport._client.aclose()
     await transport._thumbnail_client.aclose()
     transport._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
@@ -55,6 +62,265 @@ async def test_every_http_error_branch(
             await transport.get_presentation("pid")
     finally:
         await transport.close()
+
+
+async def test_401_refreshes_authorization_and_retries_once() -> None:
+    calls = 0
+    auth_headers: list[str | None] = []
+
+    async def refresh() -> tuple[str, float]:
+        assert calls == 1
+        return "refreshed-token", time.time() + 3600
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        auth_headers.append(request.headers.get("Authorization"))
+        if calls == 1:
+            return httpx.Response(401, request=request)
+        return httpx.Response(200, json={"presentationId": "pid"}, request=request)
+
+    transport = await _mocked_transport(handler)
+    transport._client.headers["Authorization"] = "Bearer stale-token"
+    transport._credential_refresh = refresh
+    try:
+        result = await transport.get_presentation("pid")
+    finally:
+        await transport.close()
+
+    assert result.presentation_id == "pid"
+    assert auth_headers == ["Bearer stale-token", "Bearer refreshed-token"]
+
+
+async def test_batch_update_401_also_refreshes_and_retries_once() -> None:
+    calls = 0
+
+    async def refresh() -> str:
+        return "refreshed-token"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return httpx.Response(401, request=request)
+        return httpx.Response(200, json={"replies": [{}]}, request=request)
+
+    transport = await _mocked_transport(handler)
+    transport._client.headers["Authorization"] = "Bearer stale-token"
+    transport._credential_refresh = refresh
+    try:
+        result = await transport.batch_update("pid", [{"deleteObject": {"objectId": "x"}}])
+    finally:
+        await transport.close()
+
+    assert result == {"replies": [{}]}
+    assert calls == 2
+
+
+async def test_concurrent_401s_share_one_refresh_and_retry_with_new_token() -> None:
+    stale_requests = 0
+    refresh_calls = 0
+    stale_requests_ready = asyncio.Event()
+    request_headers: list[str | None] = []
+
+    async def refresh() -> tuple[str, float]:
+        nonlocal refresh_calls
+        refresh_calls += 1
+        await asyncio.sleep(0)
+        return "new-token", time.time() + 3600
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal stale_requests
+        authorization = request.headers.get("Authorization")
+        request_headers.append(authorization)
+        if authorization == "Bearer stale-token":
+            stale_requests += 1
+            if stale_requests == 2:
+                stale_requests_ready.set()
+            await stale_requests_ready.wait()
+            return httpx.Response(401, request=request)
+        return httpx.Response(200, json={"presentationId": "pid"}, request=request)
+
+    transport = await _mocked_transport(handler)
+    transport._client.headers["Authorization"] = "Bearer stale-token"
+    transport._credential_refresh = refresh
+    try:
+        results = await asyncio.gather(
+            transport.get_presentation("first"),
+            transport.get_presentation("second"),
+        )
+    finally:
+        await transport.close()
+
+    assert [result.presentation_id for result in results] == ["pid", "pid"]
+    assert refresh_calls == 1
+    assert request_headers.count("Bearer stale-token") == 2
+    assert request_headers.count("Bearer new-token") == 2
+
+
+async def test_reentrant_refresh_attempt_fails_promptly() -> None:
+    async def refresh() -> str:
+        await transport.get_presentation("reentrant")
+        return "unreachable"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, request=request)
+
+    transport = await _mocked_transport(handler)
+    transport._credential_refresh = refresh
+    try:
+        with pytest.raises(AuthenticationError, match="re-export a fresh token"):
+            await asyncio.wait_for(transport.get_presentation("pid"), timeout=0.2)
+    finally:
+        await transport.close()
+
+
+async def test_get_auth_retry_is_independent_of_retry_attempts() -> None:
+    statuses = iter([401, 200])
+
+    async def refresh() -> str:
+        return "refreshed-token"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(next(statuses), json={"presentationId": "pid"}, request=request)
+
+    transport = await _mocked_transport(handler, retry_attempts=1)
+    transport._credential_refresh = refresh
+    try:
+        result = await transport.get_presentation("pid")
+    finally:
+        await transport.close()
+
+    assert result.presentation_id == "pid"
+
+
+async def test_persistent_401_after_refresh_is_authentication_error() -> None:
+    async def refresh() -> str:
+        return "still-invalid-token"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, request=request)
+
+    transport = await _mocked_transport(handler, retry_attempts=1)
+    transport._credential_refresh = refresh
+    try:
+        with pytest.raises(AuthenticationError, match="re-export a fresh token"):
+            await transport.get_presentation("pid")
+    finally:
+        await transport.close()
+
+
+async def test_refresh_callback_exception_preserves_guided_authentication_error() -> None:
+    async def refresh() -> str:
+        raise RuntimeError("refresh backend unavailable")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, request=request)
+
+    transport = await _mocked_transport(handler, retry_attempts=1)
+    transport._credential_refresh = refresh
+    try:
+        with pytest.raises(AuthenticationError, match="re-export a fresh token"):
+            await transport.get_presentation("pid")
+    finally:
+        await transport.close()
+
+
+async def test_get_auth_retry_then_429_uses_normal_retry_budget() -> None:
+    statuses = iter([401, 429, 200])
+    request_headers: list[str | None] = []
+
+    async def refresh() -> str:
+        return "refreshed-token"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        request_headers.append(request.headers.get("Authorization"))
+        return httpx.Response(next(statuses), json={"presentationId": "pid"}, request=request)
+
+    transport = await _mocked_transport(handler, retry_attempts=2)
+    transport._client.headers["Authorization"] = "Bearer token"
+    transport._credential_refresh = refresh
+    try:
+        result = await transport.get_presentation("pid")
+    finally:
+        await transport.close()
+
+    assert result.presentation_id == "pid"
+    assert request_headers == [
+        "Bearer token",
+        "Bearer refreshed-token",
+        "Bearer refreshed-token",
+    ]
+
+
+async def test_retried_batch_update_preserves_body_and_write_control() -> None:
+    bodies: list[dict[str, Any]] = []
+    statuses = iter([401, 200])
+
+    async def refresh() -> str:
+        return "refreshed-token"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(request.content))
+        return httpx.Response(next(statuses), json={"replies": [{}]}, request=request)
+
+    transport = await _mocked_transport(handler, retry_attempts=1)
+    transport._credential_refresh = refresh
+    requests = [{"updateShapeProperties": {"objectId": "shape"}}]
+    try:
+        result = await transport.batch_update(
+            "pid", requests, required_revision_id="revision-7"
+        )
+    finally:
+        await transport.close()
+
+    assert result == {"replies": [{}]}
+    assert bodies == [
+        {
+            "requests": requests,
+            "writeControl": {"requiredRevisionId": "revision-7"},
+        },
+        {
+            "requests": requests,
+            "writeControl": {"requiredRevisionId": "revision-7"},
+        },
+    ]
+
+
+async def test_401_without_refresh_has_reexport_and_resume_guidance() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, request=request)
+
+    transport = await _mocked_transport(handler)
+    try:
+        with pytest.raises(AuthenticationError) as excinfo:
+            await transport.get_presentation("pid")
+    finally:
+        await transport.close()
+
+    assert "re-export a fresh token" in str(excinfo.value)
+    assert "--resume" in str(excinfo.value)
+
+
+async def test_expiring_credential_refreshes_with_named_buffer() -> None:
+    refreshed: list[str] = []
+
+    async def refresh() -> tuple[str, float]:
+        refreshed.append("called")
+        return "fresh-token", time.time() + 3600
+
+    transport = GoogleSlidesTransport(
+        "stale-token",
+        credential_refresh=refresh,
+        expires_at=time.time() + 60,
+    )
+    try:
+        await transport.refresh_if_expiring()
+        assert transport._client.headers["Authorization"] == "Bearer fresh-token"
+    finally:
+        await transport.close()
+
+    assert refreshed == ["called"]
 
 
 async def test_get_retries_429_and_5xx_with_exponential_bound() -> None:

@@ -14,6 +14,7 @@ from slidesmith.cli_commands._support import (
     _presentation_id,
     _request_id_legend,
     print_push_warnings,
+    _transport_options,
     _token,
     _warn_if_stale,
 )
@@ -35,7 +36,7 @@ def cmd_pull(args: Any) -> None:
     out = Path(args.output_dir) if args.output_dir else Path()
 
     async def run() -> None:
-        transport = GoogleSlidesTransport(token)
+        transport = GoogleSlidesTransport(token, **_transport_options(token))
         try:
             files = await SlidesClient(transport).pull(pid, out, save_raw=not args.no_raw)
             n = sum(1 for f in files if f.name == "content.sml")
@@ -115,8 +116,8 @@ def cmd_push(args: Any) -> None:
     token = _cli_helper("_token", _token)("slide.push", str(args.folder))
 
     async def run() -> None:
-        transport = GoogleSlidesTransport(token)
-        uploader = GoogleDriveAssetUploader(token)
+        transport = GoogleSlidesTransport(token, **_transport_options(token))
+        uploader = GoogleDriveAssetUploader(str(token))
         try:
             def progress(event: str, message: str) -> None:
                 if event == "start":

@@ -102,6 +102,28 @@ class Credential:
     """A Google API access token."""
 
     token: str
+    expires_at: float | None = None
+
+
+def _unpack_oauth_result(
+    result: tuple[str, str | None, float] | tuple[str, str]
+) -> tuple[str, str | None, float]:
+    """Normalize the browser-flow result while keeping older test seams valid."""
+    if len(result) == 2:
+        access_token, refresh_token = result
+        return access_token, refresh_token, time.time() + 3600
+    return result
+
+
+def _report_access_only_session() -> None:
+    """Explain the bounded session created when Google withholds a refresh token."""
+    print(
+        "Google granted access but withheld a refresh token. This session lasts "
+        "about 1 hour. Revoke Slidesmith at "
+        "https://myaccount.google.com/permissions and try again, or use your own "
+        "OAuth client.",
+        file=sys.stderr,
+    )
 
 
 def _parse_first_google_credential(
@@ -119,7 +141,11 @@ def _parse_first_google_credential(
         (c for c in raw_creds if c.get("provider", "google") == "google"), raw_creds[0]
     )
 
-    return Credential(token=raw["token"])
+    expires_at: float | None = None
+    expires_in = raw.get("expires_in")
+    if isinstance(expires_in, (int, float)) and expires_in >= 0:
+        expires_at = time.time() + float(expires_in)
+    return Credential(token=raw["token"], expires_at=expires_at)
 
 
 def auth_doctor_lines() -> list[str]:
@@ -137,9 +163,11 @@ class CredentialsManager(BrowserFlowMixin):
     1. ExtraSuite protocol - obtains short-lived tokens via the v2 session flow
     2. Service account file - uses credentials from a JSON key file
 
-    Session tokens are mirrored to the OS keyring (macOS Keychain, Linux
-    SecretService, Windows Credential Locker) and a 0600 Slidesmith file.
-    Access tokens and OAuth client secrets are never written there.
+    Refreshable sessions store their refresh token in the OS keyring (macOS
+    Keychain, Linux SecretService, Windows Credential Locker) and a 0600
+    Slidesmith file. If Google withholds a refresh token, the access-only
+    session stores its short-lived access token instead, expiring in about one
+    hour. OAuth client secrets are never written there.
 
     Precedence order for configuration:
     1. Constructor parameters
@@ -270,7 +298,8 @@ class CredentialsManager(BrowserFlowMixin):
         ``reason`` is agent-supplied user intent logged server-side for auditing.
 
         For ExtraSuite mode: validates the session, POSTs to /api/auth/token and
-        returns the credential.  Access tokens are never written to disk.
+        returns the credential. The short-lived access token is not cached;
+        only the ExtraSuite session token is stored.
 
         For service account file mode: generates a token directly from the SA key.
         Only meaningful for SA-backed command types; DWD is not supported in this
@@ -299,6 +328,41 @@ class CredentialsManager(BrowserFlowMixin):
             return self._get_oauth_client_credential()
         else:
             raise RuntimeError(f"Unknown auth mode: {self._auth_mode!r}")
+
+    def refresh_credential(
+        self,
+        *,
+        command: dict[str, Any],
+        reason: str,
+    ) -> Credential | None:
+        """Refresh an existing credential without opening a browser.
+
+        Bare tokens and OAuth sessions that only contain an access token cannot
+        be refreshed; callers should let the transport surface its recovery
+        guidance instead.
+        """
+        if self._auth_mode in ("bare_token",):
+            return None
+        if self._auth_mode == "oauth_client":
+            creds = self._oauth_client_creds
+            assert creds is not None
+            profile = f"{creds.source}-default"
+            stored = self._load_session_token(profile)
+            if stored is None or not stored.is_refreshable:
+                return None
+            if stored.raw_token is None:
+                return None
+            try:
+                access_token, expires_at = _exchange_refresh_token(
+                    creds.client_id, creds.client_secret, stored.raw_token
+                )
+            except Exception:
+                return None
+            # Re-save through the normal dual-store path so a recovered
+            # Keychain/file projection remains current.
+            self._save_session_token(stored, profile)
+            return Credential(token=access_token, expires_at=expires_at)
+        return self.get_credential(command=command, reason=reason)
 
     # =========================================================================
     # Session Token Methods
@@ -445,13 +509,23 @@ class CredentialsManager(BrowserFlowMixin):
                 if existing:
                     return existing
             self._delete_session_token(profile_name)
-            _, refresh_token = self._run_oauth_browser_flow(
-                creds.client_id, creds.client_secret
+            access_token, refresh_token, expires_at = _unpack_oauth_result(
+                self._run_oauth_browser_flow(
+                    creds.client_id, creds.client_secret
+                )
             )
+            if not refresh_token:
+                _report_access_only_session()
             session = SessionToken(
                 raw_token=refresh_token,
+                access_token=None if refresh_token else access_token,
                 email="",
-                expires_at=time.time() + 30 * 86400,
+                expires_at=(
+                    time.time() + 30 * 86400
+                    if refresh_token
+                    else expires_at
+                ),
+                is_refreshable=bool(refresh_token),
             )
             self._save_session_token(session, profile_name)
             return session
@@ -522,14 +596,20 @@ class CredentialsManager(BrowserFlowMixin):
         )
         credentials.refresh(Request())
 
-        return Credential(token=credentials.token)
+        expires_at = None
+        expiry = getattr(credentials, "expiry", None)
+        if expiry is not None:
+            expires_at = expiry.timestamp()
+        return Credential(token=credentials.token, expires_at=expires_at)
 
     def _get_oauth_client_credential(self) -> Credential:
         """Get a credential using a borrowed OAuth client from gws or gogcli.
 
         On first call: runs a browser flow and stores the refresh token in the
-        OS keyring.  On subsequent calls: exchanges the stored refresh token for
-        a fresh access token without browser interaction.
+        OS keyring, or stores the short-lived access token as an access-only
+        session when Google withholds a refresh token. On subsequent calls,
+        refreshable sessions exchange the stored refresh token without browser
+        interaction.
         """
         creds = self._oauth_client_creds
         assert (
@@ -539,27 +619,43 @@ class CredentialsManager(BrowserFlowMixin):
 
         stored = self._load_session_token(profile)
         if stored:
-            try:
-                access_token, _ = _exchange_refresh_token(
-                    creds.client_id, creds.client_secret, stored.raw_token
-                )
-                return Credential(token=access_token)
-            except Exception:
-                # Refresh token revoked or expired — fall through to re-auth
-                self._delete_session_token(profile)
+            if not stored.is_refreshable:
+                if stored.access_token is None:
+                    self._delete_session_token(profile)
+                else:
+                    return Credential(
+                        token=stored.access_token, expires_at=stored.expires_at
+                    )
+            elif stored.raw_token is not None:
+                try:
+                    access_token, expires_at = _exchange_refresh_token(
+                        creds.client_id, creds.client_secret, stored.raw_token
+                    )
+                    return Credential(token=access_token, expires_at=expires_at)
+                except Exception:
+                    # Refresh token revoked or expired — fall through to re-auth
+                    self._delete_session_token(profile)
 
-        access_token, refresh_token = self._run_oauth_browser_flow(
-            creds.client_id, creds.client_secret
+        access_token, refresh_token, expires_at = _unpack_oauth_result(
+            self._run_oauth_browser_flow(creds.client_id, creds.client_secret)
         )
+        if not refresh_token:
+            _report_access_only_session()
         self._save_session_token(
             SessionToken(
                 raw_token=refresh_token,
+                access_token=None if refresh_token else access_token,
                 email="",  # Google token response does not include an email address.
-                expires_at=time.time() + 30 * 86400,
+                expires_at=(
+                    time.time() + 30 * 86400
+                    if refresh_token
+                    else expires_at
+                ),
+                is_refreshable=bool(refresh_token),
             ),
             profile,
         )
-        return Credential(token=access_token)
+        return Credential(token=access_token, expires_at=expires_at)
 
     def _load_gateway_config(self) -> dict[str, str] | None:
         """Load endpoint URLs from gateway.json if it exists.

@@ -14,6 +14,12 @@ agent-legible: name the command/flag and what an operator can now do.
 
 ## [Unreleased]
 
+### Added
+- Browser OAuth login now preserves a successful access-token-only session when
+  Google withholds a refresh token, reports its roughly one-hour lifetime, and
+  gives the revoke-at-permissions or own-OAuth-client remedy. `auth doctor`
+  identifies this usable-but-expiring state.
+
 ### Changed
 - Push and `replace-image` diagnostics now carry `WARNING` versus `NOTICE`
   severity, render notices after actionable warnings, and summarize mixed
@@ -50,6 +56,9 @@ agent-legible: name the command/flag and what an operator can now do.
   `font-family-arial` additions, reports harmless defaults on existing edited
   elements as notices, and keeps authored font-family, weight, and class drops
   as warnings.
+- Long-running pushes now proactively refresh expiring OAuth/service-account
+  credentials and recover one expired-token 401 across GET and `batchUpdate`;
+  bare-token failures include fresh-token and `--resume` guidance.
 
 ## [0.4.0] — 2026-07-20 — Design-agent roadmap
 

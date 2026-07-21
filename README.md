@@ -113,7 +113,15 @@ client from `~/Library/Application Support/gogcli/credentials.json` (or
 `GOG_ACCESS_TOKEN` / `GOOGLE_WORKSPACE_CLI_TOKEN` env vars, or a service
 account via `SERVICE_ACCOUNT_PATH`). Local image uploads use the already
 requested `drive.file` scope; uploaded, link-readable assets remain in the
-user's Drive.
+user's Drive. If Google withholds a refresh token after browser consent,
+Slidesmith keeps the access-token session for about one hour and tells you to
+revoke the app at `myaccount.google.com/permissions` or configure your own
+OAuth client. `auth doctor` labels that session as usable-but-expiring.
+
+OAuth and service-account credentials are refreshed proactively during pushes
+and once reactively after a 401. Environment-token mode has unknown expiry
+(about one hour is typical), so a long push can still fail; retry a failed
+`--per-slide` push with `--resume` after re-exporting a fresh token.
 
 ## For agents
 

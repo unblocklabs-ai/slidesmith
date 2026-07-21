@@ -7,7 +7,7 @@ import sys
 from collections.abc import Iterable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 from slidesmith.engine.json_utils import read_json
 from slidesmith.engine.diff_model import PushWarning, WarningSeverity
@@ -24,15 +24,53 @@ def _presentation_id(url_or_id: str) -> str:
     return presentation_id
 
 
+class _AuthToken(str):
+    """String-compatible token carrying the invocation's refresh metadata."""
+
+    def __new__(
+        cls,
+        token: str,
+        *,
+        expires_at: float | None,
+        refresh_callback: Callable[[], Awaitable[Any]] | None,
+    ) -> _AuthToken:
+        value = super().__new__(cls, token)
+        value.expires_at = expires_at
+        value.refresh_callback = refresh_callback
+        return value
+
+
 def _token(command_type: str, target: str) -> str:
     from slidesmith.credentials import CredentialsManager
 
     manager = CredentialsManager()
+    command = {"type": command_type, "file_url": target, "file_name": ""}
+    reason = f"slidesmith {command_type}"
     cred = manager.get_credential(
-        command={"type": command_type, "file_url": target, "file_name": ""},
-        reason=f"slidesmith {command_type}",
+        command=command,
+        reason=reason,
     )
-    return cred.token
+
+    async def refresh() -> tuple[str, float | None] | None:
+        refreshed = manager.refresh_credential(command=command, reason=reason)
+        if refreshed is None:
+            return None
+        return refreshed.token, refreshed.expires_at
+
+    return _AuthToken(
+        cred.token,
+        expires_at=cred.expires_at,
+        refresh_callback=refresh,
+    )
+
+
+def _transport_options(token: object) -> dict[str, Any]:
+    """Extract optional refresh metadata without changing test token seams."""
+    callback = getattr(token, "refresh_callback", None)
+    expires_at = getattr(token, "expires_at", None)
+    if callback is None and expires_at is None:
+        return {}
+    return {"credential_refresh": callback, "expires_at": expires_at}
 
 
 def _warn_if_stale(folder: str | Path, *, now: datetime | None = None) -> None:

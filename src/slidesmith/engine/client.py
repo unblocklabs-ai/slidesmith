@@ -377,6 +377,7 @@ class SlidesClient:
         base_warning = (
             _missing_base_warning() if base_raw is None and not force else None
         )
+        await transport.refresh_if_expiring()
         response = await execute_guarded_batch(
             transport=transport,
             presentation_id=presentation_id,
@@ -655,6 +656,7 @@ class SlidesClient:
             _report_progress(progress, "start", batch, total_slides)
 
             try:
+                await transport.refresh_if_expiring()
                 batch_response = await execute_guarded_batch(
                     transport=transport,
                     presentation_id=presentation_id,

@@ -75,6 +75,13 @@ def register_qa_commands(
     sc = subparsers.add_parser(
         "check",
         help="Download slide thumbnails and run offline geometry QA",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Suppression: add the qa-accept-overlap class to an element when an "
+            "overlap is intentional. Leaf elements covering at least 90% of the "
+            "slide area are automatically treated as backgrounds and exempt from "
+            "pairwise overlap findings."
+        ),
     )
     sc.add_argument("folder", help="Presentation folder created by pull")
     sc.add_argument(

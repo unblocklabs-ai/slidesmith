@@ -68,6 +68,18 @@ def _rules(folder: Path) -> list[str]:
     return [finding.rule for finding in lint_folder(folder)]
 
 
+def test_check_help_documents_overlap_suppression(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit):
+        cli.build_parser().parse_args(["check", "--help"])
+
+    help_text = capsys.readouterr().out
+    assert "qa-accept-overlap" in help_text
+    assert "90%" in help_text
+    assert "backgrounds" in help_text
+
+
 async def test_download_thumbnails_routes_paths_through_output_callback(
     qa_folder: Path,
 ) -> None:
@@ -201,6 +213,52 @@ def test_overlap_allows_exactly_fifteen_percent(qa_folder: Path) -> None:
     assert "OVERLAP" not in _rules(qa_folder)
 
 
+def test_overlap_ignores_partially_overlapping_background_card(
+    qa_folder: Path,
+) -> None:
+    _replace_slides(
+        qa_folder,
+        '<Rect id="background" x="0" y="0" w="710" h="405" />'
+        '<Rect id="card" x="705" y="100" w="15" h="100" />',
+    )
+
+    assert "OVERLAP" not in _rules(qa_folder)
+
+
+def test_overlap_ignores_ninety_six_percent_contained_sibling(
+    qa_folder: Path,
+) -> None:
+    _replace_slides(
+        qa_folder,
+        '<Rect id="outer" x="100" y="100" w="100" h="100" />'
+        '<Rect id="inner" x="96" y="100" w="100" h="100" />',
+    )
+
+    assert "OVERLAP" not in _rules(qa_folder)
+
+
+def test_overlap_still_flags_genuine_forty_percent_overlap(qa_folder: Path) -> None:
+    _replace_slides(
+        qa_folder,
+        '<Rect id="left" x="10" y="10" w="100" h="100" />'
+        '<Rect id="right" x="70" y="10" w="100" h="100" />',
+    )
+
+    assert [finding.rule for finding in lint_folder(qa_folder)] == ["OVERLAP"]
+
+
+def test_overlap_ignores_partially_overlapping_scrim_over_photo(
+    qa_folder: Path,
+) -> None:
+    _replace_slides(
+        qa_folder,
+        '<Image id="photo" x="0" y="0" w="710" h="405" />'
+        '<Rect id="scrim" x="705" y="100" w="15" h="100" />',
+    )
+
+    assert "OVERLAP" not in _rules(qa_folder)
+
+
 def test_overlap_ignores_line_crossing_content_box(qa_folder: Path) -> None:
     _replace_slides(
         qa_folder,
@@ -285,6 +343,53 @@ def test_text_overflow_allows_text_that_fits(qa_folder: Path) -> None:
         qa_folder,
         '<TextBox id="copy" x="10" y="10" w="200" h="40" '
         'class="text-size-12"><P>Short text.</P></TextBox>',
+    )
+
+    assert "TEXT_OVERFLOW" not in _rules(qa_folder)
+
+
+def test_text_overflow_flags_large_title_shorter_than_true_line(qa_folder: Path) -> None:
+    _replace_slides(
+        qa_folder,
+        '<TextBox id="title" x="40" y="40" w="350" h="20.736" '
+        'class="font-family-arial text-size-40"><P>Launch night</P></TextBox>',
+    )
+
+    assert "TEXT_OVERFLOW" in _rules(qa_folder)
+
+
+def test_text_overflow_allows_single_line_large_title_with_metric_margin(
+    qa_folder: Path,
+) -> None:
+    _replace_slides(
+        qa_folder,
+        '<TextBox id="title" x="40" y="40" w="350" h="52" '
+        'class="font-family-arial text-size-40"><P>Launch night</P></TextBox>',
+    )
+
+    assert "TEXT_OVERFLOW" not in _rules(qa_folder)
+
+
+def test_text_overflow_still_flags_clearly_overflowing_multiline_paragraph(
+    qa_folder: Path,
+) -> None:
+    _replace_slides(
+        qa_folder,
+        '<TextBox id="body" x="40" y="40" w="140" h="30" '
+        'class="font-family-arial text-size-24"><P>This paragraph has enough '
+        'words to wrap across several lines and clearly overflow its short box.</P></TextBox>',
+    )
+
+    assert "TEXT_OVERFLOW" in _rules(qa_folder)
+
+
+def test_text_overflow_allows_marginal_unknown_display_font_title(
+    qa_folder: Path,
+) -> None:
+    _replace_slides(
+        qa_folder,
+        '<TextBox id="display_title" x="40" y="40" w="200" h="52" '
+        'class="font-family-display-unknown text-size-40"><P>Launch night</P></TextBox>',
     )
 
     assert "TEXT_OVERFLOW" not in _rules(qa_folder)

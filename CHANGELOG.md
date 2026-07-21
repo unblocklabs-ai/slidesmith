@@ -18,6 +18,13 @@ agent-legible: name the command/flag and what an operator can now do.
 - Push and `replace-image` diagnostics now carry `WARNING` versus `NOTICE`
   severity, render notices after actionable warnings, and summarize mixed
   counts in the CLI.
+- `slidesmith check` now gives large, short titles one estimated line of
+  measurement uncertainty, reducing false-positive `TEXT_OVERFLOW` warnings
+  while still flagging clearly overflowing body text.
+- `slidesmith check` no longer reports overlaps involving leaves covering at
+  least 90% of the actual slide area, and treats 95%-contained siblings as
+  containment; intentional remaining overlaps can be suppressed with the
+  discoverable `qa-accept-overlap` class.
 
 ### Fixed
 - **`slidesmith --version`** now prints the package version without requiring a

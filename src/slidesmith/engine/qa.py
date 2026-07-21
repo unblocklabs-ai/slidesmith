@@ -28,7 +28,14 @@ from slidesmith.engine.layout import (
 )
 
 OVERLAP_THRESHOLD = 0.15
+# A small edge protrusion is containment, not an actionable content overlap.
+OVERLAP_CONTAINMENT_THRESHOLD = 0.95
+# Near-full-slide leaves are backgrounds or intentional scrims, not content.
+OVERLAP_BACKGROUND_AREA_RATIO = 0.90
 TEXT_OVERFLOW_TOLERANCE = 1.10
+# One estimated line is an uncertainty budget for large, short display text.
+TEXT_OVERFLOW_LARGE_FONT_SIZE_PT = 28.0
+TEXT_OVERFLOW_MAX_UNCERTAIN_LINES = 2.0
 QA_BASELINE_FILE = "qa-baseline.json"
 ACCEPTED_FINDINGS_FILE = "accepted.json"
 CONTACT_SHEET_COLUMNS = 2
@@ -306,7 +313,14 @@ def lint_folder(
         except ValueError as exc:
             raise ValueError(f"Slide folder name must be numeric: {slide_name}") from exc
 
-        findings.extend(_find_overlaps(roots, slide_number, folder_path))
+        findings.extend(
+            _find_overlaps(
+                roots,
+                slide_number,
+                folder_path,
+                slide_area=page_width * page_height,
+            )
+        )
         for element in _walk(roots):
             box = _box(element, folder_path)
             if box is None:
@@ -351,7 +365,11 @@ def lint_folder(
                     box.w,
                 )
             )
-            if measured_height > box.h * TEXT_OVERFLOW_TOLERANCE:
+            if measured_height > _text_overflow_limit(
+                box.h,
+                measured_height,
+                size,
+            ):
                 needed = (
                     "an unbounded amount"
                     if measured_height == float("inf")
@@ -524,6 +542,8 @@ def _find_overlaps(
     siblings: list[ParsedElement],
     slide_number: int,
     workspace_root: Path,
+    *,
+    slide_area: float,
 ) -> list[Finding]:
     findings: list[Finding] = []
     # Divider lines intentionally cross other content. Treating their thin
@@ -541,8 +561,14 @@ def _find_overlaps(
             second_box = _box(second, workspace_root)
             if second_box is None or second_box.area <= 0:
                 continue
-            if first_box.contains(second_box, threshold=1.0) or second_box.contains(
-                first_box, threshold=1.0
+            if _is_background(first_box, slide_area) or _is_background(
+                second_box, slide_area
+            ):
+                continue
+            if first_box.contains(
+                second_box, threshold=OVERLAP_CONTAINMENT_THRESHOLD
+            ) or second_box.contains(
+                first_box, threshold=OVERLAP_CONTAINMENT_THRESHOLD
             ):
                 continue
             intersection = _intersection_area(first_box, second_box)
@@ -569,9 +595,52 @@ def _find_overlaps(
 
     for element in siblings:
         findings.extend(
-            _find_overlaps(element.children, slide_number, workspace_root)
+            _find_overlaps(
+                element.children,
+                slide_number,
+                workspace_root,
+                slide_area=slide_area,
+            )
         )
     return findings
+
+
+def _is_background(box: BoundingBox, slide_area: float) -> bool:
+    """Return whether a leaf covers enough of the slide to be a background."""
+    return box.area / slide_area >= OVERLAP_BACKGROUND_AREA_RATIO
+
+
+def _text_overflow_limit(
+    box_height: float,
+    measured_height: float,
+    font_size: float,
+) -> float:
+    """Return the height above which approximate text is actionable.
+
+    Large display text is especially sensitive to one phantom wrapped line:
+    the estimator's line-height and safety margin both scale with font size,
+    while Google may auto-shrink a title at render time. Allow one such line
+    only for a short estimate; multi-line body text keeps the original flat
+    tolerance and remains actionable.
+    """
+    baseline_limit = box_height * TEXT_OVERFLOW_TOLERANCE
+    if font_size < TEXT_OVERFLOW_LARGE_FONT_SIZE_PT:
+        return baseline_limit
+
+    true_line_height = font_size * ApproximateTextMeasurer.LINE_HEIGHT_FACTOR
+    box_can_hold_one_true_line = box_height >= true_line_height
+    if not box_can_hold_one_true_line:
+        return baseline_limit
+
+    estimated_line_height = (
+        true_line_height * ApproximateTextMeasurer.SAFETY_MARGIN_FACTOR
+    )
+    estimated_lines = measured_height / estimated_line_height
+    if estimated_lines > TEXT_OVERFLOW_MAX_UNCERTAIN_LINES:
+        return baseline_limit
+
+    tolerance_slack = box_height * (TEXT_OVERFLOW_TOLERANCE - 1.0)
+    return box_height + max(tolerance_slack, estimated_line_height)
 
 
 def _walk(elements: list[ParsedElement]) -> Iterator[ParsedElement]:

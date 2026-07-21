@@ -43,9 +43,23 @@ registry). The skill carries an OpenClaw `metadata.openclaw` block declaring the
 openclaw skills install @<owner>/slidesmith
 ```
 
-Publishing to ClawHub is a **maintainer action** (via the `clawhub` CLI, done
-once per release), not something a checkout does on its own — see the release
-notes. Until then, an OpenClaw user can also consume slidesmith through the
+Publishing to ClawHub is a **maintainer action** (the standalone `clawhub` CLI,
+separate from the `openclaw` runtime), done once per release from the repo root:
+
+```bash
+npm i -g clawhub                              # once
+clawhub login                                 # ClawHub account
+clawhub skill publish ./skills/slidesmith     # add --owner <org> to publish under an org
+```
+
+The publish targets the single skill **directory** (`SKILL.md` must sit at its
+root — it does). ClawHub tracks the version itself (first publish is `1.0.0`,
+later publishes auto-bump the patch unless you pass `--version`), so the skill
+frontmatter needs no version field. ClawHub runs automated checks on publish, so
+a new release may not be installable until they clear; once available,
+`openclaw skills install @<owner>/slidesmith` works.
+
+Until published, an OpenClaw user can also consume slidesmith through the
 Claude-compatible marketplace, which OpenClaw reads directly:
 
 ```
@@ -64,6 +78,10 @@ works because OpenClaw reads Claude's marketplace format directly.
 ## Keeping versions in sync
 
 The plugin manifest `version` fields (`.claude-plugin/plugin.json`,
-`.codex-plugin/plugin.json`) track the package version in `pyproject.toml`. Bump
-them together at
-each release (Claude Code only ships updates when the plugin `version` changes).
+`.codex-plugin/plugin.json`) track the package version in `pyproject.toml`.
+Never bump them by hand — run `python scripts/bump_version.py X.Y.Z`, which
+rewrites all three at once. `tests/test_version_consistency.py` fails `pytest`
+if any drifts, and the full release flow is in
+[RELEASING.md](../RELEASING.md). (Claude Code only ships an update to installed
+users when the plugin `version` changes, so the bump is what delivers a
+release.)

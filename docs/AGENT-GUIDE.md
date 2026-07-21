@@ -192,6 +192,30 @@ tags fall back to a rectangle when created, so do not guess tag names.
 XML rules still apply: escape `&`, `<`, and `>` in text; quote attributes; keep
 `T` inside `P`; and do not put layout containers inside `P` or `T`.
 
+## Z-order
+
+New page elements are created on top of the existing Google Slides stack. After
+a pull (including the authoritative refresh after a live command), SML sibling
+order is regenerated from Google's back-to-front render order: the first
+element is behind later elements. That file order is a pulled projection, not
+the z-order authoring model; use `reorder` to change stacking:
+
+```bash
+slidesmith reorder <ID> 'id=hero_image' --op send-to-back
+slidesmith reorder <ID> 'tag=Rect AND slide in 2..6' --op bring-forward
+slidesmith reorder <ID> 'id=hero_image' --op send-to-back --dry-run
+```
+
+The four operations are `bring-to-front`, `bring-forward`, `send-backward`,
+and `send-to-back`. A selector may match elements on several slides; Slidesmith
+sends one atomic z-order request per slide. Only top-level page elements can be
+reordered; elements inside a `Group` are rejected because the Slides API does
+not accept grouped children in this request. `reorder` requires a clean local
+diff, uses the live revision lock, and refreshes the workspace after success so
+the next no-edit `diff` is zero. `--dry-run` prints the exact requests without
+authentication or API calls. A full-bleed background image should typically be
+sent to the back immediately after it is created.
+
 ## Semantic selection and apply
 
 Use `select` to find elements at any depth of the same parsed SML tree used by

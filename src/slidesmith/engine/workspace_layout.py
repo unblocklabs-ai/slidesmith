@@ -16,6 +16,7 @@ from typing import Any
 
 from slidesmith.engine.slide_processor import process_presentation, write_new_format
 from slidesmith.engine.diff_model import PushWarning, WarningSeverity
+from slidesmith.engine.json_utils import read_json
 from slidesmith.engine.transport import Transport
 
 PRESENTATION_FILE = "presentation.json"
@@ -98,7 +99,11 @@ def materialize_workspace(
 ) -> list[Path]:
     """Project one raw deck into a complete, push-safe workspace."""
     presentation_dir.mkdir(parents=True, exist_ok=True)
-    result = process_presentation(presentation_data)
+    existing_mapping = read_json(
+        presentation_dir / ID_MAPPING_FILE,
+        missing_ok=True,
+    )
+    result = process_presentation(presentation_data, existing_mapping)
     if revision_id:
         result["presentation_info"]["revisionId"] = revision_id
     result["presentation_info"]["pulledAt"] = pull_timestamp()
@@ -159,7 +164,11 @@ async def refresh_after_push(
 ) -> None:
     """Replace the pristine base with the authoritative post-push deck."""
     refreshed = await transport.get_presentation(presentation_id)
-    result = process_presentation(refreshed.data)
+    existing_mapping = read_json(
+        folder_path / ID_MAPPING_FILE,
+        missing_ok=True,
+    )
+    result = process_presentation(refreshed.data, existing_mapping)
     if refreshed.revision_id:
         result["presentation_info"]["revisionId"] = refreshed.revision_id
     result["presentation_info"]["pulledAt"] = pull_timestamp()

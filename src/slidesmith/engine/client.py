@@ -64,6 +64,10 @@ from slidesmith.engine.workspace_reader import (
     _read_current_slides,
     _read_pristine,
 )
+from slidesmith.engine.z_order import (
+    build_reorder_requests,
+    validate_live_reorder_targets,
+)
 
 
 async def execute_guarded_batch(
@@ -497,6 +501,52 @@ class SlidesClient:
                 raise ConflictError(
                     "replace-image aborted: the deck changed between validation "
                     "and the write; re-pull and retry"
+                ) from exc
+            raise
+
+        await refresh_after_success(transport, folder_path, presentation_id, response)
+        return response
+
+    async def reorder(
+        self,
+        folder_path: Path,
+        selector: str,
+        operation: str,
+        *,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        """Reorder selected top-level page elements in the live deck."""
+        folder_path = Path(folder_path)
+        if self.diff(folder_path):
+            raise ValueError(
+                "reorder requires a clean workspace because its post-write refresh "
+                "would replace pending SML edits; push or revert them first"
+            )
+
+        requests = build_reorder_requests(folder_path, selector, operation)
+        if dry_run:
+            return {"dryRun": True, "requests": requests}
+
+        metadata = read_json(folder_path / PRESENTATION_FILE, missing_ok=False)
+        presentation_id = metadata.get("presentationId")
+        if not isinstance(presentation_id, str) or not presentation_id:
+            raise ValueError("Presentation ID not found in presentation.json")
+
+        mapping = read_json(folder_path / ID_MAPPING_FILE, missing_ok=False)
+        transport = self._require_transport()
+        remote = await transport.get_presentation(presentation_id)
+        validate_live_reorder_targets(remote.data, requests, mapping)
+        try:
+            response = await transport.batch_update(
+                presentation_id,
+                requests,
+                required_revision_id=remote.revision_id,
+            )
+        except APIError as exc:
+            if exc.status_code == 400 and "revision" in str(exc).lower():
+                raise ConflictError(
+                    "reorder aborted: the deck changed between validation and "
+                    "the write; re-pull and retry"
                 ) from exc
             raise
 

@@ -77,6 +77,9 @@ class IDManager:
         self, google_id: str, prefix: str, *, preserve_authored: bool = False
     ) -> str:
         """Assign one mapping, optionally preserving a safe authored ID."""
+        existing = self._reverse_mapping.get(google_id)
+        if existing is not None:
+            return existing
         clean_id = authored_clean_id(google_id) if preserve_authored else None
         if clean_id is None or clean_id in self.id_mapping:
             clean_id = self._next_id(prefix)
@@ -144,7 +147,10 @@ class IDManager:
         return manager
 
 
-def assign_ids(presentation: dict[str, Any]) -> IDManager:
+def assign_ids(
+    presentation: dict[str, Any],
+    existing_mapping: dict[str, str] | None = None,
+) -> IDManager:
     """Assign clean IDs to all elements in a presentation.
 
     Processes in order:
@@ -159,7 +165,7 @@ def assign_ids(presentation: dict[str, Any]) -> IDManager:
     Returns:
         IDManager with all IDs assigned
     """
-    manager = IDManager()
+    manager = IDManager.from_dict(existing_mapping or {})
 
     # Assign master IDs
     for master in presentation.get("masters", []):
@@ -182,7 +188,38 @@ def assign_ids(presentation: dict[str, Any]) -> IDManager:
             manager.assign_slide_id(google_id)
             _assign_page_element_ids(slide.get("pageElements", []), manager)
 
+    current_ids = set(_iter_presentation_ids(presentation))
+    manager.id_mapping = {
+        clean_id: google_id
+        for clean_id, google_id in manager.id_mapping.items()
+        if google_id in current_ids
+    }
+    manager._reverse_mapping = {
+        google_id: clean_id
+        for clean_id, google_id in manager.id_mapping.items()
+    }
+
     return manager
+
+
+def _iter_presentation_ids(presentation: dict[str, Any]) -> Any:
+    """Yield all page and page-element IDs currently in a presentation."""
+    for page_kind in ("masters", "layouts", "slides"):
+        for page in presentation.get(page_kind, []) or []:
+            page_id = page.get("objectId")
+            if isinstance(page_id, str) and page_id:
+                yield page_id
+            yield from _iter_page_element_ids(page.get("pageElements", []))
+
+
+def _iter_page_element_ids(elements: list[dict[str, Any]]) -> Any:
+    for element in elements:
+        object_id = element.get("objectId")
+        if isinstance(object_id, str) and object_id:
+            yield object_id
+        yield from _iter_page_element_ids(
+            element.get("elementGroup", {}).get("children", []) or []
+        )
 
 
 def _assign_page_element_ids(

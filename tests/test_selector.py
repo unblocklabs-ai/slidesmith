@@ -233,9 +233,9 @@ def test_select_match_set_on_golden_fixture_includes_nested_elements(
     matches = select_elements(folder, "slide=3 AND tag=TextBox")
 
     assert [match.element.clean_id for match in matches] == [
-        "focus_subtitle",
         "focus_title1",
         "focus_title2",
+        "focus_subtitle",
     ]
 
 

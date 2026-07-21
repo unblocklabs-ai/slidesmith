@@ -32,12 +32,18 @@ def test_prepending_content_alignment_to_pulled_class_raises(
     content = sml.read_text(encoding="utf-8")
     assert 'id="e132"' in content
     assert 'class="content-align-top' in content
+    target_start = content.index('<Rect id="e132"')
+    target_end = content.index(" />", target_start)
+    target = content[target_start:target_end]
+    assert 'class="content-align-top' in target
     sml.write_text(
-        content.replace(
+        content[:target_start]
+        + target.replace(
             'class="content-align-top',
             'class="content-align-middle content-align-top',
             1,
-        ),
+        )
+        + content[target_end:],
         encoding="utf-8",
     )
 

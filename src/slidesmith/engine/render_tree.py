@@ -28,6 +28,10 @@ class RenderNode:
     # Clean ID (assigned by IDManager)
     clean_id: str = ""
 
+    # Original sibling position in Google's pageElements array. Google exposes
+    # that array in back-to-front order; retain it through SML regeneration.
+    source_order: int = 0
+
     # Children in the render tree (visually contained elements)
     children: list[RenderNode] = field(default_factory=list)
 
@@ -121,7 +125,7 @@ def build_render_tree(
         else:
             roots.append(node)
 
-    # Sort children by position (top-left to bottom-right)
+    roots.sort(key=lambda n: n.source_order)
     _sort_children(roots)
 
     return roots
@@ -141,7 +145,7 @@ def _create_nodes(
     """
     nodes: list[RenderNode] = []
 
-    for elem in elements:
+    for source_order, elem in enumerate(elements):
         google_id = elem.get("objectId", "")
         clean_id = ""
         if id_manager:
@@ -174,6 +178,7 @@ def _create_nodes(
                 element=elem,
                 bounds=group_bounds,
                 clean_id=clean_id,
+                source_order=source_order,
             )
 
             # Attach children to group (these are API group children, not render tree children)
@@ -190,6 +195,7 @@ def _create_nodes(
                 element=elem,
                 bounds=bounds,
                 clean_id=clean_id,
+                source_order=source_order,
             )
             nodes.append(node)
 
@@ -197,8 +203,8 @@ def _create_nodes(
 
 
 def _sort_children(nodes: list[RenderNode]) -> None:
-    """Recursively sort children by position (top-left to bottom-right)."""
+    """Recursively retain Google's back-to-front sibling order."""
     for node in nodes:
         if node.children:
-            node.children.sort(key=lambda n: (n.bounds.y, n.bounds.x))
+            node.children.sort(key=lambda n: n.source_order)
             _sort_children(node.children)

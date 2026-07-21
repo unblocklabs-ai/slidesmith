@@ -19,6 +19,10 @@ agent-legible: name the command/flag and what an operator can now do.
   Google withholds a refresh token, reports its roughly one-hour lifetime, and
   gives the revoke-at-permissions or own-OAuth-client remedy. `auth doctor`
   identifies this usable-but-expiring state.
+- **`slidesmith reorder`** sends revision-locked Google z-order requests for
+  selector matches, groups multi-slide selections into one request per slide,
+  supports `bring-to-front`, `bring-forward`, `send-backward`, and
+  `send-to-back`, and refreshes the local SML projection after the write.
 
 ### Changed
 - Push and `replace-image` diagnostics now carry `WARNING` versus `NOTICE`

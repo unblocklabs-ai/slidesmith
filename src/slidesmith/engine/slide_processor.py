@@ -23,6 +23,7 @@ from slidesmith.engine.units import emu_to_pt
 
 def process_presentation(
     presentation_data: dict[str, Any],
+    existing_mapping: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Process a presentation into the new format.
 
@@ -37,7 +38,7 @@ def process_presentation(
         - presentation_info: basic presentation metadata
     """
     # Step 1: Assign clean IDs to all elements
-    id_manager = assign_ids(presentation_data)
+    id_manager = assign_ids(presentation_data, existing_mapping)
 
     # Step 2: Build render trees for all slides
     slides_data: list[

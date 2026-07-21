@@ -27,6 +27,7 @@ from slidesmith.cli_commands.editing import (
     cmd_fmt,
     cmd_replace_class,
     cmd_replace_image,
+    cmd_reorder,
     cmd_select,
     register_editing_commands,
 )
@@ -59,6 +60,7 @@ __all__ = [
     "cmd_push",
     "cmd_replace_class",
     "cmd_replace_image",
+    "cmd_reorder",
     "cmd_select",
     "cmd_snippet_copy",
     "cmd_snippet_paste",

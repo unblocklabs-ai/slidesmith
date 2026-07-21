@@ -431,3 +431,37 @@ def _file_snapshot(folder: Path) -> dict[Path, bytes]:
         for path in sorted(folder.rglob("*"))
         if path.is_file()
     }
+
+
+def _multi_para_ctx() -> QueryContext:
+    """Element whose text spans two paragraphs — joined with '\\n', not bare."""
+    return QueryContext(
+        slide_number=1,
+        element=ParsedElement(
+            clean_id="two_para",
+            tag="TextBox",
+            x=0,
+            y=0,
+            w=100,
+            h=40,
+            paragraphs=["foo", "bar"],
+        ),
+        classes=frozenset(),
+        role=None,
+    )
+
+
+@pytest.mark.parametrize(
+    ("query", "expected"),
+    [
+        ('text="foobar"', False),   # TG-4: paragraphs are NOT bare-concatenated
+        ('text="foo\nbar"', True),  # they join with a newline
+        ("text^=foo", True),
+        ("text$=bar", True),
+        ("text~=foo", True),
+        ("text~=bar", True),
+    ],
+)
+def test_multi_paragraph_text_join_is_newline(query: str, expected: bool) -> None:
+    ctx = _multi_para_ctx()
+    assert parse_query(query).matches(ctx) is expected

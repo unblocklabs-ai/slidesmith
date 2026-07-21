@@ -466,3 +466,39 @@ def test_auth_doctor_reports_expired_file_token(
     assert "token EXPIRED" in output
     assert "Verdict: TOKEN EXPIRED" in output
     assert "Next command: slidesmith auth login" in output
+
+
+def _keyring_store_with(monkeypatch: pytest.MonkeyPatch, raw: str) -> KeyringSessionStore:
+    """A KeyringSessionStore whose backend returns `raw` for any profile."""
+    keyring = MemoryKeyring()
+    keyring.set_password("extrasuite", "default", raw)
+    monkeypatch.setattr(credentials, "_KEYRING_AVAILABLE", True)
+    monkeypatch.setattr(credentials, "_keyring", keyring)
+    return KeyringSessionStore()
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "[]",  # valid JSON, wrong shape (list not dict)
+        '{"raw_token": "t", "email": "e", "expires_at": "not-a-number"}',  # non-numeric
+        '{"raw_token": "t"}',  # missing keys
+        "{not json",  # syntactically invalid
+    ],
+)
+def test_keyring_load_malformed_payload_returns_none(
+    monkeypatch: pytest.MonkeyPatch, raw: str
+) -> None:
+    """TG-7: malformed-but-valid keyring JSON degrades to no-session (like
+    FileSessionStore), never crashing with TypeError/ValueError."""
+    store = _keyring_store_with(monkeypatch, raw)
+    assert store.load("default") is None
+
+
+def test_keyring_load_valid_payload_roundtrips(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    token = SessionToken(raw_token="t", email="e@x.com", expires_at=time.time() + 3600)
+    store = _keyring_store_with(monkeypatch, json.dumps(token.to_dict()))
+    loaded = store.load("default")
+    assert loaded is not None and loaded.raw_token == "t"

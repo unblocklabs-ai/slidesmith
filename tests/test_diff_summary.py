@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -94,6 +95,40 @@ def test_diff_summary_cli_uses_compact_stdout_without_legend(
     captured = capsys.readouterr()
     assert "CREATE mission_ship" in captured.out
     assert captured.out.endswith("39 requests total\n")
+    assert captured.err == ""
+
+
+def test_empty_plain_diff_emits_json_array(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr("slidesmith.engine.client.diff_folder", lambda _: [])
+    monkeypatch.setattr(cli, "_warn_if_stale", lambda _: None)
+
+    cli.cmd_diff(SimpleNamespace(folder=tmp_path, summary=False))
+
+    captured = capsys.readouterr()
+    assert captured.out == "[]\n"
+    assert json.loads(captured.out) == []
+    assert captured.err == ""
+
+
+def test_empty_diff_summary_retains_human_readable_message(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(
+        "slidesmith.engine.client.diff_folder_with_result",
+        lambda _: (DiffResult(changes=[]), []),
+    )
+    monkeypatch.setattr(cli, "_warn_if_stale", lambda _: None)
+
+    cli.cmd_diff(SimpleNamespace(folder=tmp_path, summary=True))
+
+    captured = capsys.readouterr()
+    assert captured.out == "No changes detected.\n"
     assert captured.err == ""
 
 

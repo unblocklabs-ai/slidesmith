@@ -128,7 +128,10 @@ def cmd_diff(args: Any) -> None:
         else:
             requests = diff_folder(args.folder, slide=slide)
     if not requests:
-        print("No changes detected.")
+        if summary:
+            print("No changes detected.")
+        else:
+            print("[]")
     elif summary:
         from slidesmith.engine.content_diff import format_diff_summary
 

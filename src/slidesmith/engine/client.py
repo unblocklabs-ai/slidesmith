@@ -768,8 +768,9 @@ class SlidesClient:
         folder_path: Path,
         *,
         slide: int | None = None,
+        allow_remote_image_fetch: bool = False,
     ) -> tuple[DiffResult, list[dict[str, Any]]]:
-        """Return both semantic changes and their generated API requests."""
+        """Return semantic changes and requests, offline unless fetch is allowed."""
         folder_path = Path(folder_path)
         if slide is not None and slide < 1:
             raise ValueError("diff --slide must be at least 1")
@@ -790,6 +791,7 @@ class SlidesClient:
             pristine_styles,
             id_mapping,
             workspace_root=folder_path,
+            allow_remote_image_fetch=allow_remote_image_fetch,
         )
         if slide is not None:
             slide_index = f"{slide:02d}"
@@ -861,7 +863,9 @@ class SlidesClient:
         if not presentation_id:
             raise ValueError("Presentation ID not found in presentation.json")
 
-        diff_result, requests = self.diff_with_result(folder_path)
+        diff_result, requests = self.diff_with_result(
+            folder_path, allow_remote_image_fetch=True
+        )
 
         if not requests:
             if per_slide:
@@ -1263,6 +1267,7 @@ class SlidesClient:
             refreshed_styles,
             read_json(folder_path / ID_MAPPING_FILE, missing_ok=True),
             workspace_root=folder_path,
+            allow_remote_image_fetch=True,
         )
         unpersisted = [
             change

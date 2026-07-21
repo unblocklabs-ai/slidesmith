@@ -14,8 +14,9 @@ import pytest
 from PIL import Image
 
 from slidesmith import cli
+from slidesmith.engine import content_diff
 from slidesmith.engine import qa as qa_engine
-from slidesmith.engine.client import SlidesClient
+from slidesmith.engine.client import SlidesClient, diff_folder
 from slidesmith.engine.qa import (
     CONTACT_SHEET_GAP,
     CONTACT_SHEET_LABEL_HEIGHT,
@@ -620,6 +621,77 @@ def test_cli_no_thumbnails_uses_no_auth_or_transport(
 
     assert "no issues found" in capsys.readouterr().out
     assert not (qa_folder / ".qa").exists()
+
+
+def test_cli_no_thumbnails_does_not_fetch_remote_contain_dimensions(
+    qa_folder: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _replace_slides(
+        qa_folder,
+        '<Image id="hero" src="https://example.com/hero.png" fit="contain" '
+        'x="10" y="20" w="120" h="90" />',
+    )
+    calls: list[str] = []
+
+    def record_fetch(url: str) -> tuple[int, int]:
+        calls.append(url)
+        return (400, 200)
+
+    monkeypatch.setattr(content_diff, "_fetch_image_dimensions", record_fetch)
+
+    cli.main(["check", str(qa_folder), "--no-thumbnails"])
+
+    assert calls == []
+
+
+def test_diff_does_not_fetch_remote_contain_dimensions(
+    qa_folder: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _replace_slides(
+        qa_folder,
+        '<Image id="hero" src="https://example.com/hero.png" fit="contain" '
+        'x="10" y="20" w="120" h="90" />',
+    )
+    calls: list[str] = []
+
+    def record_fetch(url: str) -> tuple[int, int]:
+        calls.append(url)
+        return (400, 200)
+
+    monkeypatch.setattr(content_diff, "_fetch_image_dimensions", record_fetch)
+
+    requests = diff_folder(qa_folder)
+
+    assert calls == []
+    create = next(request["createImage"] for request in requests if "createImage" in request)
+    assert create["elementProperties"]["size"] == {
+        "width": {"magnitude": 1_524_000, "unit": "EMU"},
+        "height": {"magnitude": 1_143_000, "unit": "EMU"},
+    }
+
+
+def test_push_preflight_does_not_fetch_remote_contain_dimensions(
+    qa_folder: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _replace_slides(
+        qa_folder,
+        '<Image id="hero" src="https://example.com/hero.png" fit="contain" '
+        'x="10" y="20" w="120" h="90" />',
+    )
+    calls: list[str] = []
+
+    def record_fetch(url: str) -> tuple[int, int]:
+        calls.append(url)
+        return (400, 200)
+
+    monkeypatch.setattr(content_diff, "_fetch_image_dimensions", record_fetch)
+
+    push_preflight(qa_folder, output=lambda _message: None)
+
+    assert calls == []
 
 
 def test_contact_sheet_dimensions_and_slide_labels(

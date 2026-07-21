@@ -284,6 +284,7 @@ def diff_presentation(
     _id_mapping: dict[str, str],
     *,
     workspace_root: Path | None = None,
+    allow_remote_image_fetch: bool = False,
 ) -> DiffResult:
     """Diff pristine and edited presentation content.
 
@@ -406,6 +407,7 @@ def diff_presentation(
                         edited_elem,
                         slide_idx,
                         workspace_root=workspace_root,
+                        allow_remote_image_fetch=allow_remote_image_fetch,
                     )
                     result.changes.extend(changes)
             else:
@@ -424,6 +426,7 @@ def diff_presentation(
                         edited_elem,
                         slide_idx,
                         workspace_root=workspace_root,
+                        allow_remote_image_fetch=allow_remote_image_fetch,
                     )
                     result.changes.extend(changes)
 
@@ -452,7 +455,9 @@ def diff_presentation(
                         slide_index=slide_idx,
                         parent_id=edited_elem.parent_id,
                         new_position=get_effective_position(
-                            edited_elem, workspace_root=workspace_root
+                            edited_elem,
+                            workspace_root=workspace_root,
+                            allow_remote_image_fetch=allow_remote_image_fetch,
                         ),
                         new_text=edited_elem.paragraphs
                         if edited_elem.paragraphs
@@ -489,6 +494,7 @@ def _compare_elements(
     slide_idx: str,
     *,
     workspace_root: Path | None = None,
+    allow_remote_image_fetch: bool = False,
 ) -> list[Change]:
     """Compare two elements with the same ID and generate changes."""
     changes: list[Change] = []
@@ -496,6 +502,7 @@ def _compare_elements(
     edited_position = get_effective_position(
         edited,
         workspace_root=workspace_root,
+        allow_remote_image_fetch=allow_remote_image_fetch,
     )
 
     # Check position change (only for root elements)
@@ -989,8 +996,9 @@ def get_effective_position(
     elem: ParsedElement,
     *,
     workspace_root: Path | None = None,
+    allow_remote_image_fetch: bool = False,
 ) -> dict[str, float] | None:
-    """Resolve the effective box consumed by Slides for authored geometry."""
+    """Resolve authored geometry, fetching remote image pixels only when allowed."""
     if elem.tag == "Image" and elem.src is not None:
         validate_authored_image_geometry(
             elem.clean_id,
@@ -1025,6 +1033,8 @@ def get_effective_position(
 
     if local_pixels is not None:
         pixel_width, pixel_height = local_pixels
+    elif not allow_remote_image_fetch:
+        return position
     else:
         pixel_width, pixel_height = _fetch_image_dimensions(elem.src)
     if pixel_width <= 0 or pixel_height <= 0:

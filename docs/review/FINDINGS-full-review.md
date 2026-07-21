@@ -77,7 +77,7 @@ deferred to a deliberate pass). Loop: fix → re-review until no real defect rem
   vs copy_requests.py:285). Extract `has_ancestor_in_set(...)`.
 
 ## TEST GAPS — add coverage (name the silent-failure branch)
-- [ ] TG-1 [HIGH] push_progress ledger ownership/schema validation (:232-241) untested —
+- [x] TG-1 [HIGH] push_progress ledger ownership/schema validation (:232-241) untested —
   a corrupt/foreign/wrong-version ledger could let `--resume` skip slides. Tests:
   corrupt JSON, wrong version, foreign presentation id, malformed succeeded list →
   abort before any transport call.
@@ -86,11 +86,11 @@ deferred to a deliberate pass). Loop: fix → re-review until no real defect rem
   with FR-1).
 - [x] TG-3 [HIGH] conflicts ancestor-group change (conflicts.py:39) — parent-group
   transform with locally-edited child must conflict (pairs with FR-2).
-- [ ] TG-4 [MEDIUM] selector multi-paragraph text join (selector.py:83) — define + test
+- [x] TG-4 [MEDIUM] selector multi-paragraph text join (selector.py:83) — define + test
   the separator so `["foo","bar"]` doesn't match `text=foobar`.
-- [ ] TG-5 [MEDIUM] theme --map-colors exact-threshold (`>` boundary) + alpha-suffix
+- [x] TG-5 [MEDIUM] theme --map-colors exact-threshold (`>` boundary) + alpha-suffix
   preservation (theme.py:595-603).
-- [ ] TG-6 [MEDIUM] transport backoff timing (monkeypatch asyncio.sleep, assert bounded
+- [x] TG-6 [MEDIUM] transport backoff timing (monkeypatch asyncio.sleep, assert bounded
   delay sequence; non-retryable never sleeps) + batch_update 429 policy (POST path).
 - [ ] TG-7 [MEDIUM] keyring malformed-but-valid JSON (list / nonnumeric expires_at) —
   align KeyringSessionStore invalid-token handling with FileSessionStore.

@@ -80,7 +80,7 @@ class _StringPredicate:
         if self.field == "id":
             return _match_string(element.clean_id, self.comparison, self.value)
         return _match_string(
-            "".join(element.paragraphs).casefold(),
+            "\n".join(element.paragraphs).casefold(),
             self.comparison,
             self.value.casefold(),
         )

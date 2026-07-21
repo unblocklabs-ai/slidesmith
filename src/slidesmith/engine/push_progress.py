@@ -233,11 +233,18 @@ def load_progress_ledger(folder_path: Path, presentation_id: str) -> dict[str, s
     succeeded: dict[str, str] = {}
     for entry in data["succeeded"]:
         if not isinstance(entry, dict):
-            continue
+            raise ValueError(
+                f"Cannot resume: {PUSH_PROGRESS_FILE} has malformed succeeded "
+                "entries; run without --resume to start over"
+            )
         slide_index = entry.get("slideIndex")
         content_hash = entry.get("contentHash")
-        if isinstance(slide_index, str) and isinstance(content_hash, str):
-            succeeded[slide_index] = content_hash
+        if not isinstance(slide_index, str) or not isinstance(content_hash, str):
+            raise ValueError(
+                f"Cannot resume: {PUSH_PROGRESS_FILE} has malformed succeeded "
+                "entries; run without --resume to start over"
+            )
+        succeeded[slide_index] = content_hash
     return succeeded
 
 

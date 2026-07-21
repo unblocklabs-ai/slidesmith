@@ -14,6 +14,18 @@ agent-legible: name the command/flag and what an operator can now do.
 
 ## [Unreleased]
 
+_Nothing yet._
+
+## [0.6.0] — 2026-07-21 — First-class slides & QA fidelity
+
+Driven by a third round of dogfood feedback (5 items) from continued
+stress-testing, converged through a three-lens adversarial holistic review.
+Makes new-slide creation a first-class positioned command with round-tripping
+slide IDs, keys QA findings to stable slide identity so adding a slide no longer
+mislabels untouched findings, silences a near-degenerate `LINE` persistence
+false-warning, and detects expired bare tokens up front with gog-specific
+recovery. Tag `stage-19`. 686 tests.
+
 ### Fixed
 
 - Post-push persistence verification no longer warns for an unrepresentable
@@ -221,7 +233,8 @@ Tags `stage-1` … `stage-6`. The living-deck co-editing core.
 Descends from think41/extrasuite's extraslide (MIT — see `NOTICE`), heavily
 rewritten.
 
-[Unreleased]: https://github.com/unblocklabs-ai/slidesmith/compare/stage-18-continuity-and-qa-signal...HEAD
+[Unreleased]: https://github.com/unblocklabs-ai/slidesmith/compare/stage-19-first-class-slides...HEAD
+[0.6.0]: https://github.com/unblocklabs-ai/slidesmith/releases/tag/stage-19-first-class-slides
 [0.5.0]: https://github.com/unblocklabs-ai/slidesmith/releases/tag/stage-18-continuity-and-qa-signal
 [0.4.0]: https://github.com/unblocklabs-ai/slidesmith/releases/tag/stage-15-roadmap-review-converged
 [0.3.0]: https://github.com/unblocklabs-ai/slidesmith/releases/tag/stage-12-media-and-gpt-review

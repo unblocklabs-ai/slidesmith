@@ -10,7 +10,7 @@ description: >-
 when_to_use: >-
   The user wants to build or modify a real Google Slides presentation and keep it
   editable/collaboratable (not a rendered image, not a new file each edit).
-version: 0.5.0
+version: 0.6.0
 ---
 
 # slidesmith

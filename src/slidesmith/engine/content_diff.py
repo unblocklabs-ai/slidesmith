@@ -14,7 +14,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from slidesmith.engine.assets import (
+from slidesmith.engine.assets import (  # noqa: F401
     image_source_kind,
     inspect_local_image,
     resolve_local_image_path,
@@ -26,7 +26,7 @@ from slidesmith.engine.classes import (  # noqa: F401
     Stroke,
     TextStyle,
 )
-from slidesmith.engine.content_parser import (
+from slidesmith.engine.content_parser import (  # noqa: F401
     ElementStyles,
     ParsedElement,
     flatten_elements,
@@ -40,7 +40,11 @@ from slidesmith.engine.diff_model import (
     ParagraphClassUpdate,
 )
 from slidesmith.engine.diff_summary import format_diff_summary  # noqa: F401
-from slidesmith.engine.image_fetch import fetch_image_dimensions
+from slidesmith.engine.image_geometry import (  # noqa: F401
+    _fetch_image_dimensions,
+    get_effective_position,
+)
+from slidesmith.engine.image_fetch import fetch_image_dimensions  # noqa: F401
 from slidesmith.engine.style_delta import (  # noqa: F401
     _PARAGRAPH_STYLE_FIELD_NAMES,
     _TEXT_STYLE_FIELD_NAMES,
@@ -598,67 +602,6 @@ def _get_position(elem: ParsedElement) -> dict[str, float] | None:
         "w": elem.w or 0,
         "h": elem.h or 0,
     }
-
-
-def get_effective_position(
-    elem: ParsedElement,
-    *,
-    workspace_root: Path | None = None,
-    allow_remote_image_fetch: bool = False,
-) -> dict[str, float] | None:
-    """Resolve authored geometry, fetching remote image pixels only when allowed."""
-    if elem.tag == "Image" and elem.src is not None:
-        validate_authored_image_geometry(
-            elem.clean_id,
-            x=elem.x,
-            y=elem.y,
-            w=elem.w,
-            h=elem.h,
-        )
-        if image_source_kind(elem.src) == "local":
-            if workspace_root is None:
-                raise ValueError(
-                    f"Local image source {elem.src!r} on Image element "
-                    f"'{elem.clean_id}' requires a presentation workspace"
-                )
-            local_path = resolve_local_image_path(workspace_root, elem.src)
-            local_pixels = inspect_local_image(local_path, source=elem.src)[:2]
-        else:
-            local_pixels = None
-    position = _get_position(elem)
-    if elem.tag != "Image" or elem.fit != "contain":
-        return position
-    if position is None or not elem.src:
-        return position
-
-    width = position["w"]
-    height = position["h"]
-    if width <= 0 or height <= 0:
-        raise ValueError(
-            f"Image element '{elem.clean_id}' with fit='contain' requires "
-            "positive w and h"
-        )
-
-    if local_pixels is not None:
-        pixel_width, pixel_height = local_pixels
-    elif not allow_remote_image_fetch:
-        return position
-    else:
-        pixel_width, pixel_height = fetch_image_dimensions(elem.src)
-    if pixel_width <= 0 or pixel_height <= 0:
-        raise ValueError(
-            f"Could not determine positive pixel dimensions for Image element "
-            f"'{elem.clean_id}' from {elem.src!r}"
-        )
-
-    image_aspect = pixel_width / pixel_height
-    frame_aspect = width / height
-    contained = dict(position)
-    if image_aspect > frame_aspect:
-        contained["h"] = width / image_aspect
-    elif image_aspect < frame_aspect:
-        contained["w"] = height * image_aspect
-    return contained
 
 
 def _is_copy_by_missing_dimensions(elem: ParsedElement) -> bool:

@@ -14,6 +14,15 @@ agent-legible: name the command/flag and what an operator can now do.
 
 ## [Unreleased]
 
+_Nothing yet._
+
+## [0.6.1] — 2026-07-21 — Created-element persistence fidelity
+
+A follow-up patch from continued dogfooding. Post-push persistence verification
+no longer false-warns on newly created elements when Google stamps a default
+vertical alignment the author left implicit; genuine dropped or changed authored
+styles still warn. Tag `stage-20`. 691 tests.
+
 ### Fixed
 
 - Created elements no longer false-warn when Google stamps a default alignment
@@ -237,7 +246,8 @@ Tags `stage-1` … `stage-6`. The living-deck co-editing core.
 Descends from think41/extrasuite's extraslide (MIT — see `NOTICE`), heavily
 rewritten.
 
-[Unreleased]: https://github.com/unblocklabs-ai/slidesmith/compare/stage-19-first-class-slides...HEAD
+[Unreleased]: https://github.com/unblocklabs-ai/slidesmith/compare/stage-20-created-element-persistence...HEAD
+[0.6.1]: https://github.com/unblocklabs-ai/slidesmith/releases/tag/stage-20-created-element-persistence
 [0.6.0]: https://github.com/unblocklabs-ai/slidesmith/releases/tag/stage-19-first-class-slides
 [0.5.0]: https://github.com/unblocklabs-ai/slidesmith/releases/tag/stage-18-continuity-and-qa-signal
 [0.4.0]: https://github.com/unblocklabs-ai/slidesmith/releases/tag/stage-15-roadmap-review-converged

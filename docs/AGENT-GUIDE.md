@@ -98,14 +98,21 @@ not persist (sent 'Q4', remote now 'Q3') — the API may not support these
 values`. Text content, geometry, affected element/paragraph/run style classes
 use this sent-versus-remote form. For creates, deletes, copies, or another field
 without a cheap refreshed value, the detail keeps the generic
-`title (style update)` form. Either warning means Google accepted the batch but
-normalized or dropped an authored value. Treat the refreshed SML as
-authoritative and choose a supported alternative.
+`title (style update)` form. Google may accept the batch while normalizing or
+dropping an authored value. Persistence output has `WARNING` and
+`NOTICE` tiers: the CLI prints actionable warnings before notices, with a count
+summary for each group. A warning means Google changed or dropped an authored
+value; that includes a sent font replaced by Arial or an author-removed class
+restored. A notice means Google added a recognized default to an existing
+edited element. Treat the refreshed SML as authoritative and choose a
+supported alternative when a warning appears.
 
 Persistence verification intentionally suppresses two always-normalized cases:
 geometry differences smaller than 0.02 pt on every changed box field, and only
-Google-added default classes on newly created elements. The exact shared
-default-class set is `font-weight-400`, `text-align-left`, `leading-100`,
+Google-added default classes on newly created elements; on existing edited
+elements, those same class additions are emitted as `NOTICE`. The exact shared
+default-class set is `font-weight-400`, `font-weight-700`, `font-family-arial`,
+`text-align-left`, `leading-100`,
 `space-above-0`, `space-below-0`, `indent-start-0`, `indent-first-0`,
 `spacing-never-collapse`, and `spacing-collapse-lists`, plus shape-specific
 content alignment: `content-align-top` only for `TextBox`, and
@@ -735,7 +742,11 @@ live account because offline tests inject a fake uploader.
 
 ### Replacing an existing image
 
-Replace the pixels of a pulled image with explicit, previewable geometry:
+For the normal edit loop, set a new `src` (optionally with `fit`) on an existing
+image in its SML, then run `diff` and `push`; this emits
+`IMAGE_UPDATE`/`replaceImage` and a
+geometry pin. For a clean-diff one-shot replacement, use the command below to
+replace the pixels of a pulled image with explicit, previewable geometry:
 
 ```bash
 slidesmith replace-image <ID> hero_image ./assets/new-hero.png
@@ -1007,11 +1018,14 @@ when reusable authoring intent must survive a re-pull.
 fixes:
 
 - `OVERLAP`: sibling leaves overlap by more than 15% of the smaller element.
-  Exact containment is allowed because background shapes commonly contain text
-  or icons.
+  Leaves covering at least 90% of the slide area are treated as backgrounds and
+  exempt from overlap. Otherwise, containment is exempt when at least 95% of
+  the contained element is covered; use the `qa-accept-overlap` sugar class for
+  intentional remaining overlap.
 - `OUT_OF_BOUNDS`: any element edge crosses the page boundary.
 - `TEXT_OVERFLOW`: approximate wrapped text height exceeds box height by more
-  than the 10% tolerance.
+  than the 10% tolerance, with large short titles allowed one estimated line of
+  measurement uncertainty.
 
 Only an explicit pull saves the offline findings snapshot to
 `.pristine/qa-baseline.json`; a post-push pristine refresh does not change that

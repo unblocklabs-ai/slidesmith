@@ -44,6 +44,12 @@ def _visual_geometry(request: dict) -> tuple[int, int, int, int]:
     )
 
 
+def _write_png(tmp_path: Path, size: tuple[int, int]) -> Path:
+    image_path = tmp_path / "source.png"
+    Image.new("RGB", size, "navy").save(image_path)
+    return image_path
+
+
 @contextmanager
 def _loopback_redirect_probe():
     paths: list[str] = []
@@ -437,8 +443,7 @@ def test_stretch_create_uses_source_shaped_intrinsic_box(
     pixels: tuple[int, int],
     target: dict[str, float],
 ) -> None:
-    image_path = tmp_path / "source.png"
-    Image.new("RGB", pixels, "navy").save(image_path)
+    _write_png(tmp_path, pixels)
     result = diff_presentation(
         {},
         {
@@ -466,8 +471,7 @@ def test_stretch_create_uses_source_shaped_intrinsic_box(
 def test_existing_image_fit_only_edit_emits_replace_and_geometry_pin(
     tmp_path: Path,
 ) -> None:
-    image_path = tmp_path / "source.png"
-    Image.new("RGB", (900, 600), "navy").save(image_path)
+    _write_png(tmp_path, (900, 600))
     pristine = parse_slide_content(
         '<Slide><Image id="hero" src="./source.png" fit="contain" '
         'x="40" y="30" w="220" h="124" /></Slide>'
@@ -504,8 +508,7 @@ def test_existing_image_fit_only_edit_emits_replace_and_geometry_pin(
 def test_existing_image_src_and_geometry_edit_pins_to_effective_new_box(
     tmp_path: Path,
 ) -> None:
-    image_path = tmp_path / "source.png"
-    Image.new("RGB", (900, 600), "navy").save(image_path)
+    _write_png(tmp_path, (900, 600))
     pristine = parse_slide_content(
         '<Slide><Image id="hero" x="10" y="20" w="100" h="100" /></Slide>'
     )
@@ -540,8 +543,7 @@ def test_existing_image_src_and_geometry_edit_pins_to_effective_new_box(
 def test_existing_image_src_and_class_edit_keeps_style_requests(
     tmp_path: Path,
 ) -> None:
-    image_path = tmp_path / "source.png"
-    Image.new("RGB", (900, 600), "navy").save(image_path)
+    _write_png(tmp_path, (900, 600))
     pristine = parse_slide_content(
         '<Slide><Image id="hero" x="10" y="20" w="100" h="100" /></Slide>'
     )

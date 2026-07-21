@@ -133,6 +133,9 @@ def append_persistence_warning_for_test(
     intended: list[Any],
     remote: list[Any],
     author_changes: list[Any],
+    *,
+    intended_change_keys: set[tuple[str, ChangeType]] | None = None,
+    create_copy_targets: set[tuple[str, str]] | None = None,
 ) -> dict[str, Any]:
     folder = tmp_path / "deck"
     folder.mkdir()
@@ -142,11 +145,13 @@ def append_persistence_warning_for_test(
     client._append_persistence_warning(
         folder,
         {"01": intended},
-        {
+        intended_change_keys
+        if intended_change_keys is not None
+        else {
             (change.target_id, change.change_type)
             for change in author_changes
         },
-        set(),
+        create_copy_targets or set(),
         response,
         author_changes=author_changes,
     )
@@ -601,11 +606,7 @@ async def test_push_warns_when_created_box_text_does_not_persist(
 
 def test_persistence_warning_suppresses_created_weight_and_arial_defaults(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    folder = tmp_path / "deck"
-    folder.mkdir()
-    (folder / "id_mapping.json").write_text("{}", encoding="utf-8")
     intended = parse_slide_content(
         '<Slide id="s1"><TextBox id="new_box" x="10" y="20" w="100" h="30">'
         "<P><T>Authored</T></P></TextBox></Slide>"
@@ -615,20 +616,13 @@ def test_persistence_warning_suppresses_created_weight_and_arial_defaults(
         '<P><T class="font-weight-700 font-family-arial">Authored</T></P>'
         "</TextBox></Slide>"
     )
-    client = SlidesClient()
-    monkeypatch.setattr(
-        client,
-        "_read_pristine",
-        lambda _folder: ({"01": remote}, {}),
-    )
-    response: dict[str, Any] = {}
-
-    client._append_persistence_warning(
-        folder,
-        {"01": intended},
-        {("new_box", ChangeType.CREATE)},
-        {("01", "new_box")},
-        response,
+    response = append_persistence_warning_for_test(
+        tmp_path,
+        intended,
+        remote,
+        [],
+        intended_change_keys={("new_box", ChangeType.CREATE)},
+        create_copy_targets={("01", "new_box")},
     )
 
     assert "warnings" not in response
@@ -636,11 +630,7 @@ def test_persistence_warning_suppresses_created_weight_and_arial_defaults(
 
 def test_persistence_warning_notices_existing_paragraph_defaults(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    folder = tmp_path / "deck"
-    folder.mkdir()
-    (folder / "id_mapping.json").write_text("{}", encoding="utf-8")
     intended = parse_slide_content(
         '<Slide id="s1"><TextBox id="box" x="10" y="20" w="100" h="30">'
         '<P class="text-align-center">Authored</P></TextBox></Slide>'
@@ -651,20 +641,12 @@ def test_persistence_warning_notices_existing_paragraph_defaults(
         'indent-start-0 indent-first-0 spacing-never-collapse">Authored</P>'
         "</TextBox></Slide>"
     )
-    client = SlidesClient()
-    monkeypatch.setattr(
-        client,
-        "_read_pristine",
-        lambda _folder: ({"01": remote}, {}),
-    )
-    response: dict[str, Any] = {}
-
-    client._append_persistence_warning(
-        folder,
-        {"01": intended},
-        {("box", ChangeType.PARAGRAPH_STYLE_UPDATE)},
-        set(),
-        response,
+    response = append_persistence_warning_for_test(
+        tmp_path,
+        intended,
+        remote,
+        [],
+        intended_change_keys={("box", ChangeType.PARAGRAPH_STYLE_UPDATE)},
     )
 
     assert response["warnings"]
@@ -674,11 +656,7 @@ def test_persistence_warning_notices_existing_paragraph_defaults(
 
 def test_persistence_warning_keeps_arial_replacement_as_warning(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    folder = tmp_path / "deck"
-    folder.mkdir()
-    (folder / "id_mapping.json").write_text("{}", encoding="utf-8")
     intended = parse_slide_content(
         '<Slide id="s1"><TextBox id="box" x="10" y="20" w="100" h="30">'
         '<P><T class="font-family-roboto">Authored</T></P></TextBox></Slide>'
@@ -687,20 +665,12 @@ def test_persistence_warning_keeps_arial_replacement_as_warning(
         '<Slide id="s1"><TextBox id="box" x="10" y="20" w="100" h="30">'
         '<P><T class="font-family-arial">Authored</T></P></TextBox></Slide>'
     )
-    client = SlidesClient()
-    monkeypatch.setattr(
-        client,
-        "_read_pristine",
-        lambda _folder: ({"01": remote}, {}),
-    )
-    response: dict[str, Any] = {}
-
-    client._append_persistence_warning(
-        folder,
-        {"01": intended},
-        {("box", ChangeType.TEXT_UPDATE)},
-        set(),
-        response,
+    response = append_persistence_warning_for_test(
+        tmp_path,
+        intended,
+        remote,
+        [],
+        intended_change_keys={("box", ChangeType.TEXT_UPDATE)},
     )
 
     assert response["warnings"]
@@ -883,11 +853,7 @@ def test_persistence_warning_suppresses_only_sub_point_zero_two_geometry_drift(
 
 def test_persistence_verification_accepts_canonical_negative_line_geometry(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    folder = tmp_path / "deck"
-    folder.mkdir()
-    (folder / "id_mapping.json").write_text("{}", encoding="utf-8")
     intended = parse_slide_content(
         '<Slide id="s1"><Line id="rule" x="100" y="20" '
         'w="-30" h="-10" /></Slide>'
@@ -896,20 +862,12 @@ def test_persistence_verification_accepts_canonical_negative_line_geometry(
         '<Slide id="s1"><Line id="rule" x="70" y="10" '
         'w="30" h="10" /></Slide>'
     )
-    client = SlidesClient()
-    monkeypatch.setattr(
-        client,
-        "_read_pristine",
-        lambda _folder: ({"01": remote}, {}),
-    )
-    response: dict[str, Any] = {}
-
-    client._append_persistence_warning(
-        folder,
-        {"01": intended},
-        {("rule", ChangeType.MOVE)},
-        set(),
-        response,
+    response = append_persistence_warning_for_test(
+        tmp_path,
+        intended,
+        remote,
+        [],
+        intended_change_keys={("rule", ChangeType.MOVE)},
     )
 
     assert "warnings" not in response

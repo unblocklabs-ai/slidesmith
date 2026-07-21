@@ -10,7 +10,7 @@ description: >-
 when_to_use: >-
   The user wants to build or modify a real Google Slides presentation and keep it
   editable/collaboratable (not a rendered image, not a new file each edit).
-version: 0.4.0
+version: 0.4.1
 ---
 
 # slidesmith
@@ -51,6 +51,7 @@ slidesmith pull <deck-url-or-id> -o .   # -> <id>/slides/NN/content.sml
 slidesmith diff <id> --summary          # preview; --slide N to scope
 slidesmith push <id>                    # apply to the same deck
 slidesmith check <id> --contact-sheet   # download renders + geometry QA
+slidesmith --version                    # print the installed package version
 ```
 
 To create a slide, add `slides/NN/content.sml` with a `<Slide>` root and at
@@ -120,9 +121,12 @@ prints the body + slots. Slots support `{{name|default}}`.
 ```
 `src` = public URL **or** local path (local uploads to Drive, cached). `fit`:
 `contain` (aspect-correct, top-left anchored — recommended) or `stretch` (exact
-box, may distort). Swap: `slidesmith replace-image <id> <element-id> <new-src>
---dry-run`. **`fit="cover"`/cropping is impossible** — Google's crop is API
-read-only; design galleries contain-first.
+box, may distort). For an existing image, set a new `src` (optionally with
+`fit`) in SML and use the normal `diff`/`push` loop; this emits
+`IMAGE_UPDATE`/`replaceImage` and a geometry pin. A `fit` change requires a
+`src`. For a clean-diff one-shot swap, use `slidesmith replace-image
+<id> <element-id> <new-src> --dry-run`. **`fit="cover"`/cropping is impossible**
+— Google's crop is API read-only; design galleries contain-first.
 
 ### Large decks / safe pushes
 ```bash
@@ -150,8 +154,11 @@ or add a `qa-accept-<rule>` class to the element inline (stripped before push).
 - Always `diff` before `push`; the deck may have changed under you (push is
   revision-locked and will abort on conflict — re-pull and retry).
 - Layout/components are one-shot; a later pull returns resolved coordinates.
-- Authored element IDs survive round-trips — don't script around generated `eNN`
-  IDs for elements you created; name them.
+- Authored element IDs survive round-trips when they meet Google's 5–50-character
+  object-ID grammar, are unoccupied, and don't resemble a generated
+  Google/Slidesmith ID (`eNN`, `gNN`, `pNN`, `SLIDES_API…`); invalid, occupied,
+  or generated-looking names are sanitized/suffixed, so don't script around
+  generated `eNN` IDs.
 - `fmt` before committing hand-edited SML so whitespace changes don't inflate the
   diff.
 - Bounds-containment nesting: an element fully covering another may become its

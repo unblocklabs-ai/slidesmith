@@ -28,6 +28,9 @@ agent-legible: name the command/flag and what an operator can now do.
 - Push and `replace-image` diagnostics now carry `WARNING` versus `NOTICE`
   severity, render notices after actionable warnings, and summarize mixed
   counts in the CLI.
+- Pull and post-push refresh materializations reuse existing ID mappings, and
+  regenerated sibling SML now follows Google's back-to-front page-element
+  order.
 - Documentation now includes the new-slide workflow, Group authoring guardrails,
   z-order and QA-acceptance recipes, and quick class-vocabulary pointers.
 - `slidesmith check` now gives large, short titles one estimated line of
@@ -39,6 +42,7 @@ agent-legible: name the command/flag and what an operator can now do.
   discoverable `qa-accept-overlap` class.
 
 ### Fixed
+- Color opacity classes with values above `/100` are now rejected.
 - **Security:** local image sources are now constrained to the presentation
   workspace before inspection or Drive upload, and credential-bearing image URLs
   are redacted from summaries, fetch notices, and persistence warnings.
@@ -57,8 +61,9 @@ agent-legible: name the command/flag and what an operator can now do.
   cannot preserve its direction because SML pulls expose only positive bounds.
 - New authored `fit="stretch"` images now pin their visual box to the exact
   authored geometry, including source aspect ratios that differ from the box.
-- Editing `src` or `fit` on an existing pulled `<Image>` now emits a visible
-  image replacement with the same geometry pinning and local-asset cache reuse
+- Setting a new `src` (optionally with `fit`) on an existing pulled `<Image>`
+  now emits a visible image replacement with the same geometry pinning and
+  local-asset cache reuse
   as `replace-image`.
 - Image replacement persistence verification now compares refreshed `sourceUrl`
   when Google returns it and warns when the replacement did not persist.

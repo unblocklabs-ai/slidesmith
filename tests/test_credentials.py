@@ -53,6 +53,8 @@ class BrokenKeyring:
 def test_oauth_browser_flow_without_refresh_token_returns_expiring_access_token(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    frozen_time = 1_700_000_000.0
+    monkeypatch.setattr("slidesmith.auth.browser_flow.time.time", lambda: frozen_time)
     manager = object.__new__(CredentialsManager)
     monkeypatch.setattr(
         manager,
@@ -70,12 +72,14 @@ def test_oauth_browser_flow_without_refresh_token_returns_expiring_access_token(
 
     assert access_token == "access-token"
     assert refresh_token is None
-    assert 2690 <= expires_at - time.time() <= 2700
+    assert expires_at == frozen_time + 2700
 
 
 def test_oauth_browser_flow_with_refresh_token_keeps_refresh_session(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    frozen_time = 1_700_000_000.0
+    monkeypatch.setattr("slidesmith.auth.browser_flow.time.time", lambda: frozen_time)
     manager = object.__new__(CredentialsManager)
     monkeypatch.setattr(
         manager,
@@ -97,7 +101,7 @@ def test_oauth_browser_flow_with_refresh_token_keeps_refresh_session(
 
     assert access_token == "access-token"
     assert refresh_token == "refresh-token"
-    assert 2690 <= expires_at - time.time() <= 2700
+    assert expires_at == frozen_time + 2700
 
 
 def _token(*, expires_at: float | None = None) -> SessionToken:

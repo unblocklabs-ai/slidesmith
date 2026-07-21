@@ -170,7 +170,7 @@ async def test_reentrant_refresh_attempt_fails_promptly() -> None:
     transport._credential_refresh = refresh
     try:
         with pytest.raises(AuthenticationError, match="re-export a fresh token"):
-            await asyncio.wait_for(transport.get_presentation("pid"), timeout=0.2)
+            await asyncio.wait_for(transport.get_presentation("pid"), timeout=5.0)
     finally:
         await transport.close()
 

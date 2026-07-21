@@ -36,15 +36,19 @@ when the canonical path and SHA-256 content hash match:
 ```
 
 Google Slides cannot accept raw image bytes for `createImage` or `replaceImage`;
-both require a publicly fetchable URL. Replace the content of an existing image
-without changing its position or size with:
+both require a publicly fetchable URL. For the normal edit loop, set a new
+`src` (optionally with `fit`) on an existing image in SML, then run `diff` and
+`push`; Slidesmith emits an `IMAGE_UPDATE` with `replaceImage` and pins the
+authored geometry. A `fit` change requires a `src` — pulled images carry
+neither attribute until you author one. For a one-shot pixel swap with a clean
+local diff, use:
 
 ```bash
 slidesmith replace-image <ID> company_logo ./assets/new-logo.png
 ```
 
-Run `replace-image` only with a clean local SML diff; the command refuses
-pending edits before its authoritative post-write refresh can overwrite them.
+`replace-image` remains a clean-diff-only command; it refuses pending edits
+before its authoritative post-write refresh can overwrite them.
 
 `fit="stretch"` and `fit="contain"` are supported. `fit="cover"` remains
 unsupported because Slides exposes `cropProperties` as read-only.
@@ -151,9 +155,10 @@ what shipped in each release.
 - **Layout authoring**: one-shot `Stack`/`Grid` containers, `flex`,
   `h="auto"` text height, reusable `components.sml` + `<Use>` expansion, and
   `content-align-*` — the compiler does the coordinate math.
-- **Image authoring**: public URL or local-file `Image` creation with stretch or
-  contain fitting, Drive upload reuse caching, and explicit contain/stretch
-  geometry pinning for `replace-image`; cover/crop stays unsupported.
+- **Image authoring**: public URL or local-file `Image` creation and normal SML
+  `src`/`fit` edits with stretch or contain fitting, Drive upload reuse caching,
+  and explicit contain/stretch geometry pinning for both image-edit paths;
+  cover/crop stays unsupported.
 - **Visual QA**: `check` downloads rendered slide PNGs, optionally creates a
   labeled two-column contact sheet with `--contact-sheet`, and runs geometry lint
   (overlap, out-of-bounds, likely text overflow) with a NEW / PRE-EXISTING /
@@ -170,12 +175,15 @@ what shipped in each release.
 - **Agent-grade errors and auth**: loud, named errors for unknown or
   conflicting classes; dual-store sessions (Keychain + 0600 file) so
   subprocess agents can authenticate; `auth doctor` for self-rescue.
-- Authored element IDs survive push/pull round trips.
+- Authored element IDs survive push/pull round trips when they meet Google's
+  5–50-character object-ID grammar, are unoccupied, and do not resemble a
+  generated Google/Slidesmith ID (`eNN`, `gNN`, `pNN`, `SLIDES_API…`); other
+  names are sanitized and/or suffixed with a generated ID.
 
 ## Status
 
 Production-hardened through six adversarial review rounds (110 findings fixed
-— see `docs/review/FINDINGS.md`) and three live dogfood campaigns in which
+— see `docs/review/FINDINGS.md`) and four live dogfood campaigns in which
 agent designers built new slides, executed deck-wide restyles, and shipped
 freeform polish on a real presentation. The complete pytest suite and
 `scripts/lint.sh` are clean.

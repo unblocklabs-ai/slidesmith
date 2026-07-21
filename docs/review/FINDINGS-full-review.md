@@ -94,9 +94,9 @@ deferred to a deliberate pass). Loop: fix → re-review until no real defect rem
   delay sequence; non-retryable never sleeps) + batch_update 429 policy (POST path).
 - [x] TG-7 [MEDIUM] keyring malformed-but-valid JSON (list / nonnumeric expires_at) —
   align KeyringSessionStore invalid-token handling with FileSessionStore.
-- [ ] TG-8 [MEDIUM] copy-style UTF-16 replay (copy_requests.py:856) — emoji + combining
+- [x] TG-8 [MEDIUM] copy-style UTF-16 replay (copy_requests.py:856) — emoji + combining
   char across runs/paragraphs, assert every start/end index.
-- [ ] TG-9 [MEDIUM] component duplicate-child-ID rejection (components.py:218).
+- [x] TG-9 [MEDIUM] component duplicate-child-ID rejection (components.py:218).
 - [x] TG-10 [MEDIUM] extreme-contain zero-EMU (pairs with FR-3).
 - [x] TG-11 [MEDIUM] Drive post-upload permission failure cleanup (pairs with FR-4).
 

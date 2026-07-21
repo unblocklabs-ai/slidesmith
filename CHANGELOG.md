@@ -14,6 +14,17 @@ agent-legible: name the command/flag and what an operator can now do.
 
 ## [Unreleased]
 
+_Nothing yet._
+
+## [0.5.0] — 2026-07-21 — Continuity & QA signal
+
+Driven by two more rounds of ranked dogfood feedback (14 items) from an agent
+running a 300+ request stress test on a real deck, then converged through a
+four-lens adversarial holistic review. Closes the documentation, auth-continuity,
+and QA signal-to-noise gaps the stress test exposed, adds selector-based z-order
+and in-place image-source editing, and hardens local-image handling. Tag
+`stage-18`. 634 tests.
+
 ### Added
 - Browser OAuth login now preserves a successful access-token-only session when
   Google withholds a refresh token, reports its roughly one-hour lifetime, and
@@ -63,8 +74,7 @@ agent-legible: name the command/flag and what an operator can now do.
   authored geometry, including source aspect ratios that differ from the box.
 - Setting a new `src` (optionally with `fit`) on an existing pulled `<Image>`
   now emits a visible image replacement with the same geometry pinning and
-  local-asset cache reuse
-  as `replace-image`.
+  local-asset cache reuse as `replace-image`.
 - Image replacement persistence verification now compares refreshed `sourceUrl`
   when Google returns it and warns when the replacement did not persist.
 - Push-time remote `fit="stretch"` dimension-fetch failures now fall back to
@@ -177,7 +187,8 @@ Tags `stage-1` … `stage-6`. The living-deck co-editing core.
 Descends from think41/extrasuite's extraslide (MIT — see `NOTICE`), heavily
 rewritten.
 
-[Unreleased]: https://github.com/unblocklabs-ai/slidesmith/compare/stage-15-roadmap-review-converged...HEAD
+[Unreleased]: https://github.com/unblocklabs-ai/slidesmith/compare/stage-18-continuity-and-qa-signal...HEAD
+[0.5.0]: https://github.com/unblocklabs-ai/slidesmith/releases/tag/stage-18-continuity-and-qa-signal
 [0.4.0]: https://github.com/unblocklabs-ai/slidesmith/releases/tag/stage-15-roadmap-review-converged
 [0.3.0]: https://github.com/unblocklabs-ai/slidesmith/releases/tag/stage-12-media-and-gpt-review
 [0.2.0]: https://github.com/unblocklabs-ai/slidesmith/releases/tag/stage-9-one-package

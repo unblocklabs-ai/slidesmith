@@ -237,8 +237,8 @@ def _compile_stack(
     if distribute not in {"none", "space-between"}:
         raise ValueError(f"{label}: distribute must be 'none' or 'space-between'")
 
-    gap = _number_attr(stack, "gap", default=0)
-    padding = _number_attr(stack, "padding", default=0)
+    gap = _number_attr(stack, "gap")
+    padding = _number_attr(stack, "padding")
     if gap < 0 or padding < 0:
         raise ValueError(f"{label}: gap and padding cannot be negative")
 
@@ -349,7 +349,7 @@ def _compile_grid(
     columns = int(columns_float)
     if columns <= 0 or columns_float != columns:
         raise ValueError(f"{label}: columns must be a positive integer")
-    gap = _number_attr(grid, "gap", default=0)
+    gap = _number_attr(grid, "gap")
     if gap < 0:
         raise ValueError(f"{label}: gap cannot be negative")
 
@@ -569,9 +569,9 @@ def _flex(child: ET.Element, container_tag: str) -> float | None:
     return flex
 
 
-def _number_attr(element: ET.Element, name: str, default: float) -> float:
+def _number_attr(element: ET.Element, name: str) -> float:
     value = element.get(name)
-    return default if value is None else _parse_number(value, element, name)
+    return 0 if value is None else _parse_number(value, element, name)
 
 
 def _required_number_attr(

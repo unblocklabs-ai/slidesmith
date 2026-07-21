@@ -207,7 +207,6 @@ def _is_number(value: str) -> bool:
 
 class _QueryParser:
     def __init__(self, query: str) -> None:
-        self.query = query
         self.tokens = _tokenize(query)
         self.index = 0
 

@@ -76,9 +76,6 @@ def image_source_kind(source: str) -> Literal["local", "remote"]:
 
 def resolve_local_image_path(workspace: Path, source: str) -> Path:
     """Resolve a local source relative to the presentation workspace root."""
-    if image_source_kind(source) != "local":
-        raise ValueError(f"Image source is not local: {source!r}")
-
     parsed = urllib.parse.urlsplit(source)
     if parsed.scheme.lower() == "file":
         path = Path(urllib.parse.unquote(parsed.path))

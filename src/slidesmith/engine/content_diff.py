@@ -1033,7 +1033,7 @@ def get_effective_position(
     elif not allow_remote_image_fetch:
         return position
     else:
-        pixel_width, pixel_height = _fetch_image_dimensions(elem.src)
+        pixel_width, pixel_height = fetch_image_dimensions(elem.src)
     if pixel_width <= 0 or pixel_height <= 0:
         raise ValueError(
             f"Could not determine positive pixel dimensions for Image element "
@@ -1048,11 +1048,6 @@ def get_effective_position(
     elif image_aspect < frame_aspect:
         contained["w"] = height * image_aspect
     return contained
-
-
-def _fetch_image_dimensions(url: str) -> tuple[int, int]:
-    """Download an authored image through the shared constrained fetcher."""
-    return fetch_image_dimensions(url)
 
 
 def _is_copy_by_missing_dimensions(elem: ParsedElement) -> bool:

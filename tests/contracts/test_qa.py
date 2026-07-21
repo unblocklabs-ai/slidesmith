@@ -660,7 +660,7 @@ def test_cli_no_thumbnails_does_not_fetch_remote_contain_dimensions(
         calls.append(url)
         return (400, 200)
 
-    monkeypatch.setattr(content_diff, "_fetch_image_dimensions", record_fetch)
+    monkeypatch.setattr(content_diff, "fetch_image_dimensions", record_fetch)
 
     cli.main(["check", str(qa_folder), "--no-thumbnails"])
 
@@ -682,7 +682,7 @@ def test_diff_does_not_fetch_remote_contain_dimensions(
         calls.append(url)
         return (400, 200)
 
-    monkeypatch.setattr(content_diff, "_fetch_image_dimensions", record_fetch)
+    monkeypatch.setattr(content_diff, "fetch_image_dimensions", record_fetch)
 
     requests = diff_folder(qa_folder)
 
@@ -709,7 +709,7 @@ def test_push_preflight_does_not_fetch_remote_contain_dimensions(
         calls.append(url)
         return (400, 200)
 
-    monkeypatch.setattr(content_diff, "_fetch_image_dimensions", record_fetch)
+    monkeypatch.setattr(content_diff, "fetch_image_dimensions", record_fetch)
 
     push_preflight(qa_folder, output=lambda _message: None)
 

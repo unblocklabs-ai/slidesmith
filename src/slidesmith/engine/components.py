@@ -176,9 +176,7 @@ def _derive_slots(
     required_by_name: dict[str, bool] = {}
     for value in _template_values(body):
         matches = tuple(_SLOT.finditer(value))
-        if ("{{" in value or "}}" in value) and not _placeholders_cover_braces(
-            value, matches
-        ):
+        if ("{{" in value or "}}" in value) and not _placeholders_cover_braces(value):
             raise ValueError(
                 f"Component '{component_name}' has a malformed slot placeholder in {value!r}"
             )
@@ -203,7 +201,7 @@ def _template_values(body: tuple[ET.Element, ...]):
                 yield element.tail
 
 
-def _placeholders_cover_braces(value: str, matches: tuple[re.Match[str], ...]) -> bool:
+def _placeholders_cover_braces(value: str) -> bool:
     without_placeholders = _SLOT.sub("", value)
     return "{{" not in without_placeholders and "}}" not in without_placeholders
 

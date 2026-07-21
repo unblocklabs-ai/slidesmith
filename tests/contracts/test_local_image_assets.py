@@ -678,7 +678,7 @@ async def test_local_contain_reads_dimensions_with_pillow_without_network(
     _write_png(folder)
     _append_local_image(folder, fit="contain", geometry='x="1" y="2" w="100" h="100"')
     monkeypatch.setattr(
-        "slidesmith.engine.content_diff._fetch_image_dimensions",
+        "slidesmith.engine.content_diff.fetch_image_dimensions",
         lambda _url: pytest.fail("local contain must not fetch over the network"),
     )
 

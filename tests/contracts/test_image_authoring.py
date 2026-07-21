@@ -144,7 +144,7 @@ def _stub_fetch_response(
 def test_contain_fetch_rejects_loopback_redirect_probe() -> None:
     with _loopback_redirect_probe() as (url, paths):
         with pytest.raises(ValueError, match="non-public"):
-            content_diff._fetch_image_dimensions(url)
+            content_diff.fetch_image_dimensions(url)
 
     assert paths == []
 
@@ -353,7 +353,7 @@ def test_contain_uses_stubbed_dimensions_and_anchors_top_left(
         calls.append(url)
         return pixels
 
-    monkeypatch.setattr(content_diff, "_fetch_image_dimensions", stub_dimensions)
+    monkeypatch.setattr(content_diff, "fetch_image_dimensions", stub_dimensions)
     result = _diff(
         '<Slide><Image id="hero_image" src="https://example.com/hero.png" '
         'fit="contain" x="10" y="20" w="200" h="100"/></Slide>'
@@ -387,7 +387,7 @@ def test_extreme_contain_ratios_keep_positive_finite_request_geometry(
     monkeypatch: pytest.MonkeyPatch,
     pixels: tuple[int, int],
 ) -> None:
-    monkeypatch.setattr(content_diff, "_fetch_image_dimensions", lambda _url: pixels)
+    monkeypatch.setattr(content_diff, "fetch_image_dimensions", lambda _url: pixels)
     result = _diff(
         '<Slide><Image id="hero_image" src="https://example.com/hero.png" '
         'fit="contain" x="1" y="2" w="0.1" h="0.1"/></Slide>'

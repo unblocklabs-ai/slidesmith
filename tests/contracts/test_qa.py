@@ -399,7 +399,7 @@ def test_push_preflight_warn_reports_and_proceeds_with_per_slide(
     assert runs == [None]
     captured = capsys.readouterr()
     assert "[NEW] [WARNING] OUT_OF_BOUNDS" in captured.err
-    assert "push preflight warning: 1 new finding(s); proceeding" in captured.err
+    assert "warning: push preflight: 1 new finding(s); proceeding" in captured.err
 
 
 def test_cli_accept_and_unaccept_round_trip_through_workspace_sidecar(

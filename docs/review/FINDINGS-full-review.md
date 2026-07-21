@@ -34,7 +34,7 @@ deferred to a deliberate pass). Loop: fix → re-review until no real defect rem
   (cli.py:227 vs generic handler). Handle ConflictError centrally → exit 2.
 - [x] FR-9 [MEDIUM] `push --per-slide` progress goes to stdout, unlike all other
   diagnostics on stderr (cli.py:204). Move progress to stderr; stdout = final result.
-- [ ] FR-10 [LOW] Preflight warning uses `push preflight warning:` not canonical
+- [x] FR-10 [LOW] Preflight warning uses `push preflight warning:` not canonical
   `warning:` prefix (cli.py:193). Normalize; update the test that locks the wording.
 - [ ] FR-11 [LOW] `download_thumbnails` hard-codes `print` while sibling QA APIs inject
   an `output` callback (qa.py:64). Add output callback.

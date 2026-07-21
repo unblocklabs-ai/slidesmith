@@ -193,7 +193,7 @@ def cmd_push(args: Any) -> None:
             sys.exit(1)
         if new_findings:
             print(
-                f"push preflight warning: {new_findings} new finding(s); proceeding",
+                f"warning: push preflight: {new_findings} new finding(s); proceeding",
                 file=sys.stderr,
             )
 

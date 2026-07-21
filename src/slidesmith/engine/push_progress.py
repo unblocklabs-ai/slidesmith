@@ -79,6 +79,8 @@ def partition_requests_by_slide(
         if change.slide_index and change.slide_index not in slide_id_mapping
     }
     grouped: dict[str, list[dict[str, Any]]] = {}
+    new_slide_indices: set[str] = set()
+    positioned_new_slide_order: dict[str, int] = {}
 
     for request in requests:
         if len(request) != 1:
@@ -95,9 +97,14 @@ def partition_requests_by_slide(
                     "Cannot map createSlide request to a local slide"
                 )
             missing_slide_indices.remove(slide_index)
+            new_slide_indices.add(slide_index)
             if isinstance(page_id, str) and page_id:
                 slide_by_page_id[page_id] = slide_index
                 slide_by_object_id[page_id] = slide_index
+            if "insertionIndex" in body:
+                positioned_new_slide_order[slide_index] = len(
+                    positioned_new_slide_order
+                )
         else:
             slide_index = _request_slide_index(
                 body, slide_by_page_id, slide_by_object_id
@@ -112,6 +119,25 @@ def partition_requests_by_slide(
         grouped.setdefault(slide_index, []).append(request)
         _record_created_objects(body, slide_index, slide_by_object_id)
 
+    numeric_order = sorted(grouped, key=_slide_sort_key)
+    new_order = [
+        slide_index
+        for slide_index, _ in sorted(
+            positioned_new_slide_order.items(), key=lambda item: item[1]
+        )
+    ]
+    new_order.extend(
+        slide_index
+        for slide_index in numeric_order
+        if slide_index in new_slide_indices
+        and slide_index not in positioned_new_slide_order
+    )
+    new_order_iter = iter(new_order)
+    ordered_slide_indices = [
+        next(new_order_iter) if slide_index in new_slide_indices else slide_index
+        for slide_index in numeric_order
+    ]
+
     return [
         SlideBatch(
             slide_index=slide_index,
@@ -120,7 +146,7 @@ def partition_requests_by_slide(
                 folder_path, slide_index, grouped[slide_index]
             ),
         )
-        for slide_index in sorted(grouped, key=_slide_sort_key)
+        for slide_index in ordered_slide_indices
     ]
 
 

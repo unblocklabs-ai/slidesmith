@@ -54,10 +54,12 @@ slidesmith check <id> --contact-sheet   # download renders + geometry QA
 slidesmith --version                    # print the installed package version
 ```
 
-To create a slide, add `slides/NN/content.sml` with a `<Slide>` root and at
-least one element change targeting it: a new-ID element or a copy of a pulled
-element. An empty folder produces nothing; `diff` creates the slide, Google
-appends it, and the next pull renumbers the local folder.
+To create a slide, scaffold it locally with `slidesmith add-slide <id>`:
+`--after N` inserts after existing 1-based slide `N`, `--at N` inserts before
+1-based position `N`, and `--blank` creates an empty root. `--layout title-body`
+is the built-in minimal template. With neither position flag, the slide
+appends at the end. The command only writes local SML; run `diff` and `push`
+afterward. A follow-up pull renumbers folders to the actual deck order.
 
 Push diagnostics distinguish actionable `warning:` lines from lower-severity
 `notice:` lines and render warnings first.
@@ -66,6 +68,22 @@ Push diagnostics distinguish actionable `warning:` lines from lower-severity
 them**; the offline geometry lint can't see visual intent, only overlaps/overflow.
 
 ## Core capabilities
+
+### Add a slide
+
+```bash
+slidesmith add-slide <id> --after 2 --layout title-body
+slidesmith add-slide <id> --at 1 --blank --dry-run
+```
+
+The command is local-only. User positions are 1-based and become the API's
+0-based `insertionIndex`; omitting both flags appends. The intent is stored in
+the authoring-only `insertion-index` attribute on the new `<Slide>` root and is
+omitted by pull-generated roots, so a no-edit post-push diff is zero. The next
+pull renumbers `slides/NN` folders to actual deck order. Safe authored IDs are
+5–50 characters and must not start with reserved `new_`. Position bounds use
+only pulled slides: pending insertion-index scaffolds do not increase the
+deck length, so a four-slide deck accepts `--at 1..5` and rejects `--at 6`.
 
 ### Semantic selection (avoid ID-scripting)
 ```bash

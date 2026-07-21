@@ -35,6 +35,7 @@ from slidesmith.engine.assets import image_source_kind
 from slidesmith.engine.image_fetch import redact_image_url
 
 QA_ACCEPT_CLASS_PREFIX = "qa-accept-"
+SLIDE_INSERTION_INDEX_ATTRIBUTE = "insertion-index"
 
 
 @dataclass
@@ -121,21 +122,22 @@ class ParsedElement:
         return self.x is not None
 
 
-def parse_slide_content(
+@dataclass(frozen=True)
+class SlideMetadata:
+    """Authoring-only metadata carried by a ``<Slide>`` root."""
+
+    slide_id: str | None = None
+    insertion_index: int | None = None
+
+
+def parse_slide_document(
     content: str,
     *,
     components: ComponentLibrary | None = None,
-) -> list[ParsedElement]:
-    """Parse a slide's content.sml into structured elements.
-
-    Args:
-        content: The content.sml XML string (should have <Slide> root)
-
-    Returns:
-        List of root ParsedElement objects (children of <Slide>)
-    """
+) -> tuple[list[ParsedElement], SlideMetadata]:
+    """Parse a slide and return its page elements plus root authoring metadata."""
     if not content.strip():
-        return []
+        return [], SlideMetadata()
 
     content = compile_layout(content, components=components)
 
@@ -149,16 +151,58 @@ def parse_slide_content(
         try:
             wrapped = f"<Root>{content}</Root>"
             root = DefusedET.fromstring(wrapped)
-            return [_parse_element(child, None) for child in root]
+            return [_parse_element(child, None) for child in root], SlideMetadata()
         except (ET.ParseError, DefusedXmlException) as e:
             raise ValueError(f"Invalid content.sml XML: {e}") from e
 
-    # If root is <Slide>, parse its children
     if root.tag == "Slide":
-        return [_parse_element(child, None) for child in root]
+        return (
+            [_parse_element(child, None) for child in root],
+            _parse_slide_metadata(root),
+        )
 
     # Otherwise treat root as a single element (shouldn't happen with new format)
-    return [_parse_element(root, None)]
+    return [_parse_element(root, None)], SlideMetadata()
+
+
+def _parse_slide_metadata(root: ET.Element) -> SlideMetadata:
+    """Validate and read the authoring-only attributes on a Slide root."""
+    raw_index = root.get(SLIDE_INSERTION_INDEX_ATTRIBUTE)
+    if raw_index is None:
+        return SlideMetadata(slide_id=root.get("id"))
+    try:
+        insertion_index = int(raw_index)
+    except ValueError as exc:
+        raise ValueError(
+            f"Invalid {SLIDE_INSERTION_INDEX_ATTRIBUTE} value {raw_index!r}: "
+            "expected a non-negative integer"
+        ) from exc
+    if insertion_index < 0:
+        raise ValueError(
+            f"Invalid {SLIDE_INSERTION_INDEX_ATTRIBUTE} value {raw_index!r}: "
+            "expected a non-negative integer"
+        )
+    return SlideMetadata(
+        slide_id=root.get("id"),
+        insertion_index=insertion_index,
+    )
+
+
+def parse_slide_content(
+    content: str,
+    *,
+    components: ComponentLibrary | None = None,
+) -> list[ParsedElement]:
+    """Parse a slide's content.sml into structured elements.
+
+    Args:
+        content: The content.sml XML string (should have <Slide> root)
+
+    Returns:
+        List of root ParsedElement objects (children of <Slide>)
+    """
+    elements, _ = parse_slide_document(content, components=components)
+    return elements
 
 
 def _parse_element(elem: ET.Element, parent_id: str | None) -> ParsedElement:

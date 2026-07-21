@@ -79,6 +79,32 @@ def cmd_replace_image(args: Any) -> None:
     asyncio.run(run())
 
 
+def cmd_add_slide(args: Any) -> None:
+    from slidesmith.engine.slide_scaffold import scaffold_slide
+
+    result = scaffold_slide(
+        args.folder,
+        after=args.after,
+        at=args.at,
+        layout=args.layout,
+        blank=args.blank,
+        slide_id=args.slide_id,
+        dry_run=args.dry_run,
+    )
+    position = (
+        f"insertionIndex={result.insertion_index}"
+        if result.insertion_index is not None
+        else "append at end"
+    )
+    action = "would scaffold" if result.dry_run else "scaffolded"
+    print(
+        f"{action} {result.content_path} "
+        f"(id={result.slide_id}, layout={result.layout}, {position})."
+    )
+    if result.dry_run:
+        print("Dry run: no files written.")
+
+
 def cmd_reorder(args: Any) -> None:
     from slidesmith.engine.client import SlidesClient
 
@@ -196,6 +222,54 @@ def register_editing_commands(
     subparsers: argparse._SubParsersAction,
     handlers: dict[str, Any],
 ) -> None:
+    sas = subparsers.add_parser(
+        "add-slide",
+        help="Scaffold a new local slide for the next diff/push",
+        epilog=(
+            "This is local-only: it writes a new slides/NN/content.sml file; "
+            "run diff and push afterward. --after N means after existing slide N; "
+            "--at N means before the 1-based slide position N."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    sas.add_argument("folder", metavar="ID", help="Pulled presentation folder")
+    position = sas.add_mutually_exclusive_group()
+    position.add_argument(
+        "--after",
+        type=int,
+        metavar="N",
+        help="Insert after existing 1-based slide N",
+    )
+    position.add_argument(
+        "--at",
+        type=int,
+        metavar="N",
+        help="Insert before 1-based slide position N",
+    )
+    layout = sas.add_mutually_exclusive_group()
+    layout.add_argument(
+        "--layout",
+        choices=("title-body",),
+        help="Use a built-in starter layout (currently: title-body)",
+    )
+    layout.add_argument(
+        "--blank",
+        action="store_true",
+        help="Create an empty Slide root (the default)",
+    )
+    sas.add_argument(
+        "--id",
+        dest="slide_id",
+        metavar="SLIDE_ID",
+        help="Safe authored slide ID (5-50 characters; never starts with new_)",
+    )
+    sas.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print the scaffold and position without writing files",
+    )
+    sas.set_defaults(func=handlers["cmd_add_slide"])
+
     sri = subparsers.add_parser(
         "replace-image",
         help="Replace an existing image from a local file or public URL",

@@ -30,7 +30,9 @@ from slidesmith.engine.content_parser import (  # noqa: F401
     ElementStyles,
     ParsedElement,
     flatten_elements,
+    parse_slide_document,
     parse_slide_content,
+    SlideMetadata,
     validate_authored_image_geometry,
 )
 from slidesmith.engine.diff_model import (
@@ -71,6 +73,7 @@ def diff_presentation(
     edited_slides: dict[str, list[ParsedElement]],
     pristine_styles: dict[str, dict[str, Any]],
     *,
+    slide_metadata: dict[str, SlideMetadata] | None = None,
     workspace_root: Path | None = None,
     allow_remote_image_fetch: bool = False,
     fetch_remote_stretch_dimensions: bool = False,
@@ -92,6 +95,21 @@ def diff_presentation(
         DiffResult with all detected changes
     """
     result = DiffResult(pristine_styles=pristine_styles)
+
+    # A root ID makes an empty newly authored slide observable. Existing
+    # implicit-folder workflows without a root ID continue to be discovered by
+    # their page-element CREATE/COPY changes below.
+    for slide_index, metadata in (slide_metadata or {}).items():
+        if slide_index in pristine_slides or not metadata.slide_id:
+            continue
+        result.changes.append(
+            Change(
+                change_type=ChangeType.CREATE_SLIDE,
+                target_id=metadata.slide_id,
+                slide_index=slide_index,
+                insertion_index=metadata.insertion_index,
+            )
+        )
 
     # Flatten pristine elements
     pristine_elements: dict[str, ParsedElement] = {}
@@ -822,12 +840,13 @@ def diff_slide_content(
         List of changes for this slide
     """
     pristine_elements = parse_slide_content(pristine_content)
-    edited_elements = parse_slide_content(edited_content)
+    edited_elements, edited_metadata = parse_slide_document(edited_content)
 
     result = diff_presentation(
         {slide_index: pristine_elements},
         {slide_index: edited_elements},
         pristine_styles,
+        slide_metadata={slide_index: edited_metadata},
     )
 
     return result.changes

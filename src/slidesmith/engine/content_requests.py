@@ -30,6 +30,7 @@ from slidesmith.engine.text_requests import (
 )
 
 _BATCH_CHANGE_TYPES = (
+    ChangeType.CREATE_SLIDE,
     ChangeType.DELETE,
     ChangeType.MOVE,
     ChangeType.IMAGE_UPDATE,
@@ -94,12 +95,64 @@ def _emit_new_slide_requests(
     unique_suffix: Callable[[], str],
 ) -> None:
     """Create missing target slides before emitting their element requests."""
-    new_slide_indices = {
-        change.slide_index
+    new_slide_changes = [
+        change
         for change in copies + creates
         if change.slide_index and change.slide_index not in slide_ids
+    ]
+    new_slide_indices = {
+        change.slide_index for change in new_slide_changes if change.slide_index
     }
-    for slide_index in sorted(new_slide_indices, key=_slide_sort_key):
+    insertion_indices: dict[str, int | None] = {}
+    for change in new_slide_changes:
+        if not change.slide_index or change.insertion_index is None:
+            continue
+        existing = insertion_indices.get(change.slide_index)
+        if existing is not None and existing != change.insertion_index:
+            raise ValueError(
+                f"Conflicting insertionIndex values for new slide "
+                f"{change.slide_index}: {existing} and {change.insertion_index}"
+            )
+        insertion_indices[change.slide_index] = change.insertion_index
+
+    positioned = sorted(
+        (
+            (slide_index, insertion_indices[slide_index])
+            for slide_index in new_slide_indices
+            if slide_index in insertion_indices
+        ),
+        key=lambda item: (item[1], _slide_sort_key(item[0])),
+    )
+    unpositioned = sorted(
+        (
+            slide_index
+            for slide_index in new_slide_indices
+            if slide_index not in insertion_indices
+        ),
+        key=_slide_sort_key,
+    )
+
+    # insertionIndex is evaluated against the deck as it exists at each API
+    # request. A request whose desired position is after an earlier insertion
+    # therefore moves right once for every earlier target at or before it.
+    for position, (slide_index, desired_index) in enumerate(positioned):
+        while True:
+            suffix = unique_suffix()
+            new_slide_id = f"new_slide_{slide_index}_{suffix}"
+            if new_slide_id not in reserved_object_ids:
+                break
+        adjusted_index = desired_index + sum(
+            1
+            for _, earlier_index in positioned[:position]
+            if earlier_index <= desired_index
+        )
+        requests.append(_create_slide_request(new_slide_id, adjusted_index))
+        slide_ids[slide_index] = new_slide_id
+        reserved_object_ids.add(new_slide_id)
+
+    # Preserve the historical append order exactly for slides without an
+    # explicit position, including the legacy implicit-folder workflow.
+    for slide_index in unpositioned:
         while True:
             suffix = unique_suffix()
             new_slide_id = f"new_slide_{slide_index}_{suffix}"
@@ -404,7 +457,7 @@ def generate_batch_requests(
     _emit_new_slide_requests(
         requests,
         buckets[ChangeType.COPY],
-        buckets[ChangeType.CREATE],
+        buckets[ChangeType.CREATE] + buckets[ChangeType.CREATE_SLIDE],
         slide_ids,
         reserved_object_ids,
         id_allocator.unique_suffix,

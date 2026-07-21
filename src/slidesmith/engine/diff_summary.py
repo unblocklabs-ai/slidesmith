@@ -27,6 +27,7 @@ def format_diff_summary(diff_result: DiffResult, request_count: int) -> str:
             lines.append(f"  DELETE {', '.join(deleted_ids)}")
 
         for change_type in (
+            ChangeType.CREATE_SLIDE,
             ChangeType.CREATE,
             ChangeType.MOVE,
             ChangeType.IMAGE_UPDATE,
@@ -52,6 +53,14 @@ def _slide_sort_key(slide_index: str) -> tuple[int, int | str]:
 
 
 def _format_summary_change(change: Change) -> str:
+    if change.change_type == ChangeType.CREATE_SLIDE:
+        position = (
+            f" insertionIndex={change.insertion_index}"
+            if change.insertion_index is not None
+            else " append"
+        )
+        return f"CREATE SLIDE {change.target_id}{position}"
+
     if change.change_type == ChangeType.CREATE:
         tag = change.tag or "Element"
         details = f" ({tag}{_format_frame(change.new_position)})"

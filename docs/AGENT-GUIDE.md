@@ -810,28 +810,45 @@ the source image when exact fidelity matters.
 
 ## Creating a new slide
 
-Slide creation is implicit in the diff workflow; there is no separate CLI
-command. Create a new `slides/NN/content.sml` folder and put a `<Slide>` root
-inside it with at least one element change targeting that slide: either a
-new-ID element or a copy of a pulled element. An empty folder produces no diff
-because slides are discovered from their elements' slide index.
+Use the local-only scaffold command, then the normal diff/push loop:
 
-For example, `slides/12/content.sml` can contain:
-
-```xml
-<Slide>
-  <TextBox id="launch_title" x="60" y="60" w="840" h="80">
-    <P>Launch plan</P>
-  </TextBox>
-</Slide>
+```bash
+slidesmith add-slide <ID> --after 2 --layout title-body
+slidesmith diff <ID> --summary
+slidesmith push <ID>
 ```
 
-`diff` emits a `createSlide` request before the element creates. The new slide
-always appends to the end of the deck: the folder number is not an insertion
-position because the request has no `insertionIndex`. After the push, the next
-pull renumbers the local slide folders to match the deck order. Do not author
-element IDs beginning with `new_`; that prefix is reserved for Slidesmith's
-generated slide/object IDs and is stripped during pull.
+`<ID>` is the pulled presentation folder. `--after N` means after existing
+1-based slide `N`; `--at N` means before 1-based position `N`. Both become the
+Google Slides API's 0-based `insertionIndex` (`--after 2` and `--at 3` both
+become `2`). If neither is supplied, the new slide uses the existing
+append-at-end behavior and omits `insertionIndex`. `--blank` creates an empty
+slide; the built-in `--layout title-body` creates minimal title/body text boxes.
+`--dry-run` writes nothing. `--id` accepts a 5–50 character authored ID using
+letters, digits, `_`, or `-`, and refuses IDs beginning with reserved `new_`.
+
+Position bounds use only the original pulled deck: pending scaffold folders
+whose root has `insertion-index` are not counted. With `M` original slides,
+`--after` accepts `1..M` and `--at` accepts `1..M+1` (the latter is an explicit
+append position); larger values are rejected during scaffolding. The stored
+attribute is still the 0-based original-deck coordinate, and only request
+generation shifts later positions for earlier inserts in the same push.
+
+The command writes the next free `slides/NN/content.sml` folder and stores a
+requested position only in the authoring-only `<Slide insertion-index="…">`
+attribute. The parser turns that attribute into the slide's create change; pull
+regenerates `<Slide>` roots from Google without it, so the intent cannot create
+a spurious diff after a successful push. When one push creates several
+positioned slides, requests are emitted by requested original-deck position;
+each later request adds one to its index for every earlier insertion at or
+before that target. This is necessary because each API index is evaluated
+against the deck state at that request. A follow-up pull renumbers the local
+folders to the real deck order.
+
+The legacy implicit workflow remains supported: a manually created new folder
+with a new-ID element still creates a slide at the end when no insertion intent
+is present. Do not author IDs beginning with `new_`; that prefix is reserved for
+Slidesmith's generated slide/object IDs and is stripped during pull.
 
 ## Layout authoring
 

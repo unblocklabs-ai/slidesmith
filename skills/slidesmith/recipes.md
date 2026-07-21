@@ -116,27 +116,31 @@ slidesmith diff "$D" --summary     # now shows only real changes
 ```
 
 ## 10. Add a new slide
-There is no separate slide-creation command. Create a new slide folder with a
-`<Slide>` root and at least one element change targeting it: either a new-ID
-element or a copy of a pulled element. An empty folder produces nothing:
+Scaffold locally, choose a real deck position, then preview and push:
 ```bash
-mkdir -p "$D/slides/12"
-$EDITOR "$D/slides/12/content.sml"
-```
-```xml
-<Slide>
-  <TextBox id="launch_title" x="60" y="60" w="840" h="80">
-    <P>Launch plan</P>
-  </TextBox>
-</Slide>
-```
-```bash
+slidesmith add-slide "$D" --after 2 --layout title-body
 slidesmith diff "$D" --summary
 slidesmith push "$D"
 ```
-The folder number identifies the local slide index, but the new slide always
-appends at the end because `createSlide` has no
-`insertionIndex`; the next pull renumbers folders to match deck order.
+Use `--at N` to insert before the 1-based slide position `N`, or `--blank` for
+an empty `<Slide>` root. With neither `--after` nor `--at`, the new slide
+appends at the end, preserving the historical implicit-folder behavior.
+`--dry-run` prints the folder, safe authored slide ID, and intended API
+`insertionIndex` without writing. IDs must use Google's 5–50 character
+authored-ID grammar and may not start with reserved `new_`.
+
+The command writes `slides/NN/content.sml` and records a requested position in
+the authoring-only root attribute `insertion-index`; it never pushes by itself.
+The API index is 0-based: `--after 2` records `2`, while `--at 3` records `2`.
+Bounds are checked against the original pulled deck, not other pending
+scaffolds: with four original slides, `--at 1..5` is valid and `--at 6` is
+rejected. The stored index remains in original-deck coordinates; only the
+single request generator shifts later indices for earlier inserts in one push.
+When one push creates several positioned slides, requests are ordered by their
+requested original-deck position and each later index is shifted right for
+earlier insertions at or before it. A subsequent pull renumbers `slides/NN`
+folders to the actual deck order and removes the authoring-only intent, so a
+clean post-push diff is zero.
 
 ## 11. Send a background to back
 `reorder` changes live top-level z-order; preview first, then apply:

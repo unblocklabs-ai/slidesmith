@@ -17,6 +17,10 @@ from slidesmith.engine.content_parser import (
 class ChangeType(Enum):
     """Types of changes detected."""
 
+    # A new slide root was authored. The request generator emits createSlide
+    # for this change before page-element creates on the same slide.
+    CREATE_SLIDE = "create_slide"
+
     # Element was deleted
     DELETE = "delete"
 
@@ -127,6 +131,10 @@ class Change:
 
     # Slide index where this change occurs
     slide_index: str | None = None
+
+    # Authoring-only target position for a new slide. This is a 0-based Google
+    # Slides insertionIndex; None retains the historical append-at-end path.
+    insertion_index: int | None = None
 
     # For COPY: slide containing the pristine source element.
     source_slide_index: str | None = None

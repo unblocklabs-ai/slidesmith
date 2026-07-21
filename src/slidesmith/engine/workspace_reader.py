@@ -11,7 +11,7 @@ from typing import Any
 from slidesmith.engine.bounds import Transform
 from slidesmith.engine.components import load_components
 from slidesmith.engine.conflicts import index_presentation, iter_page_elements
-from slidesmith.engine.content_parser import parse_slide_content
+from slidesmith.engine.content_parser import SlideMetadata, parse_slide_content, parse_slide_document
 from slidesmith.engine.json_utils import read_json
 from slidesmith.engine.workspace_layout import (
     PRISTINE_BASE_FILE,
@@ -58,6 +58,25 @@ def _read_current_slides(folder_path: Path) -> dict[str, list[Any]]:
                     content, components=components
                 )
 
+    return result
+
+
+def _read_current_slide_metadata(folder_path: Path) -> dict[str, SlideMetadata]:
+    """Read authoring-only metadata from current Slide roots."""
+    slides_dir = folder_path / SLIDES_DIR
+    components = load_components(folder_path)
+    result: dict[str, SlideMetadata] = {}
+    if not slides_dir.exists():
+        return result
+
+    for slide_folder in sorted(slides_dir.iterdir()):
+        if not slide_folder.is_dir():
+            continue
+        content_file = slide_folder / "content.sml"
+        if content_file.exists():
+            content = content_file.read_text(encoding="utf-8")
+            _, metadata = parse_slide_document(content, components=components)
+            result[slide_folder.name] = metadata
     return result
 
 

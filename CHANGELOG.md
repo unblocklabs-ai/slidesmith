@@ -23,9 +23,15 @@ agent-legible: name the command/flag and what an operator can now do.
   IDs when present, so identified untouched findings remain `PRE-EXISTING` when
   earlier slides are inserted or deleted; freshly authored id-less slides and
   pre-slide-ID baselines use positional fallback until a pull assigns an ID.
+- `add-slide` now validates `--after`/`--at` against original pulled slides
+  even when other pending scaffolds exist, shifts positioned inserts once in
+  request order, and sizes the title/body starter to the deck page.
 
 ### Added
 
+- **`slidesmith add-slide`** now scaffolds blank or title/body slides locally
+  with `--after`/`--at` deck positioning and preserves append-at-end behavior by
+  default.
 - Bare `GOG_ACCESS_TOKEN` and `GOOGLE_WORKSPACE_CLI_TOKEN` commands now perform
   a best-effort startup tokeninfo check. Invalid or expired tokens fail before
   deck work with gog refresh-and-re-export guidance; valid responses record

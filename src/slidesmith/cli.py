@@ -24,6 +24,7 @@ from slidesmith.cli_commands.core import (
 from slidesmith.cli_commands.editing import (
     SELECTOR_GRAMMAR,
     cmd_apply,
+    cmd_add_slide,
     cmd_fmt,
     cmd_replace_class,
     cmd_replace_image,
@@ -50,6 +51,7 @@ __all__ = [
     "asyncio",
     "build_parser",
     "cmd_apply",
+    "cmd_add_slide",
     "cmd_auth_doctor",
     "cmd_auth_login",
     "cmd_check",

@@ -62,6 +62,7 @@ from slidesmith.engine.workspace_reader import (
     _pristine_element_metadata,
     _read_base_raw,
     _read_current_slides,
+    _read_current_slide_metadata,
     _read_pristine,
 )
 from slidesmith.engine.z_order import (
@@ -231,6 +232,7 @@ class SlidesClient:
 
         # Read current state
         current_slides = self._read_current_slides(folder_path)
+        current_slide_metadata = _read_current_slide_metadata(folder_path)
         id_mapping = read_json(folder_path / ID_MAPPING_FILE, missing_ok=True)
 
         # Read pristine state
@@ -243,6 +245,7 @@ class SlidesClient:
             pristine_slides,
             current_slides,
             pristine_styles,
+            slide_metadata=current_slide_metadata,
             workspace_root=folder_path,
             allow_remote_image_fetch=allow_remote_image_fetch,
             fetch_remote_stretch_dimensions=fetch_remote_stretch_dimensions,

@@ -65,14 +65,15 @@ def _stretch_intrinsic_box(
     return max(target_w_emu, _MIN_EMU), max(target_h_emu, _MIN_EMU)
 
 
-def _create_slide_request(slide_id: str) -> dict[str, Any]:
+def _create_slide_request(
+    slide_id: str,
+    insertion_index: int | None = None,
+) -> dict[str, Any]:
     """Create a createSlide request."""
-    return {
-        "createSlide": {
-            "objectId": slide_id,
-            # Insert at the end (no insertionIndex means end)
-        }
-    }
+    body: dict[str, Any] = {"objectId": slide_id}
+    if insertion_index is not None:
+        body["insertionIndex"] = insertion_index
+    return {"createSlide": body}
 
 
 def _create_move_request(

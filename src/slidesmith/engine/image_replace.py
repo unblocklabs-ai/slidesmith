@@ -24,6 +24,7 @@ def _replacement_geometry_requests(
     pixel_width: int,
     pixel_height: int,
     fit: str,
+    target: BoundingBox | None = None,
 ) -> tuple[BoundingBox, dict[str, Any]]:
     """Compute a top-left target and undo Google's centered aspect fit."""
     if old.w <= 0 or old.h <= 0:
@@ -42,10 +43,11 @@ def _replacement_geometry_requests(
 
     centered_x = old.x + (old.w - fitted_w) / 2
     centered_y = old.y + (old.h - fitted_h) / 2
-    if fit == "contain":
-        target = BoundingBox(old.x, old.y, fitted_w, fitted_h)
-    else:
-        target = BoundingBox(old.x, old.y, old.w, old.h)
+    if target is None:
+        if fit == "contain":
+            target = BoundingBox(old.x, old.y, fitted_w, fitted_h)
+        else:
+            target = BoundingBox(old.x, old.y, old.w, old.h)
 
     # replaceImage(CENTER_INSIDE) first produces the centered fitted rectangle.
     # Pre-multiplying this relative affine transform maps that exact rectangle

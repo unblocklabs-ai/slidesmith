@@ -39,6 +39,7 @@ from slidesmith.engine.image_replace import (
     _replacement_image_dimensions,
     resolve_asset_source,
 )
+from slidesmith.engine.id_manager import authored_clean_id
 from slidesmith.engine.persistence import append_persistence_warning
 from slidesmith.engine.push_executor import (
     PerSlideConflictError,
@@ -216,6 +217,7 @@ class SlidesClient:
         *,
         slide: int | None = None,
         allow_remote_image_fetch: bool = False,
+        fetch_remote_stretch_dimensions: bool = False,
     ) -> tuple[DiffResult, list[dict[str, Any]]]:
         """Return semantic changes and requests, offline unless fetch is allowed."""
         folder_path = Path(folder_path)
@@ -238,6 +240,7 @@ class SlidesClient:
             pristine_styles,
             workspace_root=folder_path,
             allow_remote_image_fetch=allow_remote_image_fetch,
+            fetch_remote_stretch_dimensions=fetch_remote_stretch_dimensions,
         )
         if slide is not None:
             slide_index = f"{slide:02d}"
@@ -310,7 +313,9 @@ class SlidesClient:
             raise ValueError("Presentation ID not found in presentation.json")
 
         diff_result, requests = self.diff_with_result(
-            folder_path, allow_remote_image_fetch=True
+            folder_path,
+            allow_remote_image_fetch=True,
+            fetch_remote_stretch_dimensions=True,
         )
 
         if not requests:
@@ -320,7 +325,16 @@ class SlidesClient:
 
         # Diff remains local and leaves authored local paths in preview JSON.
         # Resolve only the outgoing request URLs at push time.
-        await self._resolve_local_asset_requests(folder_path, requests)
+        id_mapping = read_json(folder_path / ID_MAPPING_FILE, missing_ok=True)
+        resolved_image_sources = await self._resolve_local_asset_requests(
+            folder_path, requests
+        )
+        expected_image_sources = self._expected_image_sources(
+            diff_result,
+            requests,
+            id_mapping,
+            resolved_image_sources,
+        )
 
         intended_slides = self._read_current_slides(folder_path)
         intended_change_keys = {
@@ -343,6 +357,7 @@ class SlidesClient:
                 intended_slides=intended_slides,
                 intended_change_keys=intended_change_keys,
                 create_copy_targets=create_copy_targets,
+                expected_image_sources=expected_image_sources,
                 force=force,
                 resume=resume,
                 progress=progress,
@@ -365,9 +380,7 @@ class SlidesClient:
             presentation_id=presentation_id,
             requests=requests,
             base_raw=base_raw,
-            id_mapping=read_json(
-                folder_path / ID_MAPPING_FILE, missing_ok=True
-            ),
+            id_mapping=id_mapping,
             guard_conflicts=not force,
             lock_revision=not force,
         )
@@ -386,6 +399,7 @@ class SlidesClient:
                     intended_change_keys,
                     create_copy_targets,
                     finalized_response,
+                    expected_image_sources=expected_image_sources,
                 )
             ),
             clear_progress=False,
@@ -500,17 +514,72 @@ class SlidesClient:
         self,
         folder_path: Path,
         requests: list[dict[str, Any]],
-    ) -> None:
+    ) -> dict[str, str]:
+        resolved_image_sources: dict[str, str] = {}
         for request in requests:
-            create_image = request.get("createImage")
-            if not isinstance(create_image, dict):
+            image_request = request.get("createImage") or request.get("replaceImage")
+            if not isinstance(image_request, dict):
                 continue
-            source = create_image.get("url")
-            if not isinstance(source, str) or image_source_kind(source) != "local":
+            source = image_request.get("url")
+            if not isinstance(source, str):
                 continue
-            create_image["url"] = await self._resolve_asset_source(
-                folder_path, source
+            if image_source_kind(source) == "local":
+                image_request["url"] = await self._resolve_asset_source(
+                    folder_path, source
+                )
+            object_id_key = (
+                "imageObjectId" if "replaceImage" in request else "objectId"
             )
+            object_id = image_request.get(object_id_key)
+            if isinstance(object_id, str):
+                resolved_image_sources[object_id] = image_request["url"]
+        return resolved_image_sources
+
+    @staticmethod
+    def _expected_image_sources(
+        diff_result: DiffResult,
+        requests: list[dict[str, Any]],
+        id_mapping: dict[str, str],
+        resolved_image_sources: dict[str, str],
+    ) -> dict[tuple[str, str], str]:
+        """Map the URLs actually sent to the clean IDs seen after refresh."""
+        reverse_mapping = {
+            google_id: clean_id for clean_id, google_id in id_mapping.items()
+        }
+        request_clean_ids: dict[str, str] = {}
+        for request in requests:
+            image_request = request.get("createImage") or request.get("replaceImage")
+            if not isinstance(image_request, dict):
+                continue
+            object_id_key = (
+                "imageObjectId" if "replaceImage" in request else "objectId"
+            )
+            object_id = image_request.get(object_id_key)
+            if not isinstance(object_id, str):
+                continue
+            clean_id = reverse_mapping.get(object_id) or authored_clean_id(object_id)
+            if clean_id is not None:
+                request_clean_ids[object_id] = clean_id
+
+        expected: dict[tuple[str, str], str] = {}
+        for change in diff_result.changes:
+            if not change.src:
+                continue
+            object_id = id_mapping.get(change.target_id)
+            if object_id is None:
+                object_id = next(
+                    (
+                        candidate
+                        for candidate, clean_id in request_clean_ids.items()
+                        if clean_id == change.target_id
+                    ),
+                    None,
+                )
+            if object_id in resolved_image_sources:
+                expected[(change.slide_index or "", change.target_id)] = (
+                    resolved_image_sources[object_id]
+                )
+        return expected
 
     async def _resolve_asset_source(self, folder_path: Path, source: str) -> str:
         return await resolve_asset_source(
@@ -529,6 +598,7 @@ class SlidesClient:
         intended_slides: dict[str, list[Any]],
         intended_change_keys: set[tuple[str, ChangeType]],
         create_copy_targets: set[tuple[str, str]],
+        expected_image_sources: dict[tuple[str, str], str],
         force: bool,
         resume: bool,
         progress: Callable[[str, str], None] | None,
@@ -639,6 +709,7 @@ class SlidesClient:
                     intended_change_keys,
                     create_copy_targets,
                     finalized_response,
+                    expected_image_sources=expected_image_sources,
                 )
             ),
             clear_progress=True,
@@ -651,6 +722,8 @@ class SlidesClient:
         intended_change_keys: set[tuple[str, ChangeType]],
         create_copy_targets: set[tuple[str, str]],
         response: dict[str, Any],
+        *,
+        expected_image_sources: dict[tuple[str, str], str] | None = None,
     ) -> None:
         """Warn when pushed semantic changes differ from refreshed truth."""
         append_persistence_warning(
@@ -660,6 +733,7 @@ class SlidesClient:
             create_copy_targets,
             response,
             read_pristine=self._read_pristine,
+            expected_image_sources=expected_image_sources,
         )
 
     def _read_base_raw(self, folder_path: Path) -> dict[str, Any] | None:

@@ -38,6 +38,9 @@ class ChangeType(Enum):
     # Explicit defaults on one or more <P class> attributes changed.
     PARAGRAPH_STYLE_UPDATE = "paragraph_style_update"
 
+    # An existing image source or fit mode changed.
+    IMAGE_UPDATE = "image_update"
+
 
 @dataclass
 class ParagraphClassUpdate:
@@ -118,9 +121,13 @@ class Change:
     # Element tag (for creates/copies)
     tag: str | None = None
 
-    # Authored Image CREATE metadata. Pulled images do not populate these.
+    # Authored Image CREATE/IMAGE_UPDATE metadata. Pulled images do not
+    # populate these.
     src: str | None = None
     fit: str | None = None
+    image_pixel_width: int | None = None
+    image_pixel_height: int | None = None
+    image_dimensions_fetch_failed: bool = False
 
 
 @dataclass

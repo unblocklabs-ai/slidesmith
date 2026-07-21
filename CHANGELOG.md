@@ -24,6 +24,16 @@ agent-legible: name the command/flag and what an operator can now do.
   `diff` and `push`, preserving the segment for horizontal/vertical lines and
   lines with both negative axes. A diagonal with exactly one negative axis
   cannot preserve its direction because SML pulls expose only positive bounds.
+- New authored `fit="stretch"` images now pin their visual box to the exact
+  authored geometry, including source aspect ratios that differ from the box.
+- Editing `src` or `fit` on an existing pulled `<Image>` now emits a visible
+  image replacement with the same geometry pinning and local-asset cache reuse
+  as `replace-image`.
+- Image replacement persistence verification now compares refreshed `sourceUrl`
+  when Google returns it and warns when the replacement did not persist.
+- Push-time remote `fit="stretch"` dimension-fetch failures now fall back to
+  deterministic target-shaped geometry and return a NOTICE about a possible
+  follow-up resize.
 
 ## [0.4.0] — 2026-07-20 — Design-agent roadmap
 

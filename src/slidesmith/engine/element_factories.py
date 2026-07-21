@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+import math
 from typing import Any
 
 from slidesmith.engine.classes import Color
@@ -27,6 +28,41 @@ from slidesmith.engine.text_requests import (
 from slidesmith.engine.units import hex_to_rgb, pt_to_emu
 
 _MIN_EMU = 1
+
+
+def _stretch_intrinsic_box(
+    target_w_emu: float,
+    target_h_emu: float,
+    pixel_width: int,
+    pixel_height: int,
+) -> tuple[float, float]:
+    """Choose a finite source-shaped box without underflowing either axis."""
+    try:
+        aspect = pixel_width / pixel_height
+    except OverflowError:
+        aspect = math.inf if pixel_width >= pixel_height else 0.0
+
+    width_anchored_h = target_w_emu / aspect if aspect else math.inf
+    if (
+        math.isfinite(width_anchored_h)
+        and width_anchored_h >= _MIN_EMU
+        and math.isfinite(target_w_emu)
+    ):
+        return target_w_emu, width_anchored_h
+
+    height_anchored_w = target_h_emu * aspect
+    if (
+        math.isfinite(height_anchored_w)
+        and height_anchored_w >= _MIN_EMU
+        and math.isfinite(target_h_emu)
+    ):
+        # Anchor on height when the width-anchored height would clamp to one
+        # EMU. The symmetric branch handles very-tall sources.
+        return height_anchored_w, target_h_emu
+
+    # If both anchorings clamp or overflow (an absurd aspect beyond the
+    # representable geometry range), retain deterministic positive geometry.
+    return max(target_w_emu, _MIN_EMU), max(target_h_emu, _MIN_EMU)
 
 
 def _create_slide_request(slide_id: str) -> dict[str, Any]:
@@ -327,6 +363,8 @@ def _create_image_request(
     native_size: dict[str, float] | None = None,
     native_scale: dict[str, float] | None = None,
     fit: str | None = None,
+    image_pixel_width: int | None = None,
+    image_pixel_height: int | None = None,
 ) -> dict[str, Any]:
     """Create a createImage request.
 
@@ -376,6 +414,55 @@ def _create_image_request(
                     },
                 }
             }
+
+    if fit == "stretch":
+        # Google aspect-fits the source into elementProperties.size before it
+        # applies the transform. Use an intrinsic box with the source aspect,
+        # then let independent x/y scales stretch that box to the authored
+        # frame. Local images are known offline; pushed remote images are
+        # dimension-fetched before request generation. The target-shaped
+        # fallback keeps ordinary offline URL diffs deterministic.
+        if image_pixel_width and image_pixel_height:
+            intrinsic_w_emu, intrinsic_h_emu = _stretch_intrinsic_box(
+                target_w_emu,
+                target_h_emu,
+                image_pixel_width,
+                image_pixel_height,
+            )
+        else:
+            intrinsic_w_emu = max(target_w_emu, _MIN_EMU)
+            intrinsic_h_emu = max(target_h_emu, _MIN_EMU)
+        scale_x = target_w_emu / intrinsic_w_emu
+        scale_y = target_h_emu / intrinsic_h_emu
+        if not (
+            math.isfinite(scale_x)
+            and math.isfinite(scale_y)
+            and scale_x > 0
+            and scale_y > 0
+        ):
+            intrinsic_w_emu = max(target_w_emu, _MIN_EMU)
+            intrinsic_h_emu = max(target_h_emu, _MIN_EMU)
+            scale_x = scale_y = 1.0
+        return {
+            "createImage": {
+                "objectId": object_id,
+                "url": url,
+                "elementProperties": {
+                    "pageObjectId": slide_id,
+                    "size": {
+                        "width": {"magnitude": intrinsic_w_emu, "unit": "EMU"},
+                        "height": {"magnitude": intrinsic_h_emu, "unit": "EMU"},
+                    },
+                    "transform": {
+                        "scaleX": scale_x,
+                        "scaleY": scale_y,
+                        "translateX": pt_to_emu(position["x"]),
+                        "translateY": pt_to_emu(position["y"]),
+                        "unit": "EMU",
+                    },
+                },
+            }
+        }
 
     if fit == "contain":
         # createImage aspect-fits against elementProperties.size before applying
@@ -441,6 +528,8 @@ def emit_recreated_element(
     native_size: dict[str, float] | None = None,
     native_scale: dict[str, float] | None = None,
     image_fit: str | None = None,
+    image_pixel_width: int | None = None,
+    image_pixel_height: int | None = None,
     element_style_requests: Sequence[dict[str, Any]] = (),
     text: list[str] | None = None,
     text_style_requests: Sequence[dict[str, Any]] = (),
@@ -462,6 +551,8 @@ def emit_recreated_element(
                 native_size=native_size,
                 native_scale=native_scale,
                 fit=image_fit,
+                image_pixel_width=image_pixel_width,
+                image_pixel_height=image_pixel_height,
             )
         )
     else:
@@ -560,6 +651,8 @@ def _create_element_requests(
         position=position,
         image_url=change.src,
         image_fit=change.fit,
+        image_pixel_width=change.image_pixel_width,
+        image_pixel_height=change.image_pixel_height,
         element_style_requests=element_style_requests,
         text=change.new_text,
         text_style_requests=text_style_requests,

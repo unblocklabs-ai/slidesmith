@@ -42,6 +42,7 @@ from slidesmith.engine.diff_model import (
 from slidesmith.engine.diff_summary import format_diff_summary  # noqa: F401
 from slidesmith.engine.image_geometry import (  # noqa: F401
     _fetch_image_dimensions,
+    get_image_source_dimensions,
     get_effective_position,
 )
 from slidesmith.engine.image_fetch import fetch_image_dimensions  # noqa: F401
@@ -66,6 +67,7 @@ def diff_presentation(
     *,
     workspace_root: Path | None = None,
     allow_remote_image_fetch: bool = False,
+    fetch_remote_stretch_dimensions: bool = False,
 ) -> DiffResult:
     """Diff pristine and edited presentation content.
 
@@ -187,6 +189,8 @@ def diff_presentation(
                         slide_idx,
                         workspace_root=workspace_root,
                         allow_remote_image_fetch=allow_remote_image_fetch,
+                        fetch_remote_stretch_dimensions=fetch_remote_stretch_dimensions,
+                        warnings=result.warnings,
                     )
                     result.changes.extend(changes)
             else:
@@ -206,6 +210,8 @@ def diff_presentation(
                         slide_idx,
                         workspace_root=workspace_root,
                         allow_remote_image_fetch=allow_remote_image_fetch,
+                        fetch_remote_stretch_dimensions=fetch_remote_stretch_dimensions,
+                        warnings=result.warnings,
                     )
                     result.changes.extend(changes)
 
@@ -227,6 +233,15 @@ def diff_presentation(
             for slide_idx, edited_elem in instances:
                 # For now, treat as new element
                 # Could enhance to detect copies by content similarity
+                image_fetch_failure: list[bool] = []
+                image_dimensions = get_image_source_dimensions(
+                    edited_elem,
+                    workspace_root=workspace_root,
+                    allow_remote_image_fetch=allow_remote_image_fetch,
+                    fetch_remote_stretch=fetch_remote_stretch_dimensions,
+                    warnings=result.warnings,
+                    fetch_failure=image_fetch_failure,
+                )
                 result.changes.append(
                     Change(
                         change_type=ChangeType.CREATE,
@@ -237,6 +252,7 @@ def diff_presentation(
                             edited_elem,
                             workspace_root=workspace_root,
                             allow_remote_image_fetch=allow_remote_image_fetch,
+                            source_dimensions=image_dimensions,
                         ),
                         new_text=edited_elem.paragraphs
                         if edited_elem.paragraphs
@@ -249,6 +265,13 @@ def diff_presentation(
                         tag=edited_elem.tag,
                         src=edited_elem.src,
                         fit=edited_elem.fit,
+                        image_pixel_width=(
+                            image_dimensions[0] if image_dimensions else None
+                        ),
+                        image_pixel_height=(
+                            image_dimensions[1] if image_dimensions else None
+                        ),
+                        image_dimensions_fetch_failed=bool(image_fetch_failure),
                     )
                 )
 
@@ -274,19 +297,37 @@ def _compare_elements(
     *,
     workspace_root: Path | None = None,
     allow_remote_image_fetch: bool = False,
+    fetch_remote_stretch_dimensions: bool = False,
+    warnings: list[str] | None = None,
 ) -> list[Change]:
     """Compare two elements with the same ID and generate changes."""
     changes: list[Change] = []
     pristine_position = _get_position(pristine)
+    image_update = (
+        edited.tag == "Image"
+        and edited.src is not None
+        and (pristine.src != edited.src or pristine.fit != edited.fit)
+    )
+    image_fetch_failure: list[bool] = []
+    image_dimensions = get_image_source_dimensions(
+        edited,
+        workspace_root=workspace_root,
+        allow_remote_image_fetch=allow_remote_image_fetch,
+        fetch_remote_stretch=fetch_remote_stretch_dimensions and image_update,
+        warnings=warnings,
+        fetch_failure=image_fetch_failure,
+    )
     edited_position = get_effective_position(
         edited,
         workspace_root=workspace_root,
         allow_remote_image_fetch=allow_remote_image_fetch,
+        source_dimensions=image_dimensions,
     )
 
     # Check position change (only for root elements)
     if (
-        pristine.has_position
+        not image_update
+        and pristine.has_position
         and edited.has_position
         and pristine_position != edited_position
     ):
@@ -297,6 +338,26 @@ def _compare_elements(
                 slide_index=slide_idx,
                 new_position=edited_position,
                 old_position=pristine_position,
+            )
+        )
+
+    if image_update:
+        changes.append(
+            Change(
+                change_type=ChangeType.IMAGE_UPDATE,
+                target_id=pristine.clean_id,
+                slide_index=slide_idx,
+                new_position=edited_position,
+                old_position=pristine_position,
+                src=edited.src,
+                fit=edited.fit,
+                image_pixel_width=(
+                    image_dimensions[0] if image_dimensions else None
+                ),
+                image_pixel_height=(
+                    image_dimensions[1] if image_dimensions else None
+                ),
+                image_dimensions_fetch_failed=bool(image_fetch_failure),
             )
         )
 

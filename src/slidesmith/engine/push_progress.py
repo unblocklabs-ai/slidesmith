@@ -142,7 +142,7 @@ def _request_slide_index(
         if isinstance(page_id, str) and page_id in slide_by_page_id:
             return slide_by_page_id[page_id]
 
-    for key in ("objectId", "groupObjectId"):
+    for key in ("objectId", "groupObjectId", "imageObjectId"):
         object_id = body.get(key)
         if isinstance(object_id, str) and object_id in slide_by_object_id:
             return slide_by_object_id[object_id]

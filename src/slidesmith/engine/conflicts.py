@@ -100,7 +100,7 @@ def collect_request_object_ids(
         for body in request.values():
             if not isinstance(body, dict):
                 continue
-            for key in ("objectId", "groupObjectId"):
+            for key in ("objectId", "groupObjectId", "imageObjectId"):
                 if body.get(key):
                     object_ids.add(body[key])
             for child_id in body.get("childrenObjectIds", []) or []:

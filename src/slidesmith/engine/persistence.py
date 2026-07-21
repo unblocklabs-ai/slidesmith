@@ -12,6 +12,7 @@ from slidesmith.engine.content_parser import (
     ParsedRun,
     flatten_elements,
 )
+from slidesmith.engine.json_utils import read_json
 from slidesmith.engine.shape_types import TAG_TO_TYPE, VALID_GOOGLE_TYPES
 
 
@@ -44,6 +45,31 @@ def _index_parsed_elements(
     }
 
 
+def _remote_image_source_urls(folder_path: Path) -> dict[tuple[str, str], str]:
+    """Read sourceUrl from the raw post-push refresh when Google returned it."""
+    raw = read_json(folder_path / ".pristine" / "base.json", missing_ok=True)
+    id_mapping = read_json(folder_path / "id_mapping.json", missing_ok=True)
+    clean_ids = {google_id: clean_id for clean_id, google_id in id_mapping.items()}
+    sources: dict[tuple[str, str], str] = {}
+
+    def walk(elements: list[Any], slide_index: str) -> None:
+        for element in elements:
+            google_id = element.get("objectId")
+            image = element.get("image")
+            source_url = image.get("sourceUrl") if isinstance(image, dict) else None
+            clean_id = clean_ids.get(google_id)
+            if clean_id and isinstance(source_url, str) and source_url:
+                sources[(slide_index, clean_id)] = source_url
+            group = element.get("elementGroup")
+            if isinstance(group, dict):
+                walk(group.get("children", []), slide_index)
+
+    for index, slide in enumerate(raw.get("slides", []), 1):
+        if isinstance(slide, dict):
+            walk(slide.get("pageElements", []), f"{index:02d}")
+    return sources
+
+
 def _format_geometry(position: dict[str, float] | None) -> str:
     if position is None:
         return ""
@@ -51,6 +77,20 @@ def _format_geometry(position: dict[str, float] | None) -> str:
         f"{field}={position[field]:g}"
         for field in ("x", "y", "w", "h")
         if field in position
+    )
+
+
+def _geometry_matches_within_tolerance(
+    sent: dict[str, float] | None,
+    remote: dict[str, float] | None,
+) -> bool:
+    """Compare effective geometry using the same per-axis MOVE tolerance."""
+    if sent is None or remote is None or set(sent) != set(remote):
+        return False
+    return all(
+        abs(float(sent[key]) - float(remote[key]))
+        < PERSISTENCE_GEOMETRY_TOLERANCE_PT
+        for key in sent
     )
 
 
@@ -119,6 +159,8 @@ def _normalized_persistence_detail(
     change: Change,
     remote_elements: dict[tuple[str, str], ParsedElement],
     intended_elements: dict[tuple[str, str], ParsedElement],
+    remote_image_sources: dict[tuple[str, str], str] | None = None,
+    expected_image_sources: dict[tuple[str, str], str] | None = None,
 ) -> str | None:
     """Describe sent and refreshed values when both are cheaply available."""
     if change.change_type == ChangeType.MOVE:
@@ -166,6 +208,26 @@ def _normalized_persistence_detail(
                 f"(sent {sent!r}, remote now {remote!r})"
             )
 
+    if change.change_type == ChangeType.IMAGE_UPDATE:
+        if not _geometry_matches_within_tolerance(
+            change.new_position, change.old_position
+        ):
+            sent_geometry = _format_geometry(change.new_position)
+            remote_geometry = _format_geometry(change.old_position)
+            if sent_geometry and remote_geometry:
+                return (
+                    f"geometry on {change.target_id} did not persist "
+                    f"(sent {sent_geometry!r}, remote now {remote_geometry!r})"
+                )
+        key = (change.slide_index or "", change.target_id)
+        remote_source = (remote_image_sources or {}).get(key)
+        expected_source = (expected_image_sources or {}).get(key, change.src)
+        if remote_source is not None and expected_source is not None:
+            return (
+                f"image replacement did not persist on {change.target_id} "
+                f"(sent {expected_source!r}, remote now {remote_source!r})"
+            )
+
     return None
 
 
@@ -175,18 +237,38 @@ def _is_normalized_persistence_change(
     intended_elements: dict[tuple[str, str], ParsedElement],
     *,
     newly_created: bool,
+    remote_image_sources: dict[tuple[str, str], str] | None = None,
+    expected_image_sources: dict[tuple[str, str], str] | None = None,
 ) -> bool:
     """Return whether a refresh difference is known Google normalization."""
     if change.change_type == ChangeType.MOVE:
         old = change.old_position
         new = change.new_position
-        if old is None or new is None or set(old) != set(new):
+        return _geometry_matches_within_tolerance(new, old)
+
+    if change.change_type == ChangeType.IMAGE_UPDATE:
+        if not _geometry_matches_within_tolerance(
+            change.new_position, change.old_position
+        ):
             return False
-        return all(
-            abs(float(new[key]) - float(old[key]))
-            < PERSISTENCE_GEOMETRY_TOLERANCE_PT
-            for key in new
-        )
+        key = (change.slide_index or "", change.target_id)
+        remote_element = remote_elements.get(key)
+        intended_element = intended_elements.get(key)
+        if not (
+            remote_element is not None
+            and intended_element is not None
+            and remote_element.tag == "Image"
+            and remote_element.src is None
+            and remote_element.fit is None
+        ):
+            return False
+        remote_source = (remote_image_sources or {}).get(key)
+        if remote_source is None:
+            # Google may omit sourceUrl on refresh; retain the prior
+            # unverifiable-success behavior rather than inventing a warning.
+            return True
+        expected_source = (expected_image_sources or {}).get(key, change.src)
+        return expected_source is not None and remote_source == expected_source
 
     if not newly_created:
         return False
@@ -309,6 +391,7 @@ def append_persistence_warning(
     read_pristine: Callable[
         [Path], tuple[dict[str, list[Any]], dict[str, dict[str, Any]]]
     ],
+    expected_image_sources: dict[tuple[str, str], str] | None = None,
 ) -> None:
     """Warn when pushed semantic changes differ from refreshed truth."""
     refreshed_slides, refreshed_styles = read_pristine(folder_path)
@@ -327,6 +410,7 @@ def append_persistence_warning(
     ]
     remote_elements = _index_parsed_elements(refreshed_slides)
     intended_elements = _index_parsed_elements(intended_slides)
+    remote_image_sources = _remote_image_source_urls(folder_path)
     meaningful = [
         change
         for change in unpersisted
@@ -338,6 +422,8 @@ def append_persistence_warning(
                 change.slide_index or "", change.target_id
             )
             in create_copy_targets,
+            remote_image_sources=remote_image_sources,
+            expected_image_sources=expected_image_sources,
         )
     ]
     if not meaningful:
@@ -356,6 +442,8 @@ def append_persistence_warning(
             change,
             remote_elements,
             intended_elements,
+            remote_image_sources,
+            expected_image_sources,
         )
         or f"{change.target_id} ({change.change_type.value.replace('_', ' ')})"
         for change in changes

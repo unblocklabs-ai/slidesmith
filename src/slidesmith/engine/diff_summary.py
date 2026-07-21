@@ -28,6 +28,7 @@ def format_diff_summary(diff_result: DiffResult, request_count: int) -> str:
         for change_type in (
             ChangeType.CREATE,
             ChangeType.MOVE,
+            ChangeType.IMAGE_UPDATE,
             ChangeType.COPY,
             ChangeType.STYLE_UPDATE,
             ChangeType.PARAGRAPH_STYLE_UPDATE,
@@ -68,6 +69,9 @@ def _format_summary_change(change: Change) -> str:
 
     if change.change_type == ChangeType.MOVE:
         return f"MOVE {change.target_id}{_format_frame(change.new_position)}"
+
+    if change.change_type == ChangeType.IMAGE_UPDATE:
+        return f"IMAGE {change.target_id}: replace src={change.src!r} fit={change.fit}"
 
     if change.change_type == ChangeType.COPY:
         source_id = change.source_id or change.target_id

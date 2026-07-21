@@ -31,7 +31,7 @@ slidesmith check <ID> --contact-sheet
 `fit="contain"`, the diff engine performs a bounded, unauthenticated image fetch
 to determine its pixel dimensions. A local image is read with Pillow instead;
 it never needs a network request during `diff`. `fit="stretch"` does not fetch a
-remote source. `diff` prints the request list plus a stderr legend from Google
+remote source during offline diff. `diff` prints the request list plus a stderr legend from Google
 object IDs to clean SML IDs. A local image's previewed `createImage.url` remains
 the authored local source because its public Drive URL does not exist yet;
 `push` replaces that one outgoing field after upload or cache lookup.
@@ -665,16 +665,23 @@ cache unless repairing a known-bad Drive file or URL.
 
 `stretch` is the default Google Slides API behavior: the image fills the
 authored box and may be distorted. `contain` preserves the source aspect ratio.
-Only a remote `contain` source causes the diff engine to download an image. That
-fetch sends no credentials, rejects non-public destinations at every redirect
-hop, is pinned to the validated DNS address, and is limited to 25 MB and 100
-million pixels before Pillow inspection. Local dimensions are read directly
-with Pillow and never pass through the HTTP fetcher. Slidesmith shrinks either
+During offline `diff`, only a remote `contain` source downloads an image. At
+push time, remote `stretch` dimensions are also fetched when possible to improve
+intrinsic geometry. These fetches send no credentials, reject non-public
+destinations at every redirect hop, are pinned to the validated DNS address,
+and are limited to 25 MB and 100 million pixels before Pillow inspection. Local
+dimensions are read directly with Pillow and never pass through the HTTP fetcher.
+Slidesmith shrinks either
 the authored width or height, keeping the resulting frame anchored at the
-authored top-left `x`, `y` position. Authored `x`, `y`, `w`, and `h` must all be
-finite and strictly positive for local and remote images under both `stretch`
-and `contain`. This post-contain frame is the single effective geometry used by
+authored top-left `x`, `y` position. Authored `x` and `y` must be finite; `w` and
+`h` must be finite and strictly positive for local and remote images under both
+`stretch` and `contain`. This post-contain frame is the single effective geometry used by
 request generation, diff/persistence comparison, and offline QA/preflight.
+
+For remote-URL images, offline `diff` may omit push-time geometry-pin requests
+and exact intrinsic sizing because pixel dimensions are only fetched at push.
+Local-file images have their dimensions available offline, so their previews are
+exact.
 
 Google's `cropProperties` are **READ-ONLY via the API**, so `fit="cover"` is
 impossible. Slidesmith rejects `cover` instead of pretending it can create that

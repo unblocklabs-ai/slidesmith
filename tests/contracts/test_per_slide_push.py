@@ -232,6 +232,55 @@ def test_partition_groups_existing_and_new_slide_requests(tmp_path: Path) -> Non
     assert all(len(batch.content_hash) == 64 for batch in batches)
 
 
+def test_partition_routes_image_replacement_and_pin_to_existing_slide(
+    tmp_path: Path,
+) -> None:
+    folder = tmp_path / "deck"
+    content_path = folder / "slides" / "01" / "content.sml"
+    content_path.parent.mkdir(parents=True)
+    content_path.write_text(
+        '<Slide id="s1"><Image id="hero" /></Slide>', encoding="utf-8"
+    )
+    diff_result = DiffResult(
+        changes=[Change(ChangeType.IMAGE_UPDATE, "hero", slide_index="01")]
+    )
+    requests = [
+        {
+            "replaceImage": {
+                "imageObjectId": "google_hero",
+                "url": "https://example.com/new.png",
+                "imageReplaceMethod": "CENTER_INSIDE",
+            }
+        },
+        {
+            "updatePageElementTransform": {
+                "objectId": "google_hero",
+                "transform": {},
+                "applyMode": "RELATIVE",
+            }
+        },
+    ]
+
+    batches = partition_requests_by_slide(
+        requests,
+        diff_result,
+        {"s1": "google_slide1", "hero": "google_hero"},
+        {"01": "google_slide1"},
+        {
+            "slides": [
+                {
+                    "objectId": "google_slide1",
+                    "pageElements": [{"objectId": "google_hero"}],
+                }
+            ]
+        },
+        folder,
+    )
+
+    assert [batch.slide_index for batch in batches] == ["01"]
+    assert batches[0].requests == requests
+
+
 def test_partition_uses_create_slide_object_id_across_100_boundary(
     tmp_path: Path,
 ) -> None:

@@ -14,11 +14,13 @@ from typing import Any
 from slidesmith.engine.class_style_requests import _create_class_style_requests
 from slidesmith.engine.content_diff import Change, ChangeType, DiffResult, ParagraphClassUpdate
 from slidesmith.engine.copy_requests import _create_copy_requests, _uses_duplicate_object
+from slidesmith.engine.bounds import BoundingBox
 from slidesmith.engine.element_factories import (
     _create_element_requests,
     _create_move_request,
     _create_slide_request,
 )
+from slidesmith.engine.image_replace import _replacement_geometry_requests
 from slidesmith.engine.id_manager import is_valid_google_object_id
 from slidesmith.engine.hierarchy import has_ancestor_in_set
 from slidesmith.engine.text_requests import (
@@ -30,6 +32,7 @@ from slidesmith.engine.text_requests import (
 _BATCH_CHANGE_TYPES = (
     ChangeType.DELETE,
     ChangeType.MOVE,
+    ChangeType.IMAGE_UPDATE,
     ChangeType.TEXT_UPDATE,
     ChangeType.STYLE_UPDATE,
     ChangeType.PARAGRAPH_STYLE_UPDATE,
@@ -171,6 +174,65 @@ def _emit_text_update_requests(
                     change.new_runs,
                     change.old_text,
                     change.old_runs,
+                )
+            )
+
+
+def _emit_image_update_requests(
+    requests: list[dict[str, Any]],
+    image_updates: list[Change],
+    id_mapping: dict[str, str],
+    diff_result: DiffResult,
+) -> None:
+    """Replace edited image sources and pin the same geometry as replace-image."""
+    for change in image_updates:
+        image_google_id = id_mapping.get(change.target_id)
+        if not image_google_id or not change.src:
+            continue
+        requests.append(
+            {
+                "replaceImage": {
+                    "imageObjectId": image_google_id,
+                    "url": change.src,
+                    "imageReplaceMethod": "CENTER_INSIDE",
+                }
+            }
+        )
+        if change.old_position is None or change.new_position is None:
+            continue
+        old_position = change.old_position
+        old_box = BoundingBox(
+            old_position["x"],
+            old_position["y"],
+            old_position["w"],
+            old_position["h"],
+        )
+        if change.image_pixel_width is not None and change.image_pixel_height is not None:
+            _, pin_request = _replacement_geometry_requests(
+                image_google_id,
+                old_box,
+                pixel_width=change.image_pixel_width,
+                pixel_height=change.image_pixel_height,
+                fit=change.fit or "stretch",
+                target=BoundingBox(
+                    change.new_position["x"],
+                    change.new_position["y"],
+                    change.new_position["w"],
+                    change.new_position["h"],
+                ),
+            )
+            requests.append(pin_request)
+        elif change.image_dimensions_fetch_failed:
+            # A push attempted the optional dimension fetch and it failed. A
+            # normal transform still lands the authored effective box; an
+            # offline diff with no fetch attempt intentionally previews only
+            # replaceImage (the documented remote-image divergence).
+            requests.append(
+                _create_move_request(
+                    image_google_id,
+                    change.new_position,
+                    diff_result.pristine_styles.get(change.target_id),
+                    change.old_position,
                 )
             )
 
@@ -369,6 +431,12 @@ def generate_batch_requests(
         pristine_element_parents,
     )
     _emit_move_requests(requests, buckets[ChangeType.MOVE], id_mapping, diff_result)
+    _emit_image_update_requests(
+        requests,
+        buckets[ChangeType.IMAGE_UPDATE],
+        id_mapping,
+        diff_result,
+    )
     _emit_text_update_requests(
         requests, buckets[ChangeType.TEXT_UPDATE], id_mapping
     )

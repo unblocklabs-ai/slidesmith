@@ -18,6 +18,7 @@ from slidesmith.engine.assets import (
     UploadedAsset,
 )
 from slidesmith.engine.client import SlidesClient
+from slidesmith.engine.content_diff import ChangeType
 from slidesmith.engine.content_parser import parse_slide_content
 from slidesmith.engine.transport import APIError, PresentationData, Transport
 from slidesmith.engine.units import pt_to_emu
@@ -49,6 +50,10 @@ class ImageTransport(Transport):
         self.data = copy.deepcopy(data)
         self.batch_calls: list[dict[str, Any]] = []
         self.fail_next_batch = False
+        self.replacement_source_url: str | None = None
+        self.omit_replacement_source_url = False
+        self.replacement_geometry_offset_pt = 0.0
+        self.created_source_url: str | None = None
 
     async def get_presentation(self, presentation_id: str) -> PresentationData:
         return PresentationData(presentation_id, copy.deepcopy(self.data))
@@ -85,7 +90,7 @@ class ImageTransport(Transport):
                         "transform": copy.deepcopy(properties["transform"]),
                         "image": {
                             "contentUrl": create["url"],
-                            "sourceUrl": create["url"],
+                            "sourceUrl": self.created_source_url or create["url"],
                             "imageProperties": {},
                         },
                     }
@@ -93,7 +98,16 @@ class ImageTransport(Transport):
             if replace := request.get("replaceImage"):
                 element = _find_raw_element(self.data, replace["imageObjectId"])
                 element["image"]["contentUrl"] = replace["url"]
-                element["image"]["sourceUrl"] = replace["url"]
+                if self.omit_replacement_source_url:
+                    element["image"].pop("sourceUrl", None)
+                else:
+                    element["image"]["sourceUrl"] = (
+                        self.replacement_source_url or replace["url"]
+                    )
+                if self.replacement_geometry_offset_pt:
+                    element["transform"]["translateX"] += pt_to_emu(
+                        self.replacement_geometry_offset_pt
+                    )
 
         self.data["revisionId"] = f"rev-{len(self.batch_calls)}"
         return {"replies": [{} for _ in requests]}
@@ -182,6 +196,26 @@ def _append_local_image(
     content_path.write_text(content.replace("</Slide>", image + "</Slide>"), encoding="utf-8")
 
 
+def _author_existing_image(
+    folder: Path,
+    image_id: str,
+    source: str,
+    fit: str,
+) -> None:
+    content_path = folder / "slides" / "01" / "content.sml"
+    content = content_path.read_text(encoding="utf-8")
+    marker = f'<Image id="{image_id}"'
+    assert marker in content
+    content_path.write_text(
+        content.replace(
+            marker,
+            f'<Image id="{image_id}" src="{source}" fit="{fit}"',
+            1,
+        ),
+        encoding="utf-8",
+    )
+
+
 def _find_raw_element(data: dict[str, Any], object_id: str) -> dict[str, Any]:
     def walk(elements: list[dict[str, Any]]) -> dict[str, Any] | None:
         for element in elements:
@@ -234,7 +268,7 @@ async def test_local_image_insert_emits_create_image_with_fake_uploaded_url(
         "./assets/logo.png"
     )
 
-    await client.push(folder)
+    response = await client.push(folder)
 
     create = next(
         request["createImage"]
@@ -243,6 +277,30 @@ async def test_local_image_insert_emits_create_image_with_fake_uploaded_url(
     )
     assert create["url"] == FAKE_URL
     assert uploader.calls == [(folder / "assets" / "logo.png", "image/png")]
+    assert response.get("warnings", []) == []
+
+
+@pytest.mark.asyncio
+async def test_local_image_create_warns_when_refreshed_source_differs(
+    tmp_path: Path,
+) -> None:
+    transport, _, folder = await _workspace(tmp_path)
+    uploader = FakeUploader()
+    client = SlidesClient(transport, uploader)
+    _write_png(folder)
+    _append_local_image(folder)
+    transport.created_source_url = "https://drive.google.com/other-file"
+
+    response = await client.push(folder)
+
+    assert any(
+        "image replacement did not persist" in warning
+        for warning in response["warnings"]
+    )
+    assert any(
+        "https://drive.google.com/other-file" in warning
+        for warning in response["warnings"]
+    )
 
 
 @pytest.mark.asyncio
@@ -283,6 +341,148 @@ async def test_asset_cache_uploads_same_local_path_and_hash_only_once_across_ret
     )
 
 
+@pytest.mark.asyncio
+async def test_existing_pulled_image_src_edit_replaces_uploads_and_round_trips(
+    tmp_path: Path,
+) -> None:
+    transport, _, folder = await _workspace(tmp_path)
+    uploader = FakeUploader()
+    client = SlidesClient(transport, uploader)
+    image_id = _first_clean_id(folder, transport.data, "image")
+    _write_png(folder, relative="assets/replacement.png", size=(900, 600))
+    _author_existing_image(folder, image_id, "./assets/replacement.png", "stretch")
+
+    diff_result, requests = client.diff_with_result(folder)
+    assert [change.change_type for change in diff_result.changes] == [
+        ChangeType.IMAGE_UPDATE
+    ]
+    assert [next(iter(request)) for request in requests] == [
+        "replaceImage",
+        "updatePageElementTransform",
+    ]
+    assert requests[0]["replaceImage"]["url"] == "./assets/replacement.png"
+
+    response = await client.push(folder)
+
+    assert response.get("warnings", []) == []
+    assert transport.batch_calls[-1]["requests"][0]["replaceImage"]["url"] == FAKE_URL
+    assert uploader.calls == [(folder / "assets" / "replacement.png", "image/png")]
+    assert client.diff(folder) == []
+
+
+@pytest.mark.asyncio
+async def test_existing_image_replace_warns_when_remote_geometry_differs(
+    tmp_path: Path,
+) -> None:
+    transport, _, folder = await _workspace(tmp_path)
+    uploader = FakeUploader()
+    client = SlidesClient(transport, uploader)
+    image_id = _first_clean_id(folder, transport.data, "image")
+    _write_png(folder, relative="assets/replacement.png", size=(900, 600))
+    _author_existing_image(folder, image_id, "./assets/replacement.png", "stretch")
+    transport.replacement_geometry_offset_pt = 0.1
+
+    response = await client.push(folder)
+
+    assert any(
+        "geometry on" in warning and "did not persist" in warning
+        for warning in response["warnings"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_existing_image_replace_accepts_geometry_within_tolerance(
+    tmp_path: Path,
+) -> None:
+    transport, _, folder = await _workspace(tmp_path)
+    uploader = FakeUploader()
+    client = SlidesClient(transport, uploader)
+    image_id = _first_clean_id(folder, transport.data, "image")
+    _write_png(folder, relative="assets/replacement.png", size=(900, 600))
+    _author_existing_image(folder, image_id, "./assets/replacement.png", "stretch")
+    transport.replacement_geometry_offset_pt = 0.01
+
+    response = await client.push(folder)
+
+    assert not any(
+        "did not persist" in warning for warning in response.get("warnings", [])
+    )
+
+
+@pytest.mark.asyncio
+async def test_existing_image_replace_warns_when_remote_source_differs(
+    tmp_path: Path,
+) -> None:
+    transport, _, folder = await _workspace(tmp_path)
+    uploader = FakeUploader()
+    client = SlidesClient(transport, uploader)
+    image_id = _first_clean_id(folder, transport.data, "image")
+    _write_png(folder, relative="assets/replacement.png", size=(900, 600))
+    _author_existing_image(folder, image_id, "./assets/replacement.png", "stretch")
+    transport.replacement_source_url = "https://drive.google.com/other-file"
+
+    response = await client.push(folder)
+
+    assert any(
+        "image replacement did not persist" in warning
+        for warning in response["warnings"]
+    )
+    assert any(FAKE_URL in warning for warning in response["warnings"])
+
+
+@pytest.mark.asyncio
+async def test_existing_image_replace_accepts_omitted_remote_source_url(
+    tmp_path: Path,
+) -> None:
+    transport, _, folder = await _workspace(tmp_path)
+    uploader = FakeUploader()
+    client = SlidesClient(transport, uploader)
+    image_id = _first_clean_id(folder, transport.data, "image")
+    _write_png(folder, relative="assets/replacement.png", size=(900, 600))
+    _author_existing_image(folder, image_id, "./assets/replacement.png", "stretch")
+    transport.omit_replacement_source_url = True
+
+    response = await client.push(folder)
+
+    assert not any(
+        "image replacement did not persist" in warning
+        for warning in response.get("warnings", [])
+    )
+
+
+@pytest.mark.asyncio
+async def test_remote_stretch_dimension_fetch_failure_falls_back_with_notice(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    transport, client, folder = await _workspace(tmp_path)
+    _append_local_image(
+        folder,
+        source="https://example.com/oversize.png",
+        fit="stretch",
+    )
+
+    def fail_dimensions(_url: str) -> tuple[int, int]:
+        raise ValueError("image download exceeds the 25 MB limit")
+
+    monkeypatch.setattr(
+        "slidesmith.engine.content_diff.fetch_image_dimensions", fail_dimensions
+    )
+
+    response = await client.push(folder)
+
+    assert any(
+        warning.startswith("NOTICE:") and "follow-up resize" in warning
+        for warning in response["warnings"]
+    )
+    create = next(
+        request["createImage"]
+        for request in transport.batch_calls[-1]["requests"]
+        if "createImage" in request
+    )
+    properties = create["elementProperties"]
+    assert properties["size"]["width"]["magnitude"] == pt_to_emu(160)
+    assert properties["size"]["height"]["magnitude"] == pt_to_emu(90)
 @pytest.mark.asyncio
 async def test_drive_permission_failure_deletes_uploaded_file_and_stays_typed(
     tmp_path: Path,

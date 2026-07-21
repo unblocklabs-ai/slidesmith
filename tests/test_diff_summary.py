@@ -62,6 +62,13 @@ def _summary_result() -> DiffResult:
                 paragraph_style_updates=[ParagraphClassUpdate(1, None, None)],
             ),
             Change(ChangeType.TEXT_UPDATE, "e18", slide_index="01"),
+            Change(
+                ChangeType.IMAGE_UPDATE,
+                "hero",
+                slide_index="01",
+                src="./assets/new.png",
+                fit="stretch",
+            ),
         ]
     )
 
@@ -71,6 +78,7 @@ def test_format_diff_summary_renders_each_change_type_and_count() -> None:
   DELETE e59, e60
   CREATE mission_ship (TextBox 154.4x80 @153.4,395) +fill +stroke +2 paragraphs
   MOVE e10 40x50 @20,30
+  IMAGE hero: replace src='./assets/new.png' fit=stretch
   COPY e12 -> e12_copy0 80x90 @60,70
   STYLE e121: contentAlignment MIDDLE
   STYLE e17: 1 paragraph range edit

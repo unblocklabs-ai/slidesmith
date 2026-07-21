@@ -5,9 +5,11 @@ from __future__ import annotations
 import math
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from threading import Thread
 
 import pytest
+from PIL import Image
 
 from slidesmith.engine import content_diff
 from slidesmith.engine import image_fetch
@@ -353,6 +355,245 @@ def test_create_diff_and_request_carry_url_fit_and_authored_emu_geometry() -> No
         pt_to_emu(160),
         pt_to_emu(90),
     )
+
+
+@pytest.mark.parametrize(
+    ("pixels", "target"),
+    [
+        ((1600, 900), {"x": 12, "y": 18, "w": 160, "h": 90}),
+        ((900, 1600), {"x": 12, "y": 18, "w": 160, "h": 90}),
+    ],
+    ids=("wide-source", "tall-source"),
+)
+def test_stretch_create_uses_source_shaped_intrinsic_box(
+    tmp_path: Path,
+    pixels: tuple[int, int],
+    target: dict[str, float],
+) -> None:
+    image_path = tmp_path / "source.png"
+    Image.new("RGB", pixels, "navy").save(image_path)
+    result = diff_presentation(
+        {},
+        {
+            "01": parse_slide_content(
+                '<Slide><Image id="hero" src="./source.png" '
+                'fit="stretch" x="12" y="18" w="160" h="90" /></Slide>'
+            )
+        },
+        {},
+        workspace_root=tmp_path,
+    )
+
+    requests = generate_batch_requests(result, {}, {"01": "slide_1"})
+    assert len(requests) == 1
+    request = requests[0]
+    assert _visual_geometry(request) == tuple(
+        pt_to_emu(target[field]) for field in ("x", "y", "w", "h")
+    )
+    size = request["createImage"]["elementProperties"]["size"]
+    assert size["width"]["magnitude"] / size["height"]["magnitude"] == pytest.approx(
+        pixels[0] / pixels[1]
+    )
+
+
+def test_existing_image_fit_only_edit_emits_replace_and_geometry_pin(
+    tmp_path: Path,
+) -> None:
+    image_path = tmp_path / "source.png"
+    Image.new("RGB", (900, 600), "navy").save(image_path)
+    pristine = parse_slide_content(
+        '<Slide><Image id="hero" src="./source.png" fit="contain" '
+        'x="40" y="30" w="220" h="124" /></Slide>'
+    )
+    edited = parse_slide_content(
+        '<Slide><Image id="hero" src="./source.png" fit="stretch" '
+        'x="40" y="30" w="220" h="124" /></Slide>'
+    )
+
+    result = diff_presentation(
+        {"01": pristine},
+        {"01": edited},
+        {},
+        workspace_root=tmp_path,
+    )
+    assert [change.change_type for change in result.changes] == [
+        ChangeType.IMAGE_UPDATE
+    ]
+    assert result.changes[0].src == "./source.png"
+    assert result.changes[0].fit == "stretch"
+
+    requests = generate_batch_requests(
+        result,
+        {"hero": "google_hero"},
+        {"01": "slide_1"},
+    )
+    assert [next(iter(request)) for request in requests] == [
+        "replaceImage",
+        "updatePageElementTransform",
+    ]
+    assert requests[1]["updatePageElementTransform"]["objectId"] == "google_hero"
+
+
+def test_existing_image_src_and_geometry_edit_pins_to_effective_new_box(
+    tmp_path: Path,
+) -> None:
+    image_path = tmp_path / "source.png"
+    Image.new("RGB", (900, 600), "navy").save(image_path)
+    pristine = parse_slide_content(
+        '<Slide><Image id="hero" x="10" y="20" w="100" h="100" /></Slide>'
+    )
+    edited = parse_slide_content(
+        '<Slide><Image id="hero" src="./source.png" fit="stretch" '
+        'x="30" y="40" w="200" h="120" /></Slide>'
+    )
+
+    result = diff_presentation(
+        {"01": pristine},
+        {"01": edited},
+        {},
+        workspace_root=tmp_path,
+    )
+    requests = generate_batch_requests(
+        result,
+        {"hero": "google_hero"},
+        {"01": "slide_1"},
+    )
+
+    assert [next(iter(request)) for request in requests] == [
+        "replaceImage",
+        "updatePageElementTransform",
+    ]
+    transform = requests[1]["updatePageElementTransform"]["transform"]
+    assert transform["scaleX"] == pytest.approx(2)
+    assert transform["scaleY"] == pytest.approx(1.8)
+    assert transform["translateX"] == pytest.approx(pt_to_emu(10))
+    assert transform["translateY"] == pytest.approx(pt_to_emu(-26), abs=1)
+
+
+def test_existing_image_src_and_class_edit_keeps_style_requests(
+    tmp_path: Path,
+) -> None:
+    image_path = tmp_path / "source.png"
+    Image.new("RGB", (900, 600), "navy").save(image_path)
+    pristine = parse_slide_content(
+        '<Slide><Image id="hero" x="10" y="20" w="100" h="100" /></Slide>'
+    )
+    edited = parse_slide_content(
+        '<Slide><Image id="hero" src="./source.png" fit="stretch" '
+        'class="fill-#ff0000" x="10" y="20" w="100" h="100" /></Slide>'
+    )
+
+    result = diff_presentation(
+        {"01": pristine},
+        {"01": edited},
+        {},
+        workspace_root=tmp_path,
+    )
+    requests = generate_batch_requests(
+        result,
+        {"hero": "google_hero"},
+        {"01": "slide_1"},
+    )
+
+    assert any("updateShapeProperties" in request for request in requests)
+    assert any("updatePageElementTransform" in request for request in requests)
+
+
+def test_failed_push_stretch_fetch_keeps_image_update_geometry_transform(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_dimensions(_url: str) -> tuple[int, int]:
+        raise ValueError("image download exceeds the 25 MB limit")
+
+    monkeypatch.setattr(content_diff, "fetch_image_dimensions", fail_dimensions)
+    result = diff_presentation(
+        {"01": parse_slide_content(
+            '<Slide><Image id="hero" x="10" y="20" w="100" h="100" />'
+            "</Slide>"
+        )},
+        {"01": parse_slide_content(
+            '<Slide><Image id="hero" src="https://example.com/new.png" '
+            'fit="stretch" x="30" y="40" w="200" h="120" /></Slide>'
+        )},
+        {},
+        allow_remote_image_fetch=True,
+        fetch_remote_stretch_dimensions=True,
+    )
+
+    requests = generate_batch_requests(
+        result,
+        {"hero": "google_hero"},
+        {"01": "slide_1"},
+    )
+    assert [next(iter(request)) for request in requests] == [
+        "replaceImage",
+        "updatePageElementTransform",
+    ]
+    assert result.warnings and result.warnings[0].startswith("NOTICE:")
+
+
+def test_contain_push_dimension_fetch_failure_still_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_dimensions(_url: str) -> tuple[int, int]:
+        raise ValueError("image download exceeds the 25 MB limit")
+
+    monkeypatch.setattr(content_diff, "fetch_image_dimensions", fail_dimensions)
+
+    with pytest.raises(ValueError, match="25 MB"):
+        diff_presentation(
+            {},
+            {"01": parse_slide_content(
+                '<Slide><Image id="hero" src="https://example.com/new.png" '
+                'fit="contain" x="10" y="20" w="200" h="120" /></Slide>'
+            )},
+            {},
+            allow_remote_image_fetch=True,
+            fetch_remote_stretch_dimensions=True,
+        )
+
+
+@pytest.mark.parametrize("pixels", [(4_000_000, 1), (1, 4_000_000)])
+def test_stretch_extreme_aspect_source_keeps_authored_box(
+    pixels: tuple[int, int],
+) -> None:
+    request = _create_image_request(
+        "hero",
+        "slide_1",
+        {"x": 12, "y": 18, "w": 160, "h": 90},
+        "https://example.com/source.png",
+        fit="stretch",
+        image_pixel_width=pixels[0],
+        image_pixel_height=pixels[1],
+    )
+
+    assert _visual_geometry(request) == (
+        pt_to_emu(12),
+        pt_to_emu(18),
+        pt_to_emu(160),
+        pt_to_emu(90),
+    )
+
+
+def test_stretch_absurd_aspect_source_has_finite_positive_geometry() -> None:
+    request = _create_image_request(
+        "hero",
+        "slide_1",
+        {"x": 12, "y": 18, "w": 160, "h": 90},
+        "https://example.com/source.png",
+        fit="stretch",
+        image_pixel_width=10**400,
+        image_pixel_height=1,
+    )
+    properties = request["createImage"]["elementProperties"]
+    numbers = [
+        properties["size"][axis]["magnitude"] for axis in ("width", "height")
+    ] + [
+        properties["transform"][axis]
+        for axis in ("scaleX", "scaleY", "translateX", "translateY")
+    ]
+
+    assert all(math.isfinite(value) and value > 0 for value in numbers)
 
 
 @pytest.mark.parametrize(

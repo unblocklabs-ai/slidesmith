@@ -1084,7 +1084,85 @@ def test_persistence_warning_keeps_dropped_authored_class_on_create(
     assert "text-color-#5df2b2" in response["warnings"][0].message
 
 
-def test_persistence_warning_keeps_middle_alignment_on_textbox_create(
+@pytest.mark.parametrize(
+    "remote_alignment",
+    ["content-align-top", "content-align-middle", "content-align-bottom"],
+)
+def test_persistence_warning_suppresses_unset_alignment_default_on_textbox_create(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    remote_alignment: str,
+) -> None:
+    folder = tmp_path / "deck"
+    folder.mkdir()
+    (folder / "id_mapping.json").write_text("{}", encoding="utf-8")
+    intended = parse_slide_content(
+        '<Slide id="s1"><TextBox id="new_box" x="10" y="20" '
+        'w="100" h="30" /></Slide>'
+    )
+    remote = parse_slide_content(
+        '<Slide id="s1"><TextBox id="new_box" x="10" y="20" '
+        f'w="100" h="30" class="{remote_alignment}" /></Slide>'
+    )
+    client = SlidesClient()
+    monkeypatch.setattr(
+        client,
+        "_read_pristine",
+        lambda _folder: ({"01": remote}, {}),
+    )
+    response: dict[str, Any] = {}
+
+    client._append_persistence_warning(
+        folder,
+        {"01": intended},
+        {("new_box", ChangeType.CREATE)},
+        {("01", "new_box")},
+        response,
+    )
+
+    assert "warnings" not in response
+
+
+@pytest.mark.parametrize(
+    "remote_alignment",
+    ["content-align-top", "content-align-bottom"],
+)
+def test_persistence_warning_suppresses_unset_alignment_default_on_rect_create(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    remote_alignment: str,
+) -> None:
+    folder = tmp_path / "deck"
+    folder.mkdir()
+    (folder / "id_mapping.json").write_text("{}", encoding="utf-8")
+    intended = parse_slide_content(
+        '<Slide id="s1"><Rect id="new_rect" x="10" y="20" '
+        'w="100" h="30" /></Slide>'
+    )
+    remote = parse_slide_content(
+        '<Slide id="s1"><Rect id="new_rect" x="10" y="20" '
+        f'w="100" h="30" class="{remote_alignment}" /></Slide>'
+    )
+    client = SlidesClient()
+    monkeypatch.setattr(
+        client,
+        "_read_pristine",
+        lambda _folder: ({"01": remote}, {}),
+    )
+    response: dict[str, Any] = {}
+
+    client._append_persistence_warning(
+        folder,
+        {"01": intended},
+        {("new_rect", ChangeType.CREATE)},
+        {("01", "new_rect")},
+        response,
+    )
+
+    assert "warnings" not in response
+
+
+def test_persistence_warning_keeps_changed_authored_alignment_on_create(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1093,7 +1171,7 @@ def test_persistence_warning_keeps_middle_alignment_on_textbox_create(
     (folder / "id_mapping.json").write_text("{}", encoding="utf-8")
     intended = parse_slide_content(
         '<Slide id="s1"><TextBox id="new_box" x="10" y="20" '
-        'w="100" h="30" /></Slide>'
+        'w="100" h="30" class="content-align-top" /></Slide>'
     )
     remote = parse_slide_content(
         '<Slide id="s1"><TextBox id="new_box" x="10" y="20" '
@@ -1116,7 +1194,10 @@ def test_persistence_warning_keeps_middle_alignment_on_textbox_create(
     )
 
     assert response.get("warnings")
-    assert "content-align-middle" in response["warnings"][0].message
+    assert response["warnings"][0].severity is WarningSeverity.WARNING
+    message = response["warnings"][0].message
+    assert "sent 'content-align-top'" in message
+    assert "remote now 'content-align-middle'" in message
 
 
 def test_created_image_keeps_sub_point_zero_two_geometry_suppression(

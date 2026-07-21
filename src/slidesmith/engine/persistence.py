@@ -25,6 +25,7 @@ GOOGLE_DEFAULT_TEXT_LAYOUT_CLASSES = frozenset(
     {
         "content-align-top",
         "content-align-middle",
+        "content-align-bottom",
         "text-align-left",
         "leading-100",
         "space-above-0",
@@ -346,6 +347,7 @@ def _persistence_warning_severity(
             remote,
             remote_element,
             removed_classes,
+            allow_created_element_alignment_default=newly_created,
         ):
             return WarningSeverity.WARNING
         return None if newly_created else WarningSeverity.NOTICE
@@ -382,6 +384,8 @@ def _only_google_default_class_additions(
     remote: str | set[str],
     element: ParsedElement | None = None,
     author_removed_classes: frozenset[str] | set[str] | None = None,
+    *,
+    allow_created_element_alignment_default: bool = False,
 ) -> bool:
     sent_classes = (
         set()
@@ -409,13 +413,37 @@ def _only_google_default_class_additions(
             class_name.startswith("font-weight-") for class_name in sent_classes
         ):
             return False
-    if "content-align-top" in added:
-        if element is None or TAG_TO_TYPE.get(element.tag) != "TEXT_BOX":
-            return False
-    if "content-align-middle" in added:
-        element_type = TAG_TO_TYPE.get(element.tag) if element is not None else None
-        if element_type not in VALID_GOOGLE_TYPES or element_type == "TEXT_BOX":
-            return False
+    alignment_defaults = added & {
+        "content-align-top",
+        "content-align-middle",
+        "content-align-bottom",
+    }
+    if alignment_defaults:
+        if allow_created_element_alignment_default:
+            authored_alignment = {
+                class_name
+                for class_name in sent_classes | (author_removed_classes or set())
+                if class_name.startswith("content-align-")
+            }
+            if authored_alignment:
+                return False
+        else:
+            # Preserve the pre-existing normalization contract for existing
+            # elements; the author-authored rule above is for creates only.
+            if "content-align-bottom" in alignment_defaults:
+                return False
+            if "content-align-top" in added:
+                if element is None or TAG_TO_TYPE.get(element.tag) != "TEXT_BOX":
+                    return False
+            if "content-align-middle" in added:
+                element_type = (
+                    TAG_TO_TYPE.get(element.tag) if element is not None else None
+                )
+                if (
+                    element_type not in VALID_GOOGLE_TYPES
+                    or element_type == "TEXT_BOX"
+                ):
+                    return False
     return True
 
 

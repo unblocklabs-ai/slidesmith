@@ -14,7 +14,11 @@ agent-legible: name the command/flag and what an operator can now do.
 
 ## [Unreleased]
 
-_Nothing yet._
+### Fixed
+
+- Created elements no longer false-warn when Google stamps a default alignment
+  the author did not set; genuine drops and changes still warn during
+  post-push persistence verification.
 
 ## [0.6.0] — 2026-07-21 — First-class slides & QA fidelity
 

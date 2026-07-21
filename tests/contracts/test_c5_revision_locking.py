@@ -1,6 +1,6 @@
 """Contract C5, offline mechanism: safe pushes while a human may be editing.
 
-Per DESIGN.md, revisionId is a write guard, not a change detector:
+revisionId is a write guard, not a change detector:
 - Human changes are detected by comparing the freshly fetched remote deck
   against the pristine base -- but only for the objects this push touches.
 - The write itself is guarded with writeControl.requiredRevisionId captured

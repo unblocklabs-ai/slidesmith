@@ -159,12 +159,6 @@ uv pip install -e ".[dev]"
 scripts/lint.sh           # Ruff (syntax/unused) + Vulture (dead-code) gate
 ```
 
-slidesmith has been hardened through repeated adversarial review rounds
-(findings tracked in [`docs/review/`](docs/review/)) and successive live
-dogfood campaigns in which agent designers built slides, ran deck-wide
-restyles, and shipped polish on real presentations. See
-[CHANGELOG.md](CHANGELOG.md) for what shipped in each release.
-
 ## License
 
 MIT — see [NOTICE](NOTICE) for third-party attribution.

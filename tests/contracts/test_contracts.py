@@ -1,4 +1,4 @@
-"""The six contracts slidesmith must satisfy (see DESIGN.md).
+"""The six contracts slidesmith must satisfy.
 
 C1  Pull -> no edits -> diff produces zero requests.
 C2  Create a styled text box using the documented class syntax.

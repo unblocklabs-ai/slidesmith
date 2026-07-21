@@ -206,9 +206,9 @@ def cmd_push(args: Any) -> None:
         try:
             def progress(event: str, message: str) -> None:
                 if event == "start":
-                    print(message, end="\r", flush=True)
+                    print(message, end="\r", flush=True, file=sys.stderr)
                 else:
-                    print(message, flush=True)
+                    print(message, flush=True, file=sys.stderr)
 
             resp = await SlidesClient(transport, uploader).push(
                 Path(args.folder),

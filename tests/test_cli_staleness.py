@@ -163,6 +163,48 @@ def test_resume_without_per_slide_errors_before_authentication(
     assert capsys.readouterr().err == "error: --resume requires --per-slide\n"
 
 
+def test_per_slide_progress_uses_stderr_and_stdout_is_final_result_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    folder = tmp_path / "deck"
+    folder.mkdir()
+
+    class FakeResource:
+        def __init__(self, token: str) -> None:
+            assert token == "token"
+
+        async def close(self) -> None:
+            pass
+
+    class FakeClient:
+        def __init__(self, _transport: Any, _uploader: Any) -> None:
+            pass
+
+        async def push(self, _folder: Path, **kwargs: Any) -> dict[str, Any]:
+            progress = kwargs["progress"]
+            progress("start", "slide 01/02 ...")
+            progress("success", "slide 01/02 ✓")
+            return {"replies": [{}, {}]}
+
+    monkeypatch.setattr(cli, "_warn_if_stale", lambda _folder: None)
+    monkeypatch.setattr(cli, "_token", lambda *_args: "token")
+    monkeypatch.setattr("slidesmith.engine.client.SlidesClient", FakeClient)
+    monkeypatch.setattr(
+        "slidesmith.engine.transport.GoogleSlidesTransport", FakeResource
+    )
+    monkeypatch.setattr(
+        "slidesmith.engine.assets.GoogleDriveAssetUploader", FakeResource
+    )
+
+    cli.main(["push", str(folder), "--per-slide"])
+
+    captured = capsys.readouterr()
+    assert captured.out == "Push applied 2 change(s).\n"
+    assert captured.err == "slide 01/02 ...\rslide 01/02 ✓\n"
+
+
 def test_diff_stdout_stays_json_and_stderr_maps_object_ids(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

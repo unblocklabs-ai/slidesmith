@@ -32,7 +32,7 @@ deferred to a deliberate pass). Loop: fix → re-review until no real defect rem
   empty case. Emit `[]`; reserve prose for `--summary`.
 - [x] FR-8 [MEDIUM] `ConflictError` → exit 2 for push but exit 1 for replace-image
   (cli.py:227 vs generic handler). Handle ConflictError centrally → exit 2.
-- [ ] FR-9 [MEDIUM] `push --per-slide` progress goes to stdout, unlike all other
+- [x] FR-9 [MEDIUM] `push --per-slide` progress goes to stdout, unlike all other
   diagnostics on stderr (cli.py:204). Move progress to stderr; stdout = final result.
 - [ ] FR-10 [LOW] Preflight warning uses `push preflight warning:` not canonical
   `warning:` prefix (cli.py:193). Normalize; update the test that locks the wording.

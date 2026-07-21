@@ -1,5 +1,6 @@
 """slidesmith.engine - Edit Google Slides through SML (Slide Markup Language)."""
 
+from slidesmith import __version__
 from slidesmith.engine.client import SlidesClient, diff_folder
 from slidesmith.engine.conflicts import ConflictError
 from slidesmith.engine.transport import (
@@ -13,6 +14,7 @@ from slidesmith.engine.transport import (
 )
 
 __all__ = [
+    "__version__",
     "APIError",
     "AuthenticationError",
     "ConflictError",
@@ -24,5 +26,3 @@ __all__ = [
     "TransportError",
     "diff_folder",
 ]
-
-__version__ = "0.1.0"

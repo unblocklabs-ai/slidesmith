@@ -14,7 +14,16 @@ agent-legible: name the command/flag and what an operator can now do.
 
 ## [Unreleased]
 
-_Nothing yet._
+### Fixed
+- **`slidesmith --version`** now prints the package version without requiring a
+  subcommand.
+- Authored `<Image src="…">` elements can now use zero or negative `x`/`y`
+  origins for full-bleed and off-canvas placement; `w`/`h` remain finite and
+  strictly positive.
+- Authored `<Line>` elements with negative `w`/`h` are canonicalized before
+  `diff` and `push`, preserving the segment for horizontal/vertical lines and
+  lines with both negative axes. A diagonal with exactly one negative axis
+  cannot preserve its direction because SML pulls expose only positive bounds.
 
 ## [0.4.0] — 2026-07-20 — Design-agent roadmap
 

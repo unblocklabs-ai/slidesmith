@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import sys
 
+from slidesmith import __version__
 from slidesmith.cli_commands._support import (
     _presentation_id,
     _request_id_legend,
@@ -80,6 +81,7 @@ def build_parser() -> argparse.ArgumentParser:
             "and push batchUpdates back to the same deck."
         ),
     )
+    p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     sub = p.add_subparsers(dest="command", required=True)
 
     register_core_commands(sub, globals())

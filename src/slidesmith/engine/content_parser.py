@@ -169,6 +169,16 @@ def _parse_element(elem: ET.Element, parent_id: str | None) -> ParsedElement:
     y = _parse_float(elem.get("y"), clean_id, "y")
     w = _parse_float(elem.get("w"), clean_id, "w")
     h = _parse_float(elem.get("h"), clean_id, "h")
+    if elem.tag == "Line":
+        # Google stores line bounds with positive dimensions. Fold a negative
+        # authored extent into its origin. One-negative-axis diagonals cannot
+        # retain their authored direction: SML pulls expose only positive bounds.
+        if x is not None and w is not None and w < 0:
+            x += w
+            w = -w
+        if y is not None and h is not None and h < 0:
+            y += h
+            h = -h
 
     src, fit = _parse_image_authoring(elem, clean_id)
     if src is not None:
@@ -275,12 +285,14 @@ def validate_authored_image_geometry(
     invalid = [
         name
         for name, value in geometry.items()
-        if value is None or not math.isfinite(value) or value <= 0
+        if value is None
+        or not math.isfinite(value)
+        or (name in {"w", "h"} and value <= 0)
     ]
     if invalid:
         raise ValueError(
-            f"Image element '{element_id}' requires finite, strictly-positive "
-            f"x/y/w/h; invalid: {', '.join(invalid)}"
+            f"Image element '{element_id}' requires finite x/y and finite, "
+            f"strictly-positive w/h; invalid: {', '.join(invalid)}"
         )
 
 

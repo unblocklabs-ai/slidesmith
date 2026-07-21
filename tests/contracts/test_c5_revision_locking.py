@@ -604,6 +604,40 @@ def test_persistence_warning_suppresses_only_sub_point_zero_two_geometry_drift(
     assert ("warnings" in response) is warns
 
 
+def test_persistence_verification_accepts_canonical_negative_line_geometry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    folder = tmp_path / "deck"
+    folder.mkdir()
+    (folder / "id_mapping.json").write_text("{}", encoding="utf-8")
+    intended = parse_slide_content(
+        '<Slide id="s1"><Line id="rule" x="100" y="20" '
+        'w="-30" h="-10" /></Slide>'
+    )
+    remote = parse_slide_content(
+        '<Slide id="s1"><Line id="rule" x="70" y="10" '
+        'w="30" h="10" /></Slide>'
+    )
+    client = SlidesClient()
+    monkeypatch.setattr(
+        client,
+        "_read_pristine",
+        lambda _folder: ({"01": remote}, {}),
+    )
+    response: dict[str, Any] = {}
+
+    client._append_persistence_warning(
+        folder,
+        {"01": intended},
+        {("rule", ChangeType.MOVE)},
+        set(),
+        response,
+    )
+
+    assert "warnings" not in response
+
+
 def test_persistence_warning_ignores_created_text_layout_defaults(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

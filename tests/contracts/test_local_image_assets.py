@@ -622,15 +622,14 @@ def test_local_image_fit_cover_stays_clearly_unsupported() -> None:
         )
 
 
-def test_positive_geometry_validation_applies_to_local_images() -> None:
-    with pytest.raises(
-        ValueError,
-        match=r"Image element 'local_logo'.*finite, strictly-positive x/y/w/h",
-    ):
-        parse_slide_content(
-            '<Slide><Image id="local_logo" src="./assets/logo.png" '
-            'x="0" y="2" w="100" h="100" /></Slide>'
-        )
+def test_local_image_geometry_allows_zero_origin() -> None:
+    image = parse_slide_content(
+        '<Slide><Image id="local_logo" src="./assets/logo.png" '
+        'x="0" y="2" w="100" h="100" /></Slide>'
+    )[0]
+
+    assert image.x == 0
+    assert image.y == 2
 
 
 def test_replace_image_cli_accepts_folder_element_and_source(

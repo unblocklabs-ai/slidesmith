@@ -4,15 +4,16 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timedelta, timezone
+from importlib.metadata import version
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
-from slidesmith.engine.conflicts import ConflictError
 from slidesmith import cli
 from slidesmith.cli import _warn_if_stale
+from slidesmith.engine.conflicts import ConflictError
 
 
 def _workspace(tmp_path: Path, pulled_at: datetime) -> Path:
@@ -25,6 +26,14 @@ def _workspace(tmp_path: Path, pulled_at: datetime) -> Path:
         encoding="utf-8",
     )
     return folder
+
+
+def test_cli_version_prints_package_version(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main(["--version"])
+
+    assert excinfo.value.code == 0
+    assert capsys.readouterr().out == f"slidesmith {version('slidesmith')}\n"
 
 
 def test_staleness_warning_fires_after_24_hours(

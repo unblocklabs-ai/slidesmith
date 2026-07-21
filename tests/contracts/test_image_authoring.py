@@ -272,7 +272,7 @@ def test_parser_rejects_unknown_image_fit_loudly() -> None:
     ("fit", "geometry"),
     [
         ("stretch", 'y="2" w="3" h="4"'),
-        ("contain", 'x="1" y="0" w="3" h="4"'),
+        ("contain", 'x="1" y="2" w="0" h="4"'),
         ("stretch", 'x="1" y="2" w="-3" h="4"'),
         ("contain", 'x="1" y="2" w="3" h="nan"'),
         ("stretch", 'x="inf" y="2" w="3" h="4"'),
@@ -284,12 +284,32 @@ def test_authored_image_requires_finite_strictly_positive_geometry(
 ) -> None:
     with pytest.raises(
         ValueError,
-        match=r"Image element 'hero'.*finite, strictly-positive x/y/w/h",
+        match=r"Image element 'hero'.*finite x/y.*strictly-positive w/h",
     ):
         parse_slide_content(
             '<Slide><Image id="hero" src="https://example.com/image.png" '
             f'fit="{fit}" {geometry}/></Slide>'
         )
+
+
+@pytest.mark.parametrize(
+    "geometry",
+    [
+        'x="0" y="0" w="3" h="4"',
+        'x="-12" y="0" w="3" h="4"',
+        'x="0" y="-8" w="3" h="4"',
+    ],
+)
+def test_authored_image_allows_finite_non_positive_origins(geometry: str) -> None:
+    image = parse_slide_content(
+        '<Slide><Image id="hero" src="https://example.com/image.png" '
+        f'{geometry}/></Slide>'
+    )[0]
+
+    assert image.x is not None and image.x <= 0
+    assert image.y is not None and image.y <= 0
+    assert image.w == 3
+    assert image.h == 4
 
 
 def test_image_request_factory_rejects_missing_authored_geometry() -> None:
@@ -307,7 +327,7 @@ def test_image_request_factory_rejects_missing_authored_geometry() -> None:
 
     with pytest.raises(
         ValueError,
-        match=r"Image element 'hero_image'.*finite, strictly-positive x/y/w/h",
+        match=r"Image element 'hero_image'.*finite x/y.*strictly-positive w/h",
     ):
         generate_batch_requests(result, {}, {"01": "slide_1"})
 

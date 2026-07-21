@@ -38,6 +38,7 @@ from slidesmith.engine.bounds import BoundingBox
 from slidesmith.engine.content_generator import generate_slide_content
 from slidesmith.engine.content_parser import parse_slide_content
 from slidesmith.engine.render_tree import RenderNode
+from slidesmith.engine.units import pt_to_emu
 from slidesmith.workspace import materialize
 
 GOLDEN = (
@@ -202,6 +203,34 @@ def test_styled_line_create_uses_line_api_and_round_trips() -> None:
         "weight": {"magnitude": 9525, "unit": "EMU"},
         "dashStyle": "SOLID",
     }
+
+
+@pytest.mark.parametrize(
+    ("geometry", "expected"),
+    [
+        ('x="100" y="20" w="-30" h="10"', (70, 20, 30, 10)),
+        ('x="100" y="20" w="30" h="-10"', (100, 10, 30, 10)),
+    ],
+)
+def test_negative_line_geometry_is_canonicalized_for_create_request(
+    geometry: str,
+    expected: tuple[int, int, int, int],
+) -> None:
+    changes = diff_slide_content(
+        '<Slide id="s1" />',
+        f'<Slide id="s1"><Line id="rule" {geometry} /></Slide>',
+        {},
+        "01",
+    )
+    requests = generate_batch_requests(
+        DiffResult(changes=changes), {}, {"01": "google_slide"}
+    )
+
+    position = requests[0]["createLine"]["elementProperties"]
+    assert position["transform"]["translateX"] == pt_to_emu(expected[0])
+    assert position["transform"]["translateY"] == pt_to_emu(expected[1])
+    assert position["size"]["width"]["magnitude"] == pt_to_emu(expected[2])
+    assert position["size"]["height"]["magnitude"] == pt_to_emu(expected[3])
 
 
 def test_styled_line_pull_and_style_update_use_stroke_classes() -> None:

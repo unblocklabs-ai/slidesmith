@@ -25,18 +25,14 @@ from slidesmith.engine.class_style_requests import (
 from slidesmith.engine.content_diff import Change, ParagraphClassUpdate
 from slidesmith.engine.content_parser import ElementStyles, ParagraphStyles, ParsedRun
 from slidesmith.engine.element_factories import (
-    _create_image_request,
-    _create_line_request,
     _create_move_request,
-    _create_shape_request,
     _parse_color,
     _tag_to_type,
+    emit_recreated_element,
 )
 from slidesmith.engine.hierarchy import has_ancestor_in_set
 from slidesmith.engine.text_requests import (
     _create_paragraph_class_update_requests,
-    _create_run_style_requests,
-    _create_text_insert_requests,
     _create_text_update_requests,
     _utf16_len,
 )
@@ -440,22 +436,42 @@ def _create_one_copied_element(
         return
 
     if elem_type == "LINE":
-        requests.append(_create_line_request(object_id, slide_google_id, position))
-        requests.extend(_apply_line_style_requests(object_id, style))
+        element_style_requests = _apply_line_style_requests(object_id, style)
+        content_url = None
     elif elem_type == "IMAGE":
         content_url = style.get("contentUrl", "")
         if not content_url:
             raise ValueError(f"Cannot copy image '{source_id}': contentUrl is missing")
-        requests.append(
-            _create_image_request(
-                object_id,
-                slide_google_id,
-                position,
-                content_url,
-                native_size=style.get("nativeSize"),
-                native_scale=style.get("nativeScale"),
-            )
+        element_style_requests = []
+    else:
+        content_url = None
+        element_style_requests = _apply_style_requests(object_id, style)
+
+    replayed_text = text if elem_type not in {"LINE", "IMAGE"} else []
+    text_style_info = style.get("text", {})
+    text_style_requests = (
+        _apply_text_style_requests(object_id, replayed_text, text_style_info)
+        if replayed_text and text_style_info
+        else []
+    )
+    requests.extend(
+        emit_recreated_element(
+            object_id=object_id,
+            element_type=elem_type,
+            slide_google_id=slide_google_id,
+            position=position,
+            image_url=content_url,
+            native_size=style.get("nativeSize"),
+            native_scale=style.get("nativeScale"),
+            element_style_requests=element_style_requests,
+            text=replayed_text,
+            text_style_requests=text_style_requests,
+            paragraph_styles=paragraph_styles,
+            runs=runs,
         )
+    )
+
+    if elem_type == "IMAGE":
         image_properties = style.get("imageProperties")
         image_properties_request = _create_image_properties_request(
             object_id, image_properties
@@ -470,35 +486,6 @@ def _create_one_copied_element(
                 "as read-only; the copy uses the source image without those "
                 "adjustments"
             )
-    else:
-        requests.append(
-            _create_shape_request(object_id, slide_google_id, elem_type, position)
-        )
-        requests.extend(_apply_style_requests(object_id, style))
-        if text:
-            requests.extend(_create_text_insert_requests(object_id, text))
-            text_style_info = style.get("text", {})
-            if text_style_info:
-                requests.extend(
-                    _apply_text_style_requests(object_id, text, text_style_info)
-                )
-            if paragraph_styles:
-                paragraph_updates = [
-                    ParagraphClassUpdate(index, None, styles)
-                    for index, styles in enumerate(paragraph_styles)
-                    if styles is not None
-                ]
-                requests.extend(
-                    _create_paragraph_class_update_requests(
-                        object_id,
-                        text,
-                        runs,
-                        paragraph_updates,
-                        reapply_runs=False,
-                    )
-                )
-            if runs:
-                requests.extend(_create_run_style_requests(object_id, runs))
 
     if children:
         _create_children_from_data(

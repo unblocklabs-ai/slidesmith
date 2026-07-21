@@ -67,7 +67,7 @@ deferred to a deliberate pass). Loop: fix → re-review until no real defect rem
 - [x] FR-17 [MEDIUM] Atomic text-file commit duplicated in class_replacement.py vs
   selector.py (theme/snippet import selector's private `_commit_text_files`). Extract
   `engine.atomic_files.commit_text_files`.
-- [ ] FR-18 [MEDIUM] CREATE (element_factories) vs COPY (copy_requests) element
+- [x] FR-18 [MEDIUM] CREATE (element_factories) vs COPY (copy_requests) element
   construction duplicate LINE/IMAGE/shape dispatch + text/paragraph/run replay.
   Extract shared `emit_recreated_element`.
 - [x] FR-19 [MEDIUM] Three parallel raw-API tree traversals (conflicts / client index /

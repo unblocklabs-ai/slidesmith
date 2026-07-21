@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
 
 from slidesmith.engine.classes import Color
@@ -12,7 +13,11 @@ from slidesmith.engine.class_style_requests import (
     _create_class_text_style_request,
 )
 from slidesmith.engine.content_diff import Change, ParagraphClassUpdate
-from slidesmith.engine.content_parser import validate_authored_image_geometry
+from slidesmith.engine.content_parser import (
+    ParagraphStyles,
+    ParsedRun,
+    validate_authored_image_geometry,
+)
 from slidesmith.engine.shape_types import TAG_TO_TYPE, VALID_GOOGLE_TYPES
 from slidesmith.engine.text_requests import (
     _create_paragraph_class_update_requests,
@@ -426,14 +431,83 @@ def _create_image_request(
         }
     }
 
+def emit_recreated_element(
+    *,
+    object_id: str,
+    element_type: str,
+    slide_google_id: str,
+    position: dict[str, float],
+    image_url: str | None = None,
+    native_size: dict[str, float] | None = None,
+    native_scale: dict[str, float] | None = None,
+    image_fit: str | None = None,
+    element_style_requests: Sequence[dict[str, Any]] = (),
+    text: list[str] | None = None,
+    text_style_requests: Sequence[dict[str, Any]] = (),
+    paragraph_styles: list[ParagraphStyles | None] | None = None,
+    runs: list[list[ParsedRun]] | None = None,
+) -> list[dict[str, Any]]:
+    """Emit shared element creation, styling, and authored-text replay requests."""
+    requests: list[dict[str, Any]] = []
+
+    if element_type == "LINE":
+        requests.append(_create_line_request(object_id, slide_google_id, position))
+    elif element_type == "IMAGE":
+        requests.append(
+            _create_image_request(
+                object_id,
+                slide_google_id,
+                position,
+                image_url or "",
+                native_size=native_size,
+                native_scale=native_scale,
+                fit=image_fit,
+            )
+        )
+    else:
+        requests.append(
+            _create_shape_request(
+                object_id,
+                slide_google_id,
+                element_type,
+                position,
+            )
+        )
+
+    requests.extend(element_style_requests)
+
+    if text:
+        requests.extend(_create_text_insert_requests(object_id, text))
+        requests.extend(text_style_requests)
+
+        if paragraph_styles:
+            paragraph_updates = [
+                ParagraphClassUpdate(index, None, styles)
+                for index, styles in enumerate(paragraph_styles)
+                if styles is not None
+            ]
+            requests.extend(
+                _create_paragraph_class_update_requests(
+                    object_id,
+                    text,
+                    runs or [],
+                    paragraph_updates,
+                    reapply_runs=False,
+                )
+            )
+
+        if runs:
+            requests.extend(_create_run_style_requests(object_id, runs))
+
+    return requests
+
+
 def _create_element_requests(
     change: Change,
     slide_google_id: str,
     new_object_id: str,
 ) -> list[dict[str, Any]]:
     """Create requests for a new element."""
-    requests: list[dict[str, Any]] = []
-
     tag = change.tag or "Rect"
     shape_type = _tag_to_type(tag)
     if shape_type == "IMAGE":
@@ -445,89 +519,53 @@ def _create_element_requests(
             w=authored_position.get("w"),
             h=authored_position.get("h"),
         )
-    position = change.new_position or {"x": 0, "y": 0, "w": 100, "h": 100}
-
-    if shape_type == "LINE":
-        requests.append(_create_line_request(new_object_id, slide_google_id, position))
-    elif shape_type == "IMAGE":
         if not change.src:
-            raise ValueError(
-                f"Creating <{tag}> requires an http(s) src URL"
-            )
-        requests.append(
-            _create_image_request(
-                new_object_id,
-                slide_google_id,
-                position,
-                change.src,
-                fit=change.fit,
-            )
-        )
+            raise ValueError(f"Creating <{tag}> requires an http(s) src URL")
     elif shape_type in {"GROUP", "TABLE", "VIDEO", "SHEETS_CHART"}:
         raise ValueError(
             f"Creating <{tag}> requires source-specific data and is not supported"
         )
-    else:
-        requests.append(
-            _create_shape_request(
-                new_object_id,
-                slide_google_id,
-                shape_type,
-                position,
-            )
-        )
+    position = change.new_position or {"x": 0, "y": 0, "w": 100, "h": 100}
 
-    # Apply class-derived element styling (shape fill/outline or line stroke)
+    element_style_requests: list[dict[str, Any]] = []
     if change.new_styles and shape_type != "IMAGE":
         if shape_type == "LINE":
             line_request = _create_class_line_style_request(
                 new_object_id, change.new_styles.stroke
             )
             if line_request:
-                requests.append(line_request)
+                element_style_requests.append(line_request)
         else:
-            requests.extend(
+            element_style_requests.extend(
                 _create_class_shape_style_requests(new_object_id, change.new_styles)
             )
 
-    # Add text if provided
-    if change.new_text:
-        requests.extend(_create_text_insert_requests(new_object_id, change.new_text))
+    text_style_requests: list[dict[str, Any]] = []
+    if change.new_text and change.new_styles:
+        text_request = _create_class_text_style_request(
+            new_object_id, change.new_styles.text_style
+        )
+        if text_request:
+            text_style_requests.append(text_request)
+        para_request = _create_class_paragraph_style_request(
+            new_object_id, change.new_styles.paragraph_style
+        )
+        if para_request:
+            text_style_requests.append(para_request)
 
-        # Apply class-derived text/paragraph styling to the inserted text
-        if change.new_styles:
-            text_request = _create_class_text_style_request(
-                new_object_id, change.new_styles.text_style
-            )
-            if text_request:
-                requests.append(text_request)
-            para_request = _create_class_paragraph_style_request(
-                new_object_id, change.new_styles.paragraph_style
-            )
-            if para_request:
-                requests.append(para_request)
-
-        if change.new_paragraph_styles:
-            paragraph_updates = [
-                ParagraphClassUpdate(index, None, styles)
-                for index, styles in enumerate(change.new_paragraph_styles)
-                if styles is not None
-            ]
-            requests.extend(
-                _create_paragraph_class_update_requests(
-                    new_object_id,
-                    change.new_text,
-                    change.new_runs or [],
-                    paragraph_updates,
-                    reapply_runs=False,
-                )
-            )
-
-        # Apply per-run text styles from <T> runs (override element-level styles)
-        if change.new_runs:
-            requests.extend(_create_run_style_requests(new_object_id, change.new_runs))
-
-    return requests
+    return emit_recreated_element(
+        object_id=new_object_id,
+        element_type=shape_type,
+        slide_google_id=slide_google_id,
+        position=position,
+        image_url=change.src,
+        image_fit=change.fit,
+        element_style_requests=element_style_requests,
+        text=change.new_text,
+        text_style_requests=text_style_requests,
+        paragraph_styles=change.new_paragraph_styles,
+        runs=change.new_runs,
+    )
 
 
 def _parse_color(color: str) -> dict[str, Any]:

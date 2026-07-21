@@ -239,8 +239,6 @@ def test_service_account_requests_only_the_presentations_scope(
 
     class FakeCredentials:
         token = "access-token"
-        expiry = None
-        service_account_email = "slides@example.com"
 
         def refresh(self, _request: object) -> None:
             pass

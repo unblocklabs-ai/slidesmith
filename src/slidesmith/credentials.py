@@ -60,12 +60,6 @@ http = _browser_flow.http
 secrets = _browser_flow.secrets
 urllib = _browser_flow.urllib
 
-_GOOGLE_SCOPE_PREFIX = "https://www.googleapis.com/auth/"
-
-# Client-side caps on returned token lifetimes
-_SA_TOKEN_CAP_SECONDS = 3600  # 60 min for service account tokens
-_DWD_TOKEN_CAP_SECONDS = 600  # 10 min for domain-wide delegation tokens
-
 # Scope changes require ``slidesmith auth login`` once to grant fresh consent.
 # Existing stored sessions minted with the previous scopes continue to work.
 
@@ -105,29 +99,15 @@ Quick start options:
 
 @dataclass
 class Credential:
-    """A single credential issued for a specific provider and operation.
+    """A Google API access token."""
 
-    Mirrors the server-side ``Credential`` Pydantic model.  The ``kind`` field
-    distinguishes SA tokens (``bearer_sa``) from DWD tokens (``bearer_dwd``).
-    Provider-specific extras (e.g. ``service_account_email``) live in
-    ``metadata`` so this class remains extensible to non-Google providers.
-    """
-
-    provider: str  # "google", "slack", …
-    kind: str  # "bearer_sa" | "bearer_dwd" | "api_key" | …
     token: str
-    expires_at: float  # Unix timestamp; 0 if non-expiring
-    scopes: list[str]  # granted OAuth scope URLs (empty for SA tokens)
-    metadata: dict[str, str]  # provider-specific extras
+
 
 def _parse_first_google_credential(
     response: dict[str, Any], cmd_type: str
 ) -> Credential:
-    """Extract and normalise the first Google credential from a TokenResponse dict.
-
-    Caps expiry at the appropriate client-side TTL so the lifetime is bounded
-    regardless of what the server returns.
-    """
+    """Extract the first Google credential from a TokenResponse dict."""
     raw_creds: list[dict[str, Any]] = response.get("credentials", [])
     if not raw_creds:
         raise ValueError(
@@ -139,25 +119,7 @@ def _parse_first_google_credential(
         (c for c in raw_creds if c.get("provider", "google") == "google"), raw_creds[0]
     )
 
-    expires_at_str: str = raw.get("expires_at", "")
-    if expires_at_str:
-        expires_at_dt = datetime.fromisoformat(expires_at_str.replace("Z", "+00:00"))
-        raw_expires = expires_at_dt.timestamp()
-    else:
-        raw_expires = 0.0
-
-    kind = raw.get("kind", "bearer_sa")
-    cap = _DWD_TOKEN_CAP_SECONDS if kind == "bearer_dwd" else _SA_TOKEN_CAP_SECONDS
-    expires_at = min(raw_expires, time.time() + cap) if raw_expires else 0.0
-
-    return Credential(
-        provider=raw.get("provider", "google"),
-        kind=kind,
-        token=raw["token"],
-        expires_at=expires_at,
-        scopes=raw.get("scopes", []),
-        metadata=raw.get("metadata", {}),
-    )
+    return Credential(token=raw["token"])
 
 
 def auth_doctor_lines() -> list[str]:
@@ -318,7 +280,7 @@ class CredentialsManager(BrowserFlowMixin):
             command: Dict representation of a typed Command (must include ``type``).
             reason: Agent-supplied user intent (logged for auditing).
         Returns:
-            A Credential object with the issued token, kind, scopes, and metadata.
+            A Credential object with the issued token.
         """
         cmd_type = command.get("type", "")
 
@@ -332,14 +294,7 @@ class CredentialsManager(BrowserFlowMixin):
             return self._get_service_account_credential()
         elif self._auth_mode == "bare_token":
             assert self._bare_token is not None
-            return Credential(
-                provider="google",
-                kind="bearer_oauth_user",
-                token=self._bare_token,
-                expires_at=time.time() + 3500,  # ~1 h; no way to know exact expiry
-                scopes=[],
-                metadata={},
-            )
+            return Credential(token=self._bare_token)
         elif self._auth_mode == "oauth_client":
             return self._get_oauth_client_credential()
         else:
@@ -567,14 +522,7 @@ class CredentialsManager(BrowserFlowMixin):
         )
         credentials.refresh(Request())
 
-        return Credential(
-            provider="google",
-            kind="bearer_sa",
-            token=credentials.token,
-            expires_at=credentials.expiry.timestamp() if credentials.expiry else 0,
-            scopes=[],
-            metadata={"service_account_email": credentials.service_account_email},
-        )
+        return Credential(token=credentials.token)
 
     def _get_oauth_client_credential(self) -> Credential:
         """Get a credential using a borrowed OAuth client from gws or gogcli.
@@ -592,17 +540,10 @@ class CredentialsManager(BrowserFlowMixin):
         stored = self._load_session_token(profile)
         if stored:
             try:
-                access_token, expires_at = _exchange_refresh_token(
+                access_token, _ = _exchange_refresh_token(
                     creds.client_id, creds.client_secret, stored.raw_token
                 )
-                return Credential(
-                    provider="google",
-                    kind="bearer_oauth_user",
-                    token=access_token,
-                    expires_at=expires_at,
-                    scopes=[],
-                    metadata={},
-                )
+                return Credential(token=access_token)
             except Exception:
                 # Refresh token revoked or expired — fall through to re-auth
                 self._delete_session_token(profile)
@@ -618,14 +559,7 @@ class CredentialsManager(BrowserFlowMixin):
             ),
             profile,
         )
-        return Credential(
-            provider="google",
-            kind="bearer_oauth_user",
-            token=access_token,
-            expires_at=time.time() + 3500,
-            scopes=[],
-            metadata={},
-        )
+        return Credential(token=access_token)
 
     def _load_gateway_config(self) -> dict[str, str] | None:
         """Load endpoint URLs from gateway.json if it exists.

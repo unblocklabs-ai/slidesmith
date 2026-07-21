@@ -22,30 +22,8 @@ from slidesmith.engine.units import emu_to_pt, format_pt, hex_to_rgb, rgb_to_hex
 class PropertyState(Enum):
     """Property state values from Google Slides API."""
 
-    RENDERED = "RENDERED"
     NOT_RENDERED = "NOT_RENDERED"
     INHERIT = "INHERIT"
-
-
-class ThemeColorType(Enum):
-    """Theme color types from Google Slides API."""
-
-    DARK1 = "DARK1"
-    LIGHT1 = "LIGHT1"
-    DARK2 = "DARK2"
-    LIGHT2 = "LIGHT2"
-    ACCENT1 = "ACCENT1"
-    ACCENT2 = "ACCENT2"
-    ACCENT3 = "ACCENT3"
-    ACCENT4 = "ACCENT4"
-    ACCENT5 = "ACCENT5"
-    ACCENT6 = "ACCENT6"
-    TEXT1 = "TEXT1"
-    TEXT2 = "TEXT2"
-    BACKGROUND1 = "BACKGROUND1"
-    BACKGROUND2 = "BACKGROUND2"
-    HYPERLINK = "HYPERLINK"
-    FOLLOWED_HYPERLINK = "FOLLOWED_HYPERLINK"
 
 
 class DashStyle(Enum):

@@ -129,8 +129,6 @@ class GoogleSlidesTransport(Transport):
             access_token: OAuth2 access token with presentations scope
             timeout: Request timeout in seconds
         """
-        self._access_token = access_token
-        self._timeout = timeout
         self._retry_attempts = max(1, retry_attempts)
         self._retry_backoff = max(0.0, retry_backoff)
         ssl_context = ssl.create_default_context(cafile=certifi.where())

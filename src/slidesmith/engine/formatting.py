@@ -18,7 +18,6 @@ from slidesmith.engine.content_parser import parse_slide_content
 class FormatResult:
     """Files inspected and changed by one formatting pass."""
 
-    paths: tuple[Path, ...]
     changed_paths: tuple[Path, ...]
 
 
@@ -67,6 +66,5 @@ def format_folder(folder: str | Path, *, check: bool = False) -> FormatResult:
             path.write_text(formatted, encoding="utf-8")
 
     return FormatResult(
-        paths=paths,
         changed_paths=tuple(path for path, _ in pending),
     )

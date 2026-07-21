@@ -45,7 +45,7 @@ deferred to a deliberate pass). Loop: fix → re-review until no real defect rem
 - [x] FR-13 [MEDIUM] `Credential` over-modeled — only `.token` is read; provider/kind/
   expires_at/scopes/metadata unused across 5 construction paths (credentials.py).
   Trim to what's used.
-- [ ] FR-14 [LOW] Delete dead + un-justified-whitelist symbols and prune the vulture
+- [x] FR-14 [LOW] Delete dead + un-justified-whitelist symbols and prune the vulture
   whitelist: `_GOOGLE_SCOPE_PREFIX` (credentials.py:63), `self._access_token`/
   `self._timeout` (transport.py:132-133), `_QueryParser.query` (selector.py:210),
   `FormatResult.paths` (formatting.py:21), `PropertyState.RENDERED` + `ThemeColorType`

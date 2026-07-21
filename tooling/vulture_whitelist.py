@@ -3,33 +3,9 @@
 # Compatibility geometry helper directly exercised by the untouched donor suite.
 _.absolute_from
 
-# Complete public enum/model surface; not every value is needed internally today.
-RENDERED
-ThemeColorType
-DARK1
-LIGHT1
-DARK2
-LIGHT2
-ACCENT1
-ACCENT2
-ACCENT3
-ACCENT4
-ACCENT5
-ACCENT6
-TEXT1
-TEXT2
-BACKGROUND1
-BACKGROUND2
-HYPERLINK
-FOLLOWED_HYPERLINK
-provider
-scopes
-
 # Retained public/compatibility helpers and diagnostic construction state.
 parse_position_classes
 _.get_google_id
-_._access_token
-_._timeout
 
 # BaseHTTPRequestHandler owns this callback and its signature.
 _.log_message

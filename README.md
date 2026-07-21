@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/assets/banner.jpg" alt="slidesmith" width="100%">
+</p>
+
 # slidesmith
 
 **Agent + human co-editing for Google Slides.** Pull a deck into local,
@@ -9,10 +13,6 @@ the deck open while you push.
 slidesmith treats the deck as the source of truth. A pulled folder is a local
 projection plus a pristine snapshot used to compute safe, field-masked API
 requests — so every push is reviewable before it leaves your machine.
-
-> Descends from think41/extrasuite's `extraslide` (MIT, heavily rewritten — see
-> [NOTICE](NOTICE)). Its release bugs are fixed and its unfinished layers
-> rewritten per [DESIGN.md](DESIGN.md).
 
 ## Requirements
 
@@ -121,10 +121,35 @@ slidesmith ships a packaged agent skill — start there:
 Errors are named and actionable, diffs are exact, and warnings are believable —
 the tool is built to be driven autonomously.
 
-**Install it as a plugin.** The repo ships thin manifests so the skill installs
-into Claude Code and Codex, and publishes to OpenClaw's ClawHub as a skill — see
-[docs/PLUGINS.md](docs/PLUGINS.md) for the one-command install per harness. A
-root `AGENTS.md` also orients any agent working in a checkout.
+### Install it as a plugin
+
+The packaged skill installs into each harness. Install the CLI (above) first so
+`slidesmith` is on your PATH. Full per-harness detail:
+[docs/PLUGINS.md](docs/PLUGINS.md).
+
+**Claude Code**
+
+```
+/plugin marketplace add unblocklabs-ai/slidesmith
+/plugin install slidesmith@slidesmith
+```
+
+**Codex**
+
+```
+codex plugin marketplace add unblocklabs-ai/slidesmith
+```
+
+Then enable it from the `/plugins` picker. A root `AGENTS.md` also auto-loads in
+any checkout.
+
+**OpenClaw**
+
+```
+openclaw skills install @<owner>/slidesmith
+```
+
+Published to ClawHub (replace `<owner>` with the publishing owner).
 
 ## Development
 
@@ -142,4 +167,4 @@ restyles, and shipped polish on real presentations. See
 
 ## License
 
-MIT. See [NOTICE](NOTICE) for attribution to the upstream `extraslide` project.
+MIT — see [NOTICE](NOTICE) for third-party attribution.

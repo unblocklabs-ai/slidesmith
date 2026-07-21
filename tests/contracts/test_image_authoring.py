@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Thread
@@ -13,6 +14,7 @@ from slidesmith.engine import image_fetch
 from slidesmith.engine.content_diff import Change, ChangeType, DiffResult, diff_presentation
 from slidesmith.engine.content_parser import parse_slide_content
 from slidesmith.engine.content_requests import generate_batch_requests
+from slidesmith.engine.element_factories import _create_image_request
 from slidesmith.engine.units import pt_to_emu
 
 
@@ -378,6 +380,43 @@ def test_contain_uses_stubbed_dimensions_and_anchors_top_left(
     # An aspect-matched createImage box already pins the intended visual frame;
     # Google may refactor size/transform values but does not re-fit the geometry.
     assert list(request) == ["createImage"]
+
+
+@pytest.mark.parametrize("pixels", [(10_000, 1), (1, 10_000)])
+def test_extreme_contain_ratios_keep_positive_finite_request_geometry(
+    monkeypatch: pytest.MonkeyPatch,
+    pixels: tuple[int, int],
+) -> None:
+    monkeypatch.setattr(content_diff, "_fetch_image_dimensions", lambda _url: pixels)
+    result = _diff(
+        '<Slide><Image id="hero_image" src="https://example.com/hero.png" '
+        'fit="contain" x="1" y="2" w="0.1" h="0.1"/></Slide>'
+    )
+
+    request = generate_batch_requests(result, {}, {"01": "slide_1"})[0]
+    properties = request["createImage"]["elementProperties"]
+    magnitudes = [
+        properties["size"][axis]["magnitude"] for axis in ("width", "height")
+    ]
+    scales = [properties["transform"][axis] for axis in ("scaleX", "scaleY")]
+
+    assert all(math.isfinite(value) and value > 0 for value in magnitudes)
+    assert all(math.isfinite(value) and value > 0 for value in scales)
+
+
+def test_copied_image_near_degenerate_target_keeps_nonzero_scale() -> None:
+    request = _create_image_request(
+        "image_copy",
+        "slide_1",
+        {"x": 1, "y": 2, "w": 0.00001, "h": 0.00001},
+        "https://example.com/hero.png",
+        native_size={"w": 1_000_000, "h": 1_000_000},
+        native_scale={"x": 1, "y": 1},
+    )
+    transform = request["createImage"]["elementProperties"]["transform"]
+
+    assert math.isfinite(transform["scaleX"]) and transform["scaleX"] > 0
+    assert math.isfinite(transform["scaleY"]) and transform["scaleY"] > 0
 
 
 def test_image_inside_stack_uses_container_position_and_flex_size() -> None:

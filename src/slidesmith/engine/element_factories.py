@@ -348,8 +348,8 @@ def _create_image_request(
         native_h = native_size.get("h", 0)
 
         if native_w > 0 and native_h > 0:
-            scale_x = target_w_emu / native_w
-            scale_y = target_h_emu / native_h
+            scale_x = _nonzero_scale(target_w_emu / native_w)
+            scale_y = _nonzero_scale(target_h_emu / native_h)
 
             return {
                 "createImage": {
@@ -377,6 +377,8 @@ def _create_image_request(
         # the transform. The contain frame already matches the source aspect, so
         # pass it as the intrinsic size instead of encoding it through unequal
         # scales on a square base size.
+        contain_w_emu = max(target_w_emu, _MIN_EMU)
+        contain_h_emu = max(target_h_emu, _MIN_EMU)
         return {
             "createImage": {
                 "objectId": object_id,
@@ -384,8 +386,8 @@ def _create_image_request(
                 "elementProperties": {
                     "pageObjectId": slide_id,
                     "size": {
-                        "width": {"magnitude": target_w_emu, "unit": "EMU"},
-                        "height": {"magnitude": target_h_emu, "unit": "EMU"},
+                        "width": {"magnitude": contain_w_emu, "unit": "EMU"},
+                        "height": {"magnitude": contain_h_emu, "unit": "EMU"},
                     },
                     "transform": {
                         "scaleX": 1,
@@ -400,8 +402,8 @@ def _create_image_request(
 
     # Fallback: use standard base size approach (less accurate)
     base_size_emu = 3000024
-    scale_x = target_w_emu / base_size_emu
-    scale_y = target_h_emu / base_size_emu
+    scale_x = _nonzero_scale(target_w_emu / base_size_emu)
+    scale_y = _nonzero_scale(target_h_emu / base_size_emu)
 
     return {
         "createImage": {

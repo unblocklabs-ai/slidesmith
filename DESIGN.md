@@ -31,9 +31,8 @@ layout" (or the layout source is updated), never silently re-flowed.
 5. Human and agent edit the same property; push aborts with a useful conflict.
 6. Pull → push → pull is idempotent.
 
-Status at scaffold time: C1 and C6 (offline halves) pass. C2 is a strict xfail
-encoding the known parser gap. C3–C5 are live-deck stubs
-(`SLIDESMITH_LIVE_DECK=<presentationId>`).
+Status: C1, C2, and C6 (the offline halves) pass against the golden fixture.
+C3–C5 are live-deck stubs (`SLIDESMITH_LIVE_DECK=<presentationId>`).
 
 ## Key design decisions
 

@@ -4,13 +4,18 @@ from __future__ import annotations
 
 import re
 import sys
+import time
 from collections.abc import Iterable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
+from slidesmith.auth.errors import AuthError
+from slidesmith.credentials import GOG_BARE_TOKEN_REMEDIATION
 from slidesmith.engine.json_utils import read_json
 from slidesmith.engine.diff_model import PushWarning, WarningSeverity
+
+_BARE_TOKEN_EXPIRY_WARNING_SECONDS = 120
 
 
 def _presentation_id(url_or_id: str) -> str:
@@ -33,10 +38,12 @@ class _AuthToken(str):
         *,
         expires_at: float | None,
         refresh_callback: Callable[[], Awaitable[Any]] | None,
+        auth_mode: str | None = None,
     ) -> _AuthToken:
         value = super().__new__(cls, token)
         value.expires_at = expires_at
         value.refresh_callback = refresh_callback
+        value.auth_mode = auth_mode
         return value
 
 
@@ -50,6 +57,22 @@ def _token(command_type: str, target: str) -> str:
         command=command,
         reason=reason,
     )
+    auth_mode = manager.auth_mode
+    if auth_mode == "bare_token":
+        probe_status, probed_expires_at = manager.probe_bare_token(cred.token)
+        if probe_status == "invalid":
+            raise AuthError(GOG_BARE_TOKEN_REMEDIATION)
+        if probe_status == "valid" and probed_expires_at is not None:
+            cred.expires_at = probed_expires_at
+            remaining = max(0, int(probed_expires_at - time.time()))
+            if remaining <= _BARE_TOKEN_EXPIRY_WARNING_SECONDS:
+                print(
+                    "warning: GOG_ACCESS_TOKEN expires in about "
+                    f"{remaining} seconds and cannot be refreshed by Slidesmith; "
+                    "re-export it after a throwaway `gog` API request before a "
+                    "long push",
+                    file=sys.stderr,
+                )
 
     async def refresh() -> tuple[str, float | None] | None:
         refreshed = manager.refresh_credential(command=command, reason=reason)
@@ -61,6 +84,7 @@ def _token(command_type: str, target: str) -> str:
         cred.token,
         expires_at=cred.expires_at,
         refresh_callback=refresh,
+        auth_mode=auth_mode,
     )
 
 
@@ -68,9 +92,14 @@ def _transport_options(token: object) -> dict[str, Any]:
     """Extract optional refresh metadata without changing test token seams."""
     callback = getattr(token, "refresh_callback", None)
     expires_at = getattr(token, "expires_at", None)
-    if callback is None and expires_at is None:
+    auth_mode = getattr(token, "auth_mode", None)
+    if callback is None and expires_at is None and auth_mode is None:
         return {}
-    return {"credential_refresh": callback, "expires_at": expires_at}
+    return {
+        "credential_refresh": callback,
+        "expires_at": expires_at,
+        "auth_mode": auth_mode,
+    }
 
 
 def _warn_if_stale(folder: str | Path, *, now: datetime | None = None) -> None:

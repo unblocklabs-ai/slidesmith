@@ -4,11 +4,17 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
 from slidesmith.engine.json_utils import read_json
+from slidesmith.auth.browser_flow import (
+    GOG_BARE_TOKEN_REMEDIATION,
+    BareTokenProbeResult,
+    probe_bare_token as _probe_bare_token,
+)
 from slidesmith.auth.discovery import (
     OAuthClientCredentials,
     _find_gogcli_client_credentials,
@@ -54,6 +60,7 @@ def auth_doctor_lines(
     *,
     find_gws_client_credentials: ClientDiscovery = _find_gws_client_credentials,
     find_gogcli_client_credentials: ClientDiscovery = _find_gogcli_client_credentials,
+    probe_bare_token: Callable[[str], BareTokenProbeResult] = _probe_bare_token,
 ) -> list[str]:
     """Return a layered, secret-safe authentication diagnosis."""
     oauth_creds = (
@@ -61,10 +68,19 @@ def auth_doctor_lines(
     )
     server_url = os.environ.get("EXTRASUITE_SERVER_URL", "").strip()
     service_account = os.environ.get("SERVICE_ACCOUNT_PATH", "").strip()
-    bare_token = bool(
-        os.environ.get("GOOGLE_WORKSPACE_CLI_TOKEN")
-        or os.environ.get("GOG_ACCESS_TOKEN")
+    bare_token = os.environ.get("GOOGLE_WORKSPACE_CLI_TOKEN") or os.environ.get(
+        "GOG_ACCESS_TOKEN"
     )
+    bare_probe_status: str = "unreachable"
+    bare_expires_at: float | None = None
+    if bare_token:
+        try:
+            bare_probe_status, bare_expires_at = probe_bare_token(bare_token)
+        except Exception:
+            # Doctor is diagnostic only; a tokeninfo outage must not become an
+            # authentication failure or expose the probe's implementation error.
+            bare_probe_status = "unreachable"
+            bare_expires_at = None
 
     if oauth_creds is not None:
         credential_line = (
@@ -96,10 +112,26 @@ def auth_doctor_lines(
         sa_state = "FOUND" if sa_path.is_file() else "MISSING"
         lines.append(f"Service account: {sa_state} ({sa_path})")
     if bare_token:
-        lines.append(
-            "Pre-obtained access token: FOUND (environment variable); usable now, "
-            "expiry unknown (~1h typical); long pushes may fail mid-run"
-        )
+        if bare_probe_status == "valid":
+            if bare_expires_at is None:
+                expiry_detail = "expiry unavailable"
+            else:
+                remaining = max(0, int(bare_expires_at - time.time()))
+                expiry_detail = f"expires in approximately {remaining} seconds"
+            lines.append(
+                "Pre-obtained access token: FOUND (environment variable); VALID; "
+                f"{expiry_detail}"
+            )
+        elif bare_probe_status == "invalid":
+            lines.append(
+                "Pre-obtained access token: FOUND (environment variable); "
+                f"EXPIRED/INVALID. {GOG_BARE_TOKEN_REMEDIATION}"
+            )
+        else:
+            lines.append(
+                "Pre-obtained access token: FOUND (environment variable); usable now, "
+                "expiry unknown (~1h typical); long pushes may fail mid-run"
+            )
     lines.append(f"Session profile: {profile_name}")
 
     keyring_error: Exception | None = None
@@ -154,25 +186,39 @@ def auth_doctor_lines(
 
     service_account_valid = bool(service_account and Path(service_account).is_file())
     credentials_found = bool(
-        oauth_creds is not None or server_url or service_account_valid or bare_token
+        oauth_creds is not None
+        or server_url
+        or service_account_valid
+        or bool(bare_token)
     )
-    immediate_auth = service_account_valid or bare_token
+    immediate_auth = service_account_valid or bool(bare_token)
     token_statuses = {keyring_status, file_status}
     if not credentials_found:
         verdict = "CREDENTIAL ABSENT"
         next_command = "gws auth setup"
+    elif bare_probe_status == "invalid" and bare_token:
+        verdict = "TOKEN EXPIRED OR INVALID"
+        next_command = (
+            "run a throwaway `gog` API request, re-export GOG_ACCESS_TOKEN, then retry"
+        )
+    elif immediate_auth and bare_token:
+        if bare_probe_status == "valid" and bare_expires_at is not None:
+            remaining = max(0, int(bare_expires_at - time.time()))
+            verdict = f"READY (valid; expires in approximately {remaining} seconds)"
+        elif bare_probe_status == "valid":
+            verdict = "READY (valid; expiry unavailable)"
+        else:
+            verdict = (
+                "READY (usable now, expiry unknown (~1h typical); long pushes may fail "
+                "mid-run)"
+            )
+        next_command = "slidesmith pull <presentation-url-or-id>"
     elif "access-only" in token_statuses:
         verdict = "USABLE BUT EXPIRING"
         lines.append(
             "OAuth session is usable-but-expiring because Google withheld a refresh "
             "token. Revoke access at https://myaccount.google.com/permissions and "
             "try again, or use your own OAuth client."
-        )
-        next_command = "slidesmith pull <presentation-url-or-id>"
-    elif immediate_auth and bare_token:
-        verdict = (
-            "READY (usable now, expiry unknown (~1h typical); long pushes may fail "
-            "mid-run)"
         )
         next_command = "slidesmith pull <presentation-url-or-id>"
     elif "valid" in token_statuses or immediate_auth:

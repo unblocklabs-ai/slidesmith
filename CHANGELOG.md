@@ -24,6 +24,19 @@ agent-legible: name the command/flag and what an operator can now do.
   earlier slides are inserted or deleted; freshly authored id-less slides and
   pre-slide-ID baselines use positional fallback until a pull assigns an ID.
 
+### Added
+
+- Bare `GOG_ACCESS_TOKEN` and `GOOGLE_WORKSPACE_CLI_TOKEN` commands now perform
+  a best-effort startup tokeninfo check. Invalid or expired tokens fail before
+  deck work with gog refresh-and-re-export guidance; valid responses record
+  lifetime for near-expiry warnings.
+
+### Changed
+
+- Bare-token 401s and `auth doctor` now report the gog throwaway-request,
+  re-export, and `--resume` recovery path; OAuth and service-account 401
+  guidance is unchanged.
+
 ## [0.5.0] — 2026-07-21 — Continuity & QA signal
 
 Driven by two more rounds of ranked dogfood feedback (14 items) from an agent

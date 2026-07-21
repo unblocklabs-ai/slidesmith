@@ -16,6 +16,8 @@ from typing import Any, Awaitable, Callable
 import certifi
 import httpx
 
+from slidesmith.auth.browser_flow import GOG_BARE_TOKEN_REMEDIATION
+
 # API constants
 API_BASE = "https://slides.googleapis.com/v1/presentations"
 DEFAULT_TIMEOUT = 60
@@ -131,6 +133,7 @@ class GoogleSlidesTransport(Transport):
         retry_backoff: float = 0.1,
         credential_refresh: CredentialRefresh | None = None,
         expires_at: float | None = None,
+        auth_mode: str | None = None,
     ) -> None:
         """Initialize the transport.
 
@@ -146,6 +149,7 @@ class GoogleSlidesTransport(Transport):
             expires_at = getattr(access_token, "expires_at", None)
         self._credential_refresh = credential_refresh
         self._expires_at = expires_at
+        self._auth_mode = auth_mode
         self._refresh_lock = asyncio.Lock()
         self._refresh_task: asyncio.Task[bool] | None = None
         ssl_context = ssl.create_default_context(cafile=certifi.where())
@@ -291,6 +295,8 @@ class GoogleSlidesTransport(Transport):
             return
         if time.time() < self._expires_at - EXPIRY_BUFFER_SECONDS:
             return
+        if self._auth_mode == "bare_token":
+            return
         await self._refresh_access_token()
 
     async def _refresh_access_token(self) -> bool:
@@ -374,8 +380,12 @@ class GoogleSlidesTransport(Transport):
         body = e.response.text
         return APIError(f"API error ({status}): {body}", status_code=status)
 
-    @staticmethod
-    def _guided_authentication_error() -> AuthenticationError:
+    def _guided_authentication_error(self) -> AuthenticationError:
+        if self._auth_mode == "bare_token":
+            return AuthenticationError(
+                f"{GOG_BARE_TOKEN_REMEDIATION} For --per-slide pushes, use "
+                "--resume to pick up where it left off."
+            )
         return AuthenticationError(
             "Invalid or expired access token. Please re-export a fresh token and "
             "retry. For --per-slide pushes, use --resume to pick up where "

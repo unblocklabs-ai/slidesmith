@@ -6,6 +6,7 @@ import hashlib
 import html
 import http.server
 import json
+import math
 import os
 import secrets
 import select
@@ -16,7 +17,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 from slidesmith.auth.errors import AuthError
 
@@ -28,12 +29,42 @@ except ImportError:
     SSL_CONTEXT = ssl.create_default_context()
 
 _GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
+_GOOGLE_TOKENINFO_URL = "https://oauth2.googleapis.com/tokeninfo"
 _OAUTH_USER_SCOPES = [
     "https://www.googleapis.com/auth/presentations",
     "https://www.googleapis.com/auth/drive.file",
     "openid",
     "email",
 ]
+
+GOG_BARE_TOKEN_REMEDIATION = (
+    "Your GOG_ACCESS_TOKEN is expired or invalid. gog sometimes exports a stale "
+    "token — run a throwaway `gog` API request to force a refresh, then re-export "
+    "GOG_ACCESS_TOKEN and retry."
+)
+
+BareTokenProbeResult = tuple[Literal["valid", "invalid", "unreachable"], float | None]
+
+
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Reject tokeninfo redirects instead of forwarding the access token."""
+
+    def redirect_request(
+        self,
+        req: urllib.request.Request,
+        fp: Any,
+        code: int,
+        _msg: str,
+        headers: Any,
+        _newurl: str,
+    ) -> None:
+        raise urllib.error.HTTPError(
+            req.full_url,
+            code,
+            "Google tokeninfo redirects are disabled",
+            headers,
+            fp,
+        )
 
 
 def _post_form_json(url: str, fields: dict[str, str]) -> dict[str, Any]:
@@ -48,6 +79,76 @@ def _post_form_json(url: str, fields: dict[str, str]) -> dict[str, Any]:
     with urllib.request.urlopen(req, timeout=30, context=SSL_CONTEXT) as response:
         result: dict[str, Any] = json.loads(response.read().decode("utf-8"))
         return result
+
+
+def _get_tokeninfo_json(access_token: str) -> dict[str, Any]:
+    """POST tokeninfo to the fixed, HTTPS-verified Google endpoint."""
+    parsed = urllib.parse.urlparse(_GOOGLE_TOKENINFO_URL)
+    if parsed.scheme != "https" or parsed.hostname != "oauth2.googleapis.com":
+        raise RuntimeError("Google tokeninfo endpoint must remain host-pinned")
+    request = urllib.request.Request(
+        _GOOGLE_TOKENINFO_URL,
+        data=urllib.parse.urlencode({"access_token": access_token}).encode("utf-8"),
+        headers={
+            "Accept": "application/json",
+            "Content-Type": "application/x-www-form-urlencoded",
+        },
+        method="POST",
+    )
+    opener = urllib.request.build_opener(
+        urllib.request.HTTPSHandler(context=SSL_CONTEXT),
+        _NoRedirectHandler(),
+    )
+    with opener.open(request, timeout=30) as response:
+        status = response.getcode()
+        if status is not None and 300 <= status < 400:
+            raise urllib.error.HTTPError(
+                request.full_url,
+                status,
+                "Google tokeninfo redirects are disabled",
+                response.headers,
+                response,
+            )
+        result = json.loads(response.read().decode("utf-8"))
+    if not isinstance(result, dict):
+        raise ValueError("Google tokeninfo response was not a JSON object")
+    return result
+
+
+def _numeric(value: Any) -> float | None:
+    """Parse finite numeric tokeninfo fields, including Google's strings."""
+    if isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def probe_bare_token(access_token: str) -> BareTokenProbeResult:
+    """Classify a bare token without making network failures fatal."""
+    try:
+        result = _get_tokeninfo_json(access_token)
+    except urllib.error.HTTPError as exc:
+        if exc.code in (400, 401):
+            return "invalid", None
+        return "unreachable", None
+    except (OSError, TimeoutError, ValueError):
+        return "unreachable", None
+
+    if result.get("error") or result.get("error_description"):
+        return "invalid", None
+
+    now = time.time()
+    expires_in = _numeric(result.get("expires_in"))
+    expires_at = now + expires_in if expires_in is not None else None
+    exp = _numeric(result.get("exp"))
+    if exp is not None:
+        expires_at = exp
+    if expires_at is not None and expires_at <= now:
+        return "invalid", expires_at
+    return "valid", expires_at
 
 
 def _exchange_refresh_token(

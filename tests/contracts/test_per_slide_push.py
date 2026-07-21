@@ -8,9 +8,14 @@ import re
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
 
+import slidesmith.credentials as credentials_module
 import slidesmith.engine.client as client_module
+from slidesmith.cli_commands._support import _token as cli_token
+from slidesmith.cli_commands._support import _transport_options
+from slidesmith.credentials import Credential
 from slidesmith.engine.client import (
     PerSlideConflictError,
     PerSlidePushError,
@@ -27,7 +32,7 @@ from slidesmith.engine.push_progress import (
 )
 from slidesmith.engine.transport import (
     APIError,
-    AuthenticationError,
+    GoogleSlidesTransport,
     PresentationData,
     Transport,
 )
@@ -501,23 +506,53 @@ async def test_per_slide_refreshes_before_each_batch(
 
 
 async def test_bare_token_auth_failure_keeps_ledger_and_explains_resume(
+    monkeypatch: pytest.MonkeyPatch,
     resumable_workspace: tuple[ResumableStubTransport, SlidesClient, Path],
 ) -> None:
-    transport, client, folder = resumable_workspace
-    original_batch_update = transport.batch_update
+    stub, client, folder = resumable_workspace
 
-    async def fail_on_second_batch(*args: Any, **kwargs: Any) -> dict[str, Any]:
-        if len(transport.batch_calls) >= 1:
-            raise AuthenticationError(
-                "Invalid or expired access token. Please re-export a fresh token and "
-                "use --resume to pick up where it left off."
-            )
-        return await original_batch_update(*args, **kwargs)
+    class FakeCredentialsManager:
+        auth_mode = "bare_token"
 
-    transport.batch_update = fail_on_second_batch  # type: ignore[method-assign]
+        def get_credential(self, **_kwargs: Any) -> Credential:
+            return Credential(token="wired-token")
 
-    with pytest.raises(PerSlidePushError, match=r"re-export a fresh token.*--resume"):
-        await client.push(folder, per_slide=True)
+        def probe_bare_token(self, _token: str) -> tuple[str, None]:
+            return "unreachable", None
+
+        def refresh_credential(self, **_kwargs: Any) -> None:
+            return None
+
+    monkeypatch.setattr(
+        credentials_module, "CredentialsManager", FakeCredentialsManager
+    )
+    token = cli_token("slide.push", str(folder))
+    live_transport = GoogleSlidesTransport(
+        token, retry_attempts=1, **_transport_options(token)
+    )
+    await live_transport._client.aclose()
+    await live_transport._thumbnail_client.aclose()
+    post_calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal post_calls
+        if request.method == "GET":
+            return httpx.Response(200, json=stub.original, request=request)
+        post_calls += 1
+        if post_calls == 1:
+            return httpx.Response(200, json={"replies": [{}]}, request=request)
+        return httpx.Response(401, request=request)
+
+    live_transport._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    live_transport._thumbnail_client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler)
+    )
+    client._transport = live_transport
+    try:
+        with pytest.raises(PerSlidePushError, match=r"GOG_ACCESS_TOKEN.*gog.*--resume"):
+            await client.push(folder, per_slide=True)
+    finally:
+        await live_transport.close()
 
     ledger = json.loads((folder / PUSH_PROGRESS_FILE).read_text(encoding="utf-8"))
     assert [entry["slideIndex"] for entry in ledger["succeeded"]] == ["01"]

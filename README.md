@@ -123,8 +123,14 @@ revoke the app at `myaccount.google.com/permissions` or configure your own
 OAuth client. `auth doctor` labels that session as usable-but-expiring.
 
 OAuth and service-account credentials are refreshed proactively during pushes
-and once reactively after a 401. Environment-token mode has unknown expiry
-(about one hour is typical), so a long push can still fail; retry a failed
+and once reactively after a 401. Bare environment-token mode performs one
+startup validation against Google's fixed HTTPS tokeninfo endpoint before an
+API-bound command. An invalid or already-expired token fails before any deck
+work with gog-specific recovery: run a throwaway `gog` API request to force a
+refresh, re-export `GOG_ACCESS_TOKEN`, and retry. A reachable valid response
+also records the remaining lifetime so near-expiry runs can warn; bare tokens
+still cannot be refreshed by Slidesmith. If tokeninfo is unreachable, the
+command proceeds with the previous unknown-expiry behavior. Retry a failed
 `--per-slide` push with `--resume` after re-exporting a fresh token.
 
 ## For agents

@@ -1107,10 +1107,16 @@ GETs and `batchUpdate`; a second 401 is terminal. Service-account credentials
 are re-minted through `google-auth` when available.
 
 `GOG_ACCESS_TOKEN` and `GOOGLE_WORKSPACE_CLI_TOKEN` are bare environment
-tokens, so their expiry is unknown (about one hour is typical) and they cannot
-be refreshed by Slidesmith. A terminal 401 explains that a fresh token must be
-re-exported. For a long `--per-slide` push, the progress ledger is written
-before the error; re-export the token and run `slidesmith push <ID>
+tokens and cannot be refreshed by Slidesmith. Before an API-bound command,
+Slidesmith makes one GET to Google's fixed HTTPS tokeninfo endpoint. An
+invalid or already-expired response fails before deck work and explains the
+gog recovery: run a throwaway `gog` API request to force a refresh, then
+re-export `GOG_ACCESS_TOKEN` and retry. A valid response supplies the remaining
+lifetime for near-expiry warnings; it does not add refresh material. If the
+tokeninfo service is unreachable, Slidesmith proceeds with the prior
+unknown-expiry behavior. A terminal bare-token 401 gives the same recovery
+guidance. For a long `--per-slide` push, the progress ledger is written before
+the error; re-export the token and run `slidesmith push <ID>
 --per-slide --resume` to pick up where it left off. An OAuth login where
 Google withheld a refresh token is treated the same way: it remains usable for
 about one hour, and `auth doctor` prints the revoke-at-permissions or own-client

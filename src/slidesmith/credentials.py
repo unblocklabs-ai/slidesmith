@@ -26,12 +26,15 @@ from typing import Any
 from slidesmith.engine.json_utils import read_json
 from slidesmith.auth import browser_flow as _browser_flow
 from slidesmith.auth.browser_flow import (
+    GOG_BARE_TOKEN_REMEDIATION,  # noqa: F401
     SSL_CONTEXT,  # noqa: F401
+    BareTokenProbeResult,  # noqa: F401
     BrowserFlowMixin,  # noqa: F401
     _exchange_refresh_token,  # noqa: F401
     _GOOGLE_TOKEN_URL,  # noqa: F401
     _OAUTH_USER_SCOPES,  # noqa: F401
     _post_form_json,  # noqa: F401
+    probe_bare_token as _probe_bare_token,
 )
 from slidesmith.auth.discovery import (
     OAuthClientCredentials,  # noqa: F401
@@ -153,6 +156,7 @@ def auth_doctor_lines() -> list[str]:
     return _auth_doctor_lines(
         find_gws_client_credentials=_find_gws_client_credentials,
         find_gogcli_client_credentials=_find_gogcli_client_credentials,
+        probe_bare_token=_probe_bare_token,
     )
 
 
@@ -280,6 +284,15 @@ class CredentialsManager(BrowserFlowMixin):
 
         # Migrate legacy plain-text files from pre-keyring versions
         self._migrate_legacy_files()
+
+    @property
+    def auth_mode(self) -> str:
+        """Return the selected authentication mode for CLI transport setup."""
+        return self._auth_mode
+
+    def probe_bare_token(self, token: str) -> BareTokenProbeResult:
+        """Probe a bare token through the shared, fixed-host tokeninfo helper."""
+        return _probe_bare_token(token)
 
     def get_credential(
         self,

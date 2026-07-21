@@ -13,6 +13,10 @@ from typing import Any
 import httpx
 import pytest
 
+from slidesmith.auth.browser_flow import GOG_BARE_TOKEN_REMEDIATION
+from slidesmith.cli_commands._support import _token as cli_token
+from slidesmith.cli_commands._support import _transport_options
+from slidesmith.credentials import Credential
 from slidesmith.engine.client import SlidesClient
 from slidesmith.engine.conflicts import collect_request_object_ids, detect_conflicts
 from slidesmith.engine.diff_model import PushWarning, WarningSeverity
@@ -27,10 +31,17 @@ from slidesmith.engine.transport import (
 
 
 async def _mocked_transport(
-    handler: Any, *, retry_attempts: int = 3
+    handler: Any,
+    *,
+    retry_attempts: int = 3,
+    access_token: str = "token",
+    **options: Any,
 ) -> GoogleSlidesTransport:
     transport = GoogleSlidesTransport(
-        "token", retry_attempts=retry_attempts, retry_backoff=0
+        access_token,
+        retry_attempts=retry_attempts,
+        retry_backoff=0,
+        **options,
     )
     await transport._client.aclose()
     await transport._thumbnail_client.aclose()
@@ -299,6 +310,50 @@ async def test_401_without_refresh_has_reexport_and_resume_guidance() -> None:
         await transport.close()
 
     assert "re-export a fresh token" in str(excinfo.value)
+    assert "--resume" in str(excinfo.value)
+
+
+@pytest.mark.parametrize("auth_mode", ["bare_token", "oauth_client", "service_account"])
+async def test_real_token_transport_wiring_preserves_auth_guidance(
+    monkeypatch: pytest.MonkeyPatch, auth_mode: str
+) -> None:
+    class FakeCredentialsManager:
+        def __init__(self) -> None:
+            self.auth_mode = auth_mode
+
+        def get_credential(self, **_kwargs: Any) -> Credential:
+            return Credential(token="wired-token")
+
+        def probe_bare_token(self, _token: str) -> tuple[str, None]:
+            if auth_mode != "bare_token":
+                raise AssertionError("non-bare auth modes must not probe")
+            return "unreachable", None
+
+        def refresh_credential(self, **_kwargs: Any) -> None:
+            return None
+
+    monkeypatch.setattr(
+        "slidesmith.credentials.CredentialsManager", FakeCredentialsManager
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, request=request)
+
+    token = cli_token("slide.pull", "presentation-id")
+    options = _transport_options(token)
+    transport = await _mocked_transport(handler, access_token=token, **options)
+    try:
+        with pytest.raises(AuthenticationError) as excinfo:
+            await transport.get_presentation("pid")
+    finally:
+        await transport.close()
+
+    assert transport._auth_mode == auth_mode
+    if auth_mode == "bare_token":
+        assert GOG_BARE_TOKEN_REMEDIATION in str(excinfo.value)
+    else:
+        assert str(excinfo.value).startswith("Invalid or expired access token.")
+        assert GOG_BARE_TOKEN_REMEDIATION not in str(excinfo.value)
     assert "--resume" in str(excinfo.value)
 
 

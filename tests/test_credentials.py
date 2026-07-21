@@ -14,6 +14,10 @@ from typing import Any
 import pytest
 
 from slidesmith import cli, credentials
+from slidesmith.auth import browser_flow
+from slidesmith.auth.errors import AuthError
+from slidesmith.cli_commands._support import _token as cli_token
+from slidesmith.cli_commands._support import _transport_options
 from slidesmith.credentials import (
     CredentialsManager,
     FallbackSessionStore,
@@ -663,11 +667,331 @@ def test_auth_doctor_warns_bare_tokens_about_unknown_expiry(
 ) -> None:
     _doctor_setup(tmp_path, monkeypatch, oauth=False)
     monkeypatch.setenv("GOG_ACCESS_TOKEN", "bare-access-token")
+    monkeypatch.setattr(
+        credentials, "_probe_bare_token", lambda _token: ("unreachable", None)
+    )
 
     cli.main(["auth", "doctor"])
 
     output = capsys.readouterr().out
     assert "usable now, expiry unknown (~1h typical); long pushes may fail mid-run" in output
+
+
+def test_tokeninfo_probe_uses_fixed_google_post_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeResponse:
+        headers: dict[str, str] = {}
+
+        def __enter__(self) -> FakeResponse:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            pass
+
+        def read(self) -> bytes:
+            return b'{"expires_in": 1800}'
+
+        def getcode(self) -> int:
+            return 200
+
+    calls: list[tuple[Any, int]] = []
+    opener_handlers: list[tuple[Any, ...]] = []
+
+    class FakeOpener:
+        def open(self, request: Any, *, timeout: int) -> FakeResponse:
+            calls.append((request, timeout))
+            return FakeResponse()
+
+    def fake_build_opener(*handlers: Any) -> FakeOpener:
+        opener_handlers.append(handlers)
+        return FakeOpener()
+
+    monkeypatch.setattr(
+        browser_flow.urllib.request, "build_opener", fake_build_opener
+    )
+
+    status, expires_at = browser_flow.probe_bare_token("token with spaces")
+
+    assert status == "valid"
+    assert expires_at is not None
+    request, timeout = calls[0]
+    assert request.get_method() == "POST"
+    assert request.full_url == "https://oauth2.googleapis.com/tokeninfo"
+    assert request.data == b"access_token=token+with+spaces"
+    assert timeout == 30
+    assert any(
+        isinstance(handler, browser_flow._NoRedirectHandler)
+        for handler in opener_handlers[0]
+    )
+
+
+def test_tokeninfo_redirect_is_unreachable_without_forwarding_to_attacker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tokeninfo_requests: list[Any] = []
+    attacker_requests: list[Any] = []
+
+    class RedirectResponse:
+        headers = {"Location": "https://attacker.example/tokeninfo"}
+
+        def getcode(self) -> int:
+            return 302
+
+        def close(self) -> None:
+            pass
+
+    class FakeOpener:
+        def __init__(self, redirect_handler: Any) -> None:
+            self.redirect_handler = redirect_handler
+
+        def open(self, request: Any, *, timeout: int) -> Any:
+            tokeninfo_requests.append(request)
+            response = RedirectResponse()
+            self.redirect_handler.redirect_request(
+                request,
+                response,
+                302,
+                "Found",
+                response.headers,
+                response.headers["Location"],
+            )
+            attacker_requests.append(response.headers["Location"])
+            return response
+
+    def fake_build_opener(*handlers: Any) -> FakeOpener:
+        redirect_handler = next(
+            handler
+            for handler in handlers
+            if isinstance(handler, browser_flow._NoRedirectHandler)
+        )
+        return FakeOpener(redirect_handler)
+
+    monkeypatch.setattr(
+        browser_flow.urllib.request, "build_opener", fake_build_opener
+    )
+
+    assert browser_flow.probe_bare_token("SENSITIVE") == ("unreachable", None)
+    assert len(tokeninfo_requests) == 1
+    assert tokeninfo_requests[0].full_url == "https://oauth2.googleapis.com/tokeninfo"
+    assert tokeninfo_requests[0].data == b"access_token=SENSITIVE"
+    assert attacker_requests == []
+
+
+@pytest.mark.parametrize(
+    ("outcome", "expected"),
+    [
+        (400, "invalid"),
+        (401, "invalid"),
+        (403, "unreachable"),
+        (500, "unreachable"),
+        ("timeout", "unreachable"),
+        ("non-json", "unreachable"),
+    ],
+)
+def test_bare_token_probe_classifies_tokeninfo_failures(
+    monkeypatch: pytest.MonkeyPatch, outcome: int | str, expected: str
+) -> None:
+    class FakeResponse:
+        headers: dict[str, str] = {}
+
+        def __enter__(self) -> FakeResponse:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            pass
+
+        def getcode(self) -> int:
+            return 200
+
+        def read(self) -> bytes:
+            return b"not-json" if outcome == "non-json" else b"{}"
+
+    class FakeOpener:
+        def open(self, request: Any, *, timeout: int) -> FakeResponse:
+            if outcome == "timeout":
+                raise TimeoutError("tokeninfo timed out")
+            if isinstance(outcome, int):
+                raise browser_flow.urllib.error.HTTPError(
+                    request.full_url, outcome, "tokeninfo failure", {}, None
+                )
+            return FakeResponse()
+
+    monkeypatch.setattr(
+        browser_flow.urllib.request,
+        "build_opener",
+        lambda *_handlers: FakeOpener(),
+    )
+
+    assert browser_flow.probe_bare_token("probe-token") == (expected, None)
+
+
+def test_bare_token_expired_fails_before_pull_transport(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _doctor_setup(tmp_path, monkeypatch, oauth=False)
+    monkeypatch.setenv("GOG_ACCESS_TOKEN", "stale-token")
+    monkeypatch.setattr(
+        credentials, "_probe_bare_token", lambda _token: ("invalid", None)
+    )
+    transport_constructions: list[None] = []
+
+    class UnexpectedTransport:
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            transport_constructions.append(None)
+
+    monkeypatch.setattr(
+        "slidesmith.engine.transport.GoogleSlidesTransport", UnexpectedTransport
+    )
+
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main(["pull", "presentation-id"])
+
+    assert excinfo.value.code == 1
+    error_output = capsys.readouterr().err
+    assert browser_flow.GOG_BARE_TOKEN_REMEDIATION in error_output
+    assert "stale-token" not in error_output
+    assert transport_constructions == []
+
+
+def test_bare_token_valid_probe_populates_expiry_and_warns_when_near_expiry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _doctor_setup(tmp_path, monkeypatch, oauth=False)
+    monkeypatch.setenv("GOG_ACCESS_TOKEN", "fresh-token")
+    expires_at = time.time() + 60
+    monkeypatch.setattr(
+        credentials, "_probe_bare_token", lambda _token: ("valid", expires_at)
+    )
+
+    token = cli_token("slide.pull", "presentation-id")
+
+    assert token.expires_at == expires_at
+    assert token.auth_mode == "bare_token"
+    assert "warning: GOG_ACCESS_TOKEN expires in about" in capsys.readouterr().err
+
+
+def test_bare_token_unreachable_probe_proceeds_without_expiry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _doctor_setup(tmp_path, monkeypatch, oauth=False)
+    monkeypatch.setenv("GOG_ACCESS_TOKEN", "possibly-working-token")
+    monkeypatch.setattr(
+        credentials, "_probe_bare_token", lambda _token: ("unreachable", None)
+    )
+
+    token = cli_token("slide.pull", "presentation-id")
+
+    assert token == "possibly-working-token"
+    assert token.expires_at is None
+
+
+def test_invalid_bare_token_error_redacts_token(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _doctor_setup(tmp_path, monkeypatch, oauth=False)
+    monkeypatch.setenv("GOG_ACCESS_TOKEN", "secret-invalid-token")
+    monkeypatch.setattr(
+        credentials, "_probe_bare_token", lambda _token: ("invalid", None)
+    )
+
+    with pytest.raises(AuthError) as excinfo:
+        cli_token("slide.pull", "presentation-id")
+
+    assert "secret-invalid-token" not in str(excinfo.value)
+
+
+def test_auth_doctor_reports_expired_bare_token_remediation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _doctor_setup(tmp_path, monkeypatch, oauth=False)
+    monkeypatch.setenv("GOG_ACCESS_TOKEN", "stale-token")
+    monkeypatch.setattr(
+        credentials, "_probe_bare_token", lambda _token: ("invalid", None)
+    )
+
+    cli.main(["auth", "doctor"])
+
+    output = capsys.readouterr().out
+    assert "Pre-obtained access token: FOUND (environment variable); EXPIRED/INVALID" in output
+    assert "gog sometimes exports a stale token" in output
+    assert "Verdict: TOKEN EXPIRED OR INVALID" in output
+    assert "stale-token" not in output
+
+
+def test_auth_doctor_reports_valid_bare_token_lifetime(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _doctor_setup(tmp_path, monkeypatch, oauth=False)
+    monkeypatch.setenv("GOG_ACCESS_TOKEN", "valid-token")
+    expires_at = time.time() + 1800
+    monkeypatch.setattr(
+        credentials, "_probe_bare_token", lambda _token: ("valid", expires_at)
+    )
+
+    cli.main(["auth", "doctor"])
+
+    output = capsys.readouterr().out
+    assert "Pre-obtained access token: FOUND (environment variable); VALID" in output
+    assert "expires in approximately" in output
+    assert "Verdict: READY (valid; expires in approximately" in output
+
+
+def test_local_command_in_bare_token_mode_does_not_probe(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _doctor_setup(tmp_path, monkeypatch, oauth=False)
+    monkeypatch.setenv("GOG_ACCESS_TOKEN", "local-command-token")
+    probes: list[str] = []
+
+    def unexpected_probe(token: str) -> tuple[str, None]:
+        probes.append(token)
+        raise AssertionError("local commands must not probe credentials")
+
+    monkeypatch.setattr(credentials, "_probe_bare_token", unexpected_probe)
+
+    slide_dir = tmp_path / "slides" / "01"
+    slide_dir.mkdir(parents=True)
+    (slide_dir / "content.sml").write_text('<Slide id="s1" />', encoding="utf-8")
+
+    cli.main(["fmt", str(tmp_path)])
+
+    assert "Formatted 1 content.sml file(s)." in capsys.readouterr().out
+    assert probes == []
+
+
+def test_oauth_token_path_does_not_probe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class OAuthManager:
+        auth_mode = "oauth_client"
+
+        def get_credential(self, **_kwargs: Any) -> Any:
+            return types.SimpleNamespace(token="oauth-token", expires_at=None)
+
+        def probe_bare_token(self, _token: str) -> tuple[str, None]:
+            raise AssertionError("OAuth mode must not probe tokeninfo")
+
+        def refresh_credential(self, **_kwargs: Any) -> None:
+            return None
+
+    monkeypatch.setattr(credentials, "CredentialsManager", OAuthManager)
+
+    token = cli_token("slide.pull", "presentation-id")
+
+    assert token == "oauth-token"
+    assert _transport_options(token)["auth_mode"] == "oauth_client"
 
 
 def _keyring_store_with(monkeypatch: pytest.MonkeyPatch, raw: str) -> KeyringSessionStore:

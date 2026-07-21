@@ -1,0 +1,20 @@
+{
+  "name": "slidesmith",
+  "version": "0.6.1",
+  "description": "Agent + human co-editing for Google Slides: pull a deck to local SML, edit it (semantic selectors, roles, components, images, layout, slides), preview the exact batchUpdate diff, and push back to the same deck in place.",
+  "author": {
+    "name": "unblocklabs-ai"
+  },
+  "homepage": "https://github.com/unblocklabs-ai/slidesmith",
+  "repository": "https://github.com/unblocklabs-ai/slidesmith",
+  "license": "MIT",
+  "keywords": [
+    "google-slides",
+    "presentations",
+    "slides",
+    "cli",
+    "agent",
+    "sml"
+  ],
+  "skills": "./skills/"
+}

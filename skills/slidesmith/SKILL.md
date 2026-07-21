@@ -7,10 +7,12 @@ description: >-
   task that creates or restyles Google Slides while keeping them native and
   editable — new slides, deck-wide restyles, media/galleries, cross-deck theme
   transfer — instead of generating an image or a throwaway .pptx.
-when_to_use: >-
-  The user wants to build or modify a real Google Slides presentation and keep it
-  editable/collaboratable (not a rendered image, not a new file each edit).
-version: 0.6.1
+metadata:
+  openclaw:
+    homepage: https://github.com/unblocklabs-ai/slidesmith
+    requires:
+      bins:
+        - slidesmith
 ---
 
 # slidesmith

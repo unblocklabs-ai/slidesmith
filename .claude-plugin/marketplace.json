@@ -1,0 +1,23 @@
+{
+  "name": "slidesmith",
+  "owner": {
+    "name": "unblocklabs-ai",
+    "url": "https://github.com/unblocklabs-ai"
+  },
+  "description": "slidesmith — agent + human co-editing for Google Slides.",
+  "plugins": [
+    {
+      "name": "slidesmith",
+      "source": "./",
+      "description": "Pull a Google Slides deck to local SML, edit it, preview the exact diff, and push back to the same deck in place. Bundles the slidesmith agent skill.",
+      "homepage": "https://github.com/unblocklabs-ai/slidesmith",
+      "license": "MIT",
+      "keywords": [
+        "google-slides",
+        "presentations",
+        "cli",
+        "agent"
+      ]
+    }
+  ]
+}

@@ -121,6 +121,11 @@ slidesmith ships a packaged agent skill — start there:
 Errors are named and actionable, diffs are exact, and warnings are believable —
 the tool is built to be driven autonomously.
 
+**Install it as a plugin.** The repo ships thin manifests so the skill installs
+into Claude Code and Codex, and publishes to OpenClaw's ClawHub as a skill — see
+[docs/PLUGINS.md](docs/PLUGINS.md) for the one-command install per harness. A
+root `AGENTS.md` also orients any agent working in a checkout.
+
 ## Development
 
 ```bash

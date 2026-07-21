@@ -14,7 +14,12 @@ agent-legible: name the command/flag and what an operator can now do.
 
 ## [Unreleased]
 
-_Nothing yet._
+### Added
+- Installable as an agent plugin: thin manifests for **Claude Code**
+  (`.claude-plugin/`) and **Codex** (`.codex-plugin/` + `.agents/plugins/`),
+  a root **`AGENTS.md`**, and the packaged skill made publishable to
+  **OpenClaw**'s ClawHub (publish is a maintainer step). One-command install
+  per harness is documented in [docs/PLUGINS.md](docs/PLUGINS.md).
 
 ## [0.6.1] — 2026-07-21 — Created-element persistence fidelity
 

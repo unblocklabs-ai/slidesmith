@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from slidesmith.engine.conflicts import iter_page_elements
 from slidesmith.engine.content_diff import DiffResult
 
 
@@ -51,9 +52,14 @@ def partition_requests_by_slide(
         if isinstance(page_id, str) and page_id:
             slide_by_page_id.setdefault(page_id, slide_index)
             slide_by_object_id[page_id] = slide_index
-        _index_page_elements(
-            slide.get("pageElements", []) or [], slide_index, slide_by_object_id
-        )
+
+    for page_kind, page_id, element, _ in iter_page_elements(base_raw):
+        if page_kind != "slides" or page_id is None:
+            continue
+        slide_index = slide_by_page_id.get(page_id)
+        object_id = element.get("objectId")
+        if slide_index is not None and isinstance(object_id, str) and object_id:
+            slide_by_object_id[object_id] = slide_index
 
     for change in diff_result.changes:
         if change.slide_index:
@@ -123,22 +129,6 @@ def _new_slide_index_from_object_id(object_id: Any) -> str | None:
         return None
     match = re.fullmatch(r"new_slide_(.+)_([0-9]+)", object_id)
     return match.group(1) if match else None
-
-
-def _index_page_elements(
-    elements: list[dict[str, Any]],
-    slide_index: str,
-    slide_by_object_id: dict[str, str],
-) -> None:
-    for element in elements:
-        object_id = element.get("objectId")
-        if isinstance(object_id, str) and object_id:
-            slide_by_object_id[object_id] = slide_index
-        _index_page_elements(
-            element.get("elementGroup", {}).get("children", []) or [],
-            slide_index,
-            slide_by_object_id,
-        )
 
 
 def _request_slide_index(

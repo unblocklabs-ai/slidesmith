@@ -87,6 +87,52 @@ def prune_stale_slide_folders(
         shutil.move(str(slide_folder), destination)
 
 
+def materialize_workspace(
+    presentation_data: dict[str, Any],
+    presentation_dir: Path,
+    *,
+    revision_id: str | None,
+    save_raw: bool,
+    record_qa_baseline: bool,
+) -> list[Path]:
+    """Project one raw deck into a complete, push-safe workspace."""
+    presentation_dir.mkdir(parents=True, exist_ok=True)
+    result = process_presentation(presentation_data)
+    if revision_id:
+        result["presentation_info"]["revisionId"] = revision_id
+    result["presentation_info"]["pulledAt"] = pull_timestamp()
+
+    written_files = write_new_format(result, presentation_dir)
+    prune_stale_slide_folders(
+        presentation_dir,
+        {slide["slide_index"] for slide in result["slides"]},
+    )
+
+    if save_raw:
+        raw_dir = presentation_dir / RAW_DIR
+        raw_dir.mkdir(parents=True, exist_ok=True)
+        raw_path = raw_dir / "presentation.json"
+        raw_path.write_text(
+            json.dumps(presentation_data, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        written_files.append(raw_path)
+
+    written_files.append(create_pristine_zip(presentation_dir, written_files))
+    base_path = presentation_dir / PRISTINE_DIR / PRISTINE_BASE_FILE
+    base_path.write_text(
+        json.dumps(presentation_data, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    written_files.append(base_path)
+
+    if record_qa_baseline:
+        from slidesmith.engine.qa import record_qa_baseline as record_baseline
+
+        written_files.append(record_baseline(presentation_dir))
+    return written_files
+
+
 async def refresh_after_success(
     transport: Transport,
     folder_path: Path,

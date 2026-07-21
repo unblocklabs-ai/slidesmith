@@ -10,7 +10,7 @@ deferred to a deliberate pass). Loop: fix → re-review until no real defect rem
 - [x] FR-1 [HIGH] `replace_image` computes geometry via `get_bounds(child)` without
   composing the parent-group transform (client.py:986) — grouped-image replacement
   mispositions. Compose ancestor transform chain. VERIFIED.
-- [ ] FR-2 [HIGH] `conflicts.py index_presentation` discards ancestry (:39-44) — a
+- [x] FR-2 [HIGH] `conflicts.py index_presentation` discards ancestry (:39-44) — a
   remote change to an ancestor GROUP of a locally-edited child is not detected by
   the conflict guard. Record parent chain; conflict check must include ancestors of
   touched objects. VERIFIED.
@@ -55,12 +55,12 @@ deferred to a deliberate pass). Loop: fix → re-review until no real defect rem
   (layout.py:572).
 
 ### Duplication with real drift risk (extract shared helpers)
-- [ ] FR-15 [HIGH] `workspace.materialize` vs `client.pull` build workspaces via
+- [x] FR-15 [HIGH] `workspace.materialize` vs `client.pull` build workspaces via
   divergent pipelines; the public materializer omits stale-slide pruning, base
   revision snapshot, and QA-baseline — with save_raw=False default, a later push
   lacks the conflict base and degrades remote-change protection. Extract one
   `materialize_workspace(...)`.
-- [ ] FR-16 [HIGH] Default push and per-slide push independently implement the
+- [x] FR-16 [HIGH] Default push and per-slide push independently implement the
   safety-critical fetch → conflict-guard → revision-lock → batch_update → refresh →
   persistence sequence (client.py:889-941 vs 1138-1212). Extract a shared guarded-
   execute + finalize so a safety change reaches both modes.
@@ -70,7 +70,7 @@ deferred to a deliberate pass). Loop: fix → re-review until no real defect rem
 - [ ] FR-18 [MEDIUM] CREATE (element_factories) vs COPY (copy_requests) element
   construction duplicate LINE/IMAGE/shape dispatch + text/paragraph/run replay.
   Extract shared `emit_recreated_element`.
-- [ ] FR-19 [MEDIUM] Three parallel raw-API tree traversals (conflicts / client index /
+- [x] FR-19 [MEDIUM] Three parallel raw-API tree traversals (conflicts / client index /
   push_progress). Extract one `iter_page_elements(data)`; build all three indexes from
   it. (Composes with FR-2's ancestry fix.)
 - [ ] FR-20 [MEDIUM] Ancestor-in-group-set check duplicated (content_requests.py:406
@@ -84,7 +84,7 @@ deferred to a deliberate pass). Loop: fix → re-review until no real defect rem
 - [x] TG-2 [HIGH] grouped-image replace geometry (client.py:986) — add translated/
   scaled/nested-group image fixtures asserting slide-coordinate correctness (pairs
   with FR-1).
-- [ ] TG-3 [HIGH] conflicts ancestor-group change (conflicts.py:39) — parent-group
+- [x] TG-3 [HIGH] conflicts ancestor-group change (conflicts.py:39) — parent-group
   transform with locally-edited child must conflict (pairs with FR-2).
 - [ ] TG-4 [MEDIUM] selector multi-paragraph text join (selector.py:83) — define + test
   the separator so `["foo","bar"]` doesn't match `text=foobar`.

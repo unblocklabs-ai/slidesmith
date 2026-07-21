@@ -27,6 +27,7 @@ from slidesmith.engine.conflicts import (
     ConflictError,
     ensure_no_conflicts,
     index_presentation,
+    iter_page_elements,
 )
 from slidesmith.engine.content_diff import (
     Change,
@@ -44,7 +45,6 @@ from slidesmith.engine.components import load_components
 from slidesmith.engine.content_requests import generate_batch_requests
 from slidesmith.engine.json_utils import read_json
 from slidesmith.engine.image_fetch import fetch_image_dimensions
-from slidesmith.engine.slide_processor import process_presentation, write_new_format
 from slidesmith.engine.push_progress import (
     SlideBatch,
     clear_progress_ledger,
@@ -64,9 +64,7 @@ from slidesmith.engine.workspace_layout import (
     RAW_DIR,
     SLIDES_DIR,
     STYLES_FILE,
-    create_pristine_zip,
-    prune_stale_slide_folders,
-    pull_timestamp,
+    materialize_workspace,
     refresh_after_success,
 )
 
@@ -87,6 +85,79 @@ GOOGLE_DEFAULT_TEXT_LAYOUT_CLASSES = frozenset(
         "font-weight-400",
     }
 )
+
+
+def _missing_base_warning() -> str:
+    return (
+        "no pristine base snapshot found "
+        f"({PRISTINE_DIR}/{PRISTINE_BASE_FILE}); this folder was "
+        "pulled by an older slidesmith. Remote-change detection "
+        "skipped for this push -- re-pull to re-enable the guard."
+    )
+
+
+async def execute_guarded_batch(
+    *,
+    transport: Transport,
+    presentation_id: str,
+    requests: list[dict[str, Any]],
+    base_raw: dict[str, Any] | None,
+    id_mapping: dict[str, str],
+    guard_conflicts: bool,
+    lock_revision: bool,
+) -> dict[str, Any]:
+    """Fetch, conflict-check, revision-lock, and execute one request batch."""
+    required_revision: str | None = None
+    if guard_conflicts or lock_revision:
+        remote = await transport.get_presentation(presentation_id)
+        if guard_conflicts and base_raw is not None:
+            ensure_no_conflicts(base_raw, remote.data, requests, id_mapping)
+        if lock_revision:
+            required_revision = remote.revision_id
+
+    try:
+        return await transport.batch_update(
+            presentation_id,
+            requests,
+            required_revision_id=required_revision,
+        )
+    except APIError as exc:
+        if exc.status_code == 400 and "revision" in str(exc).lower():
+            raise ConflictError(
+                "push aborted: the deck changed mid-push (someone edited "
+                "it between our conflict check and our write). "
+                "Re-pull and retry."
+            ) from exc
+        raise
+
+
+async def finalize_push(
+    *,
+    transport: Transport,
+    folder_path: Path,
+    presentation_id: str,
+    response: dict[str, Any],
+    diff_warnings: list[str],
+    base_warning: str | None,
+    force_warning: str | None,
+    verify_persistence: Callable[[dict[str, Any]], None],
+    clear_progress: bool,
+) -> dict[str, Any]:
+    """Merge warnings, refresh authoritative state, and verify persistence."""
+    if diff_warnings:
+        response.setdefault("warnings", []).extend(diff_warnings)
+    for warning in (base_warning, force_warning):
+        if warning is not None:
+            response.setdefault("warnings", []).append(warning)
+
+    refreshed = await refresh_after_success(
+        transport, folder_path, presentation_id, response
+    )
+    if refreshed:
+        verify_persistence(response)
+        if clear_progress:
+            clear_progress_ledger(folder_path)
+    return response
 
 
 class PerSlidePushError(RuntimeError):
@@ -247,10 +318,10 @@ def _pristine_element_metadata(
     types: dict[str, str] = {}
     parents: dict[str, str | None] = {}
 
-    def walk(element: dict[str, Any], parent_id: str | None = None) -> None:
+    for _, _, element, parent_id in iter_page_elements(data):
         object_id = element.get("objectId")
         if not isinstance(object_id, str) or not object_id:
-            return
+            continue
         if "elementGroup" in element:
             element_type = "GROUP"
         elif "shape" in element:
@@ -269,13 +340,6 @@ def _pristine_element_metadata(
             element_type = "UNKNOWN"
         types[object_id] = element_type
         parents[object_id] = parent_id
-        for child in element.get("elementGroup", {}).get("children", []):
-            walk(child, object_id)
-
-    for page_kind in ("slides", "layouts", "masters"):
-        for page in data.get(page_kind, []) or []:
-            for element in page.get("pageElements", []) or []:
-                walk(element)
     return types, parents
 
 
@@ -551,7 +615,7 @@ def _enrich_pristine_geometry(
     base_raw: dict[str, Any],
 ) -> None:
     """Backfill native geometry for workspaces pulled by older versions."""
-    elements, _ = index_presentation(base_raw)
+    elements, _, _ = index_presentation(base_raw)
     for clean_id, google_id in id_mapping.items():
         element = elements.get(google_id)
         if element is None:
@@ -688,61 +752,15 @@ class SlidesClient:
             presentation_id
         )
 
-        # Create output directory
         output_path = Path(output_path)
         presentation_dir = output_path / presentation_id
-        presentation_dir.mkdir(parents=True, exist_ok=True)
-
-        written_files: list[Path] = []
-
-        # Process the presentation into the new format
-        result = process_presentation(presentation_data.data)
-
-        # Record the pull-time revisionId in the folder metadata so tooling
-        # can tell how stale a workspace is (see DESIGN.md: revisionId is a
-        # write guard, not a change detector).
-        revision_id = presentation_data.revision_id
-        if revision_id:
-            result["presentation_info"]["revisionId"] = revision_id
-        result["presentation_info"]["pulledAt"] = pull_timestamp()
-
-        # Write the new format files
-        written_files.extend(write_new_format(result, presentation_dir))
-        prune_stale_slide_folders(
+        return materialize_workspace(
+            presentation_data.data,
             presentation_dir,
-            {slide["slide_index"] for slide in result["slides"]},
+            revision_id=presentation_data.revision_id,
+            save_raw=save_raw,
+            record_qa_baseline=True,
         )
-
-        # Save raw API response
-        if save_raw:
-            raw_dir = presentation_dir / RAW_DIR
-            raw_dir.mkdir(parents=True, exist_ok=True)
-            raw_path = raw_dir / "presentation.json"
-            raw_path.write_text(
-                json.dumps(presentation_data.data, indent=2, ensure_ascii=False),
-                encoding="utf-8",
-            )
-            written_files.append(raw_path)
-
-        # Create pristine copy
-        pristine_path = create_pristine_zip(presentation_dir, written_files)
-        written_files.append(pristine_path)
-
-        # Always persist the raw API tree as the pristine base snapshot:
-        # push compares remote vs this base to detect concurrent human edits
-        # on the objects a push would touch (independent of save_raw).
-        base_path = presentation_dir / PRISTINE_DIR / PRISTINE_BASE_FILE
-        base_path.write_text(
-            json.dumps(presentation_data.data, indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
-        written_files.append(base_path)
-
-        from slidesmith.engine.qa import record_qa_baseline
-
-        written_files.append(record_qa_baseline(presentation_dir))
-
-        return written_files
 
     def diff(
         self,
@@ -902,82 +920,48 @@ class SlidesClient:
                 progress=progress,
             )
 
+        force_warning: str | None = None
         if force:
-            warning = (
+            force_warning = (
                 "push --force: conflict guard and revision lock "
                 "bypassed; concurrent human edits to the touched properties "
                 "will be overwritten"
             )
-            response = await transport.batch_update(presentation_id, requests)
-            if diff_result.warnings:
-                response.setdefault("warnings", []).extend(diff_result.warnings)
-            response.setdefault("warnings", []).append(warning)
-            refreshed = await refresh_after_success(
-                transport, folder_path, presentation_id, response
-            )
-            if refreshed:
+
+        base_raw = self._read_base_raw(folder_path)
+        base_warning = (
+            _missing_base_warning() if base_raw is None and not force else None
+        )
+        response = await execute_guarded_batch(
+            transport=transport,
+            presentation_id=presentation_id,
+            requests=requests,
+            base_raw=base_raw,
+            id_mapping=read_json(
+                folder_path / ID_MAPPING_FILE, missing_ok=True
+            ),
+            guard_conflicts=not force,
+            lock_revision=not force,
+        )
+        return await finalize_push(
+            transport=transport,
+            folder_path=folder_path,
+            presentation_id=presentation_id,
+            response=response,
+            diff_warnings=diff_result.warnings,
+            base_warning=base_warning,
+            force_warning=force_warning,
+            verify_persistence=lambda finalized_response: (
                 self._append_persistence_warning(
                     folder_path,
                     intended_slides,
                     intended_change_keys,
                     create_copy_targets,
-                    response,
+                    finalized_response,
                 )
-            return response
-
-        # 2. Re-fetch the remote presentation and guard the touched objects.
-        remote = await transport.get_presentation(presentation_id)
-        required_revision = remote.revision_id
-
-        base_raw = self._read_base_raw(folder_path)
-        if base_raw is None:
-            warning = (
-                "no pristine base snapshot found "
-                f"({PRISTINE_DIR}/{PRISTINE_BASE_FILE}); this folder was "
-                "pulled by an older slidesmith. Remote-change detection "
-                "skipped for this push -- re-pull to re-enable the guard."
-            )
-        else:
-            ensure_no_conflicts(
-                base_raw,
-                remote.data,
-                requests,
-                read_json(folder_path / ID_MAPPING_FILE, missing_ok=True),
-            )
-
-        # 3. Apply the batch with the just-fetched revision lock.
-        try:
-            response = await transport.batch_update(
-                presentation_id, requests, required_revision_id=required_revision
-            )
-        except APIError as e:
-            if e.status_code == 400 and "revision" in str(e).lower():
-                raise ConflictError(
-                    "push aborted: the deck changed mid-push (someone edited "
-                    "it between our conflict check and our write). "
-                    "Re-pull and retry."
-                ) from e
-            raise
-
-        if diff_result.warnings:
-            response.setdefault("warnings", []).extend(diff_result.warnings)
-
-        if base_raw is None:
-            response.setdefault("warnings", []).append(warning)
-
-        # 4. Refresh from the authoritative post-push deck.
-        refreshed = await refresh_after_success(
-            transport, folder_path, presentation_id, response
+            ),
+            clear_progress=False,
         )
-        if refreshed:
-            self._append_persistence_warning(
-                folder_path,
-                intended_slides,
-                intended_change_keys,
-                create_copy_targets,
-                response,
-            )
-        return response
 
     async def replace_image(
         self,
@@ -1150,12 +1134,7 @@ class SlidesClient:
 
         warning: str | None = None
         if base_raw is None:
-            warning = (
-                "no pristine base snapshot found "
-                f"({PRISTINE_DIR}/{PRISTINE_BASE_FILE}); this folder was "
-                "pulled by an older slidesmith. Remote-change detection "
-                "skipped for this push -- re-pull to re-enable the guard."
-            )
+            warning = _missing_base_warning()
 
         for batch in batches:
             if (
@@ -1176,32 +1155,16 @@ class SlidesClient:
             _report_progress(progress, "start", batch, total_slides)
 
             try:
-                remote = await transport.get_presentation(presentation_id)
-                required_revision = remote.revision_id
-                if not force:
-                    if base_raw is not None:
-                        ensure_no_conflicts(
-                            base_raw,
-                            remote.data,
-                            batch.requests,
-                            id_mapping,
-                        )
-                batch_response = await transport.batch_update(
-                    presentation_id,
-                    batch.requests,
-                    required_revision_id=required_revision,
+                batch_response = await execute_guarded_batch(
+                    transport=transport,
+                    presentation_id=presentation_id,
+                    requests=batch.requests,
+                    base_raw=base_raw,
+                    id_mapping=id_mapping,
+                    guard_conflicts=not force,
+                    lock_revision=True,
                 )
             except APIError as exc:
-                if exc.status_code == 400 and "revision" in str(exc).lower():
-                    conflict = ConflictError(
-                        "push aborted: the deck changed mid-push (someone edited "
-                        "it between our conflict check and our write). "
-                        "Re-pull and retry."
-                    )
-                    write_progress_ledger(folder_path, presentation_id, succeeded)
-                    raise PerSlideConflictError(
-                        batch.slide_index, total_slides, conflict
-                    ) from exc
                 write_progress_ledger(folder_path, presentation_id, succeeded)
                 raise PerSlidePushError(
                     batch.slide_index, total_slides, exc
@@ -1226,30 +1189,33 @@ class SlidesClient:
             write_progress_ledger(folder_path, presentation_id, succeeded)
             _report_progress(progress, "success", batch, total_slides)
 
-        if diff_result.warnings:
-            response.setdefault("warnings", []).extend(diff_result.warnings)
-        if warning is not None:
-            response.setdefault("warnings", []).append(warning)
+        force_warning: str | None = None
         if force:
-            response.setdefault("warnings", []).append(
+            force_warning = (
                 "push --force --per-slide: conflict guard bypassed; "
                 "per-slide revision locks remain enabled, but concurrent human "
                 "edits already present on touched properties will be overwritten"
             )
 
-        refreshed = await refresh_after_success(
-            transport, folder_path, presentation_id, response
+        return await finalize_push(
+            transport=transport,
+            folder_path=folder_path,
+            presentation_id=presentation_id,
+            response=response,
+            diff_warnings=diff_result.warnings,
+            base_warning=warning,
+            force_warning=force_warning,
+            verify_persistence=lambda finalized_response: (
+                self._append_persistence_warning(
+                    folder_path,
+                    intended_slides,
+                    intended_change_keys,
+                    create_copy_targets,
+                    finalized_response,
+                )
+            ),
+            clear_progress=True,
         )
-        if refreshed:
-            self._append_persistence_warning(
-                folder_path,
-                intended_slides,
-                intended_change_keys,
-                create_copy_targets,
-                response,
-            )
-            clear_progress_ledger(folder_path)
-        return response
 
     def _append_persistence_warning(
         self,

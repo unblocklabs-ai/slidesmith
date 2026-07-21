@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
 
-from slidesmith.engine.slide_processor import process_presentation, write_new_format
 from slidesmith.engine.workspace_layout import (
     ID_MAPPING_FILE,
     PRESENTATION_FILE,
@@ -17,6 +15,7 @@ from slidesmith.engine.workspace_layout import (
     SLIDES_DIR,
     STYLES_FILE,
     create_pristine_zip,
+    materialize_workspace,
     prune_stale_slide_folders,
     pull_timestamp,
 )
@@ -42,17 +41,13 @@ def materialize(
     presentation_dir = Path(output_path) / presentation_id
     presentation_dir.mkdir(parents=True, exist_ok=True)
 
-    result = process_presentation(presentation_data)
-    written = write_new_format(result, presentation_dir)
-
-    if save_raw:
-        raw_dir = presentation_dir / RAW_DIR
-        raw_dir.mkdir(parents=True, exist_ok=True)
-        (raw_dir / "presentation.json").write_text(
-            json.dumps(presentation_data, indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
-
-    create_pristine_zip(presentation_dir, written)
+    revision_id = presentation_data.get("revisionId")
+    materialize_workspace(
+        presentation_data,
+        presentation_dir,
+        revision_id=revision_id if isinstance(revision_id, str) else None,
+        save_raw=save_raw,
+        record_qa_baseline=False,
+    )
 
     return presentation_dir

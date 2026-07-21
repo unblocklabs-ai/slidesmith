@@ -10,6 +10,7 @@ from typing import Any
 
 import pytest
 
+import slidesmith.engine.client as client_module
 from slidesmith.engine.client import (
     PerSlideConflictError,
     PerSlidePushError,
@@ -521,3 +522,27 @@ async def test_default_push_still_emits_one_atomic_batch(
         transport.original["revisionId"]
     )
     assert not (folder / PUSH_PROGRESS_FILE).exists()
+
+
+@pytest.mark.parametrize(("per_slide", "expected_calls"), [(False, 1), (True, 4)])
+async def test_push_modes_route_through_shared_guarded_executor(
+    monkeypatch: pytest.MonkeyPatch,
+    resumable_workspace: tuple[ResumableStubTransport, SlidesClient, Path],
+    per_slide: bool,
+    expected_calls: int,
+) -> None:
+    _, client, folder = resumable_workspace
+    guarded_calls: list[list[dict[str, Any]]] = []
+    original = client_module.execute_guarded_batch
+
+    async def record_guarded_batch(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        guarded_calls.append(kwargs["requests"])
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(
+        client_module, "execute_guarded_batch", record_guarded_batch
+    )
+
+    await client.push(folder, per_slide=per_slide)
+
+    assert len(guarded_calls) == expected_calls

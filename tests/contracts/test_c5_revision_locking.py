@@ -26,12 +26,14 @@ from slidesmith.engine.client import ConflictError, SlidesClient
 from slidesmith.engine.components import load_components
 from slidesmith.engine.content_diff import ChangeType
 from slidesmith.engine.content_parser import ParsedElement, parse_slide_content
+from slidesmith.engine.slide_processor import process_presentation
 from slidesmith.engine.transport import (
     APIError,
     GoogleSlidesTransport,
     PresentationData,
     Transport,
 )
+from slidesmith.workspace import materialize
 
 GOLDEN = (
     Path(__file__).parent.parent
@@ -257,6 +259,25 @@ async def test_pull_records_revision_id_and_base_snapshot(ws: Workspace) -> None
     assert "slides" in base
 
 
+async def test_materialize_records_pulled_workspace_safety_artifacts(
+    ws: Workspace, tmp_path: Path
+) -> None:
+    data = json.loads(GOLDEN.read_text(encoding="utf-8"))
+    materialized = materialize(data, tmp_path / "offline")
+
+    for relative_path in (
+        Path(".pristine/presentation.zip"),
+        Path(".pristine/base.json"),
+    ):
+        assert (ws.folder / relative_path).exists()
+        assert (materialized / relative_path).exists()
+
+    base = json.loads(
+        (materialized / ".pristine/base.json").read_text(encoding="utf-8")
+    )
+    assert base == data
+
+
 # --- push: conflict on a touched object aborts before any write -----------
 
 
@@ -279,6 +300,51 @@ async def test_remote_change_to_touched_object_aborts_push(ws: Workspace) -> Non
     assert "geometry" in message
     assert "Re-pull" in message
     assert excinfo.value.conflicts == [("e121", "geometry changed remotely")]
+
+
+async def test_remote_change_to_ancestor_group_aborts_child_push(
+    tmp_path: Path,
+) -> None:
+    data = json.loads(GOLDEN.read_text(encoding="utf-8"))
+    result = process_presentation(data)
+    child_id = result["id_mapping"]["e121"]
+    slide = next(
+        slide
+        for slide in data["slides"]
+        if any(
+            element.get("objectId") == child_id
+            for element in slide.get("pageElements", [])
+        )
+    )
+    child_position, child = next(
+        (position, element)
+        for position, element in enumerate(slide["pageElements"])
+        if element.get("objectId") == child_id
+    )
+    slide["pageElements"][child_position] = (
+        {
+            "objectId": "ancestor_group",
+            "transform": {"scaleX": 1, "scaleY": 1, "unit": "EMU"},
+            "elementGroup": {"children": [child]},
+        }
+    )
+
+    stub = StubTransport(data)
+    client = SlidesClient(stub)
+    written = await client.pull(data["presentationId"], tmp_path, save_raw=False)
+    folder = written[0].parent
+    edit_e121_locally(folder)
+    remote_group = find_element(stub.data, "ancestor_group")
+    remote_group["transform"]["translateX"] = 123456
+    stub.data["revisionId"] = "rev-after-group-edit"
+
+    with pytest.raises(ConflictError) as excinfo:
+        await client.push(folder)
+
+    assert stub.batch_calls == []
+    assert excinfo.value.conflicts == [
+        ("ancestor_group", "geometry changed remotely")
+    ]
 
 
 async def test_remote_delete_of_touched_object_aborts_push(ws: Workspace) -> None:

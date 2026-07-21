@@ -170,6 +170,41 @@ def _replacement_geometry_requests(
     return target, request
 
 
+def _find_element_with_parent_transform(
+    data: dict[str, Any], object_id: str
+) -> tuple[dict[str, Any] | None, Transform | None]:
+    """Find an element and its composed ancestor-group transform."""
+
+    def walk(
+        element: dict[str, Any],
+        parent_transform: Transform | None,
+    ) -> tuple[dict[str, Any] | None, Transform | None]:
+        if element.get("objectId") == object_id:
+            return element, parent_transform
+
+        child_parent = parent_transform
+        if "elementGroup" in element:
+            group_transform = Transform.from_element(element)
+            child_parent = (
+                parent_transform.compose(group_transform)
+                if parent_transform is not None
+                else group_transform
+            )
+        for child in element.get("elementGroup", {}).get("children", []):
+            found, found_parent = walk(child, child_parent)
+            if found is not None:
+                return found, found_parent
+        return None, None
+
+    for page_kind in ("slides", "layouts", "masters"):
+        for page in data.get(page_kind, []) or []:
+            for element in page.get("pageElements", []) or []:
+                found, parent_transform = walk(element, None)
+                if found is not None:
+                    return found, parent_transform
+    return None, None
+
+
 def _progress_slide_total(
     intended_slides: dict[str, list[Any]], batches: list[SlideBatch]
 ) -> int:
@@ -971,8 +1006,9 @@ class SlidesClient:
 
         transport = self._require_transport()
         remote = await transport.get_presentation(presentation_id)
-        remote_elements, _ = index_presentation(remote.data)
-        target = remote_elements.get(google_id)
+        target, parent_transform = _find_element_with_parent_transform(
+            remote.data, google_id
+        )
         if target is None:
             raise ValueError(
                 f"Element {element_id!r} ({google_id}) no longer exists in the deck"
@@ -983,7 +1019,7 @@ class SlidesClient:
         pixel_width, pixel_height = self._replacement_image_dimensions(
             folder_path, new_source
         )
-        old_geometry = get_bounds(target)
+        old_geometry = get_bounds(target, parent_transform)
         geometry, pin_request = _replacement_geometry_requests(
             google_id,
             old_geometry,

@@ -105,6 +105,50 @@ async def _workspace(tmp_path: Path) -> tuple[ImageTransport, SlidesClient, Path
     return transport, client, tmp_path / data["presentationId"]
 
 
+async def _workspace_with_grouped_image(
+    tmp_path: Path,
+    ancestor_transforms: list[dict[str, Any]],
+) -> tuple[ImageTransport, SlidesClient, Path, str]:
+    data = json.loads(GOLDEN.read_text(encoding="utf-8"))
+    image: dict[str, Any] = {
+        "objectId": "grouped_image",
+        "size": {
+            "width": {"magnitude": pt_to_emu(100), "unit": "EMU"},
+            "height": {"magnitude": pt_to_emu(50), "unit": "EMU"},
+        },
+        "transform": {
+            "scaleX": 1,
+            "scaleY": 1,
+            "translateX": pt_to_emu(10),
+            "translateY": pt_to_emu(15),
+            "unit": "EMU",
+        },
+        "image": {
+            "contentUrl": "https://example.com/old.png",
+            "sourceUrl": "https://example.com/old.png",
+            "imageProperties": {},
+        },
+    }
+    grouped: dict[str, Any] = image
+    for index, transform in reversed(list(enumerate(ancestor_transforms))):
+        grouped = {
+            "objectId": f"grouped_image_parent_{index}",
+            "transform": transform,
+            "elementGroup": {"children": [grouped]},
+        }
+    data["slides"][0].setdefault("pageElements", []).append(grouped)
+
+    transport = ImageTransport(data)
+    client = SlidesClient(transport, FakeUploader())
+    await client.pull(data["presentationId"], tmp_path, save_raw=False)
+    folder = tmp_path / data["presentationId"]
+    mapping = json.loads((folder / "id_mapping.json").read_text(encoding="utf-8"))
+    image_id = next(
+        clean_id for clean_id, google_id in mapping.items() if google_id == "grouped_image"
+    )
+    return transport, client, folder, image_id
+
+
 def _write_png(
     folder: Path,
     relative: str = "assets/logo.png",
@@ -281,6 +325,77 @@ async def test_replace_image_contain_pins_top_left_and_new_aspect_geometry(
             }
         },
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("ancestor_transforms", "expected_geometry"),
+    [
+        (
+            [
+                {
+                    "scaleX": 1,
+                    "scaleY": 1,
+                    "translateX": pt_to_emu(40),
+                    "translateY": pt_to_emu(30),
+                    "unit": "EMU",
+                }
+            ],
+            {"x": 50, "y": 45, "w": 50, "h": 50},
+        ),
+        (
+            [
+                {
+                    "scaleX": 2,
+                    "scaleY": 3,
+                    "translateX": pt_to_emu(40),
+                    "translateY": pt_to_emu(30),
+                    "unit": "EMU",
+                }
+            ],
+            {"x": 60, "y": 75, "w": 150, "h": 150},
+        ),
+        (
+            [
+                {
+                    "scaleX": 2,
+                    "scaleY": 3,
+                    "translateX": pt_to_emu(40),
+                    "translateY": pt_to_emu(30),
+                    "unit": "EMU",
+                },
+                {
+                    "scaleX": 0.5,
+                    "scaleY": 2,
+                    "translateX": pt_to_emu(10),
+                    "translateY": pt_to_emu(20),
+                    "unit": "EMU",
+                },
+            ],
+            {"x": 70, "y": 180, "w": 100, "h": 100},
+        ),
+    ],
+    ids=("translated-group", "scaled-group", "nested-groups"),
+)
+async def test_replace_image_uses_slide_geometry_for_grouped_images(
+    tmp_path: Path,
+    ancestor_transforms: list[dict[str, Any]],
+    expected_geometry: dict[str, float],
+) -> None:
+    _, client, folder, image_id = await _workspace_with_grouped_image(
+        tmp_path, ancestor_transforms
+    )
+    _write_png(folder, size=(100, 100))
+
+    preview = await client.replace_image(
+        folder, image_id, "./assets/logo.png", dry_run=True
+    )
+
+    assert preview["geometry"] == {
+        "fit": "contain",
+        **expected_geometry,
+        "unit": "PT",
+    }
 
 
 @pytest.mark.asyncio

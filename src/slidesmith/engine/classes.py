@@ -811,6 +811,16 @@ def parse_content_alignment_class(cls: str) -> ContentAlignment | None:
     return _CLASS_CONTENT_ALIGNMENTS.get(cls)
 
 
+def _parse_opacity(value: str | None, cls: str) -> float:
+    """Parse a color opacity suffix and reject values outside 0–100."""
+    if value is None:
+        return 1.0
+    opacity = int(value)
+    if opacity > 100:
+        raise ValueError(f"Invalid class '{cls}': opacity must be between 0 and 100")
+    return opacity / 100
+
+
 def parse_position_classes(classes: list[str]) -> dict[str, float]:
     """Extract position values from classes.
 
@@ -845,13 +855,13 @@ def parse_fill_class(cls: str) -> Fill | None:
     # fill-theme-{name}[/opacity]
     if match := re.match(r"^fill-theme-([a-z0-9-]+)(?:/(\d+))?$", cls):
         theme_name = match.group(1)
-        opacity = int(match.group(2)) / 100 if match.group(2) else 1.0
+        opacity = _parse_opacity(match.group(2), cls)
         return Fill(color=Color(theme=theme_name, alpha=opacity))
 
     # fill-#{hex}[/opacity]
     if match := re.match(r"^fill-(#[0-9a-fA-F]{6})(?:/(\d+))?$", cls):
         hex_color = match.group(1).lower()
-        opacity = int(match.group(2)) / 100 if match.group(2) else 1.0
+        opacity = _parse_opacity(match.group(2), cls)
         return Fill(color=Color(hex=hex_color, alpha=opacity))
 
     return None
@@ -871,14 +881,14 @@ def parse_stroke_classes(classes: list[str]) -> Stroke | None:
         # stroke-theme-{name}[/opacity]
         if match := re.match(r"^stroke-theme-([a-z0-9-]+)(?:/(\d+))?$", cls):
             theme_name = match.group(1)
-            opacity = int(match.group(2)) / 100 if match.group(2) else 1.0
+            opacity = _parse_opacity(match.group(2), cls)
             stroke.color = Color(theme=theme_name, alpha=opacity)
             found_stroke = True
 
         # stroke-#{hex}[/opacity]
         elif match := re.match(r"^stroke-(#[0-9a-fA-F]{6})(?:/(\d+))?$", cls):
             hex_color = match.group(1).lower()
-            opacity = int(match.group(2)) / 100 if match.group(2) else 1.0
+            opacity = _parse_opacity(match.group(2), cls)
             stroke.color = Color(hex=hex_color, alpha=opacity)
             found_stroke = True
 
@@ -1012,7 +1022,7 @@ def parse_text_style_classes(classes: list[str]) -> TextStyle:
         elif match := re.match(r"^text-color-theme-([a-z0-9-]+)$", cls):
             ts.foreground_color = Color(theme=match.group(1))
         elif match := re.match(r"^text-color-(#[0-9a-fA-F]{6})(?:/(\d+))?$", cls):
-            opacity = int(match.group(2)) / 100 if match.group(2) else 1.0
+            opacity = _parse_opacity(match.group(2), cls)
             ts.foreground_color = Color(hex=match.group(1).lower(), alpha=opacity)
 
         # Background color

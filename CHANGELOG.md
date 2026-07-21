@@ -28,6 +28,8 @@ agent-legible: name the command/flag and what an operator can now do.
 - Push and `replace-image` diagnostics now carry `WARNING` versus `NOTICE`
   severity, render notices after actionable warnings, and summarize mixed
   counts in the CLI.
+- Documentation now includes the new-slide workflow, Group authoring guardrails,
+  z-order and QA-acceptance recipes, and quick class-vocabulary pointers.
 - `slidesmith check` now gives large, short titles one estimated line of
   measurement uncertainty, reducing false-positive `TEXT_OVERFLOW` warnings
   while still flagging clearly overflowing body text.
@@ -37,6 +39,8 @@ agent-legible: name the command/flag and what an operator can now do.
   discoverable `qa-accept-overlap` class.
 
 ### Fixed
+- New authored `<Group>` elements now fail loudly with an actionable API
+  limitation message; pulled and copied groups remain supported.
 - **`slidesmith --version`** now prints the package version without requiring a
   subcommand.
 - Authored `<Image src="…">` elements can now use zero or negative `x`/`y`

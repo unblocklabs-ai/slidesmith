@@ -612,7 +612,11 @@ def _create_element_requests(
         )
         if not change.src:
             raise ValueError(f"Creating <{tag}> requires an http(s) src URL")
-    elif shape_type in {"GROUP", "TABLE", "VIDEO", "SHEETS_CHART"}:
+    elif shape_type == "GROUP":
+        raise ValueError(
+            "Group elements cannot be created via the API; keep or copy pulled groups instead"
+        )
+    elif shape_type in {"TABLE", "VIDEO", "SHEETS_CHART"}:
         raise ValueError(
             f"Creating <{tag}> requires source-specific data and is not supported"
         )

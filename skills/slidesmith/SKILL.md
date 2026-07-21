@@ -30,6 +30,12 @@ like any collaborator's. A human can have the deck open while you push.
   (`fill-#173b32/40`, `text-size-24`, `bold`, `text-color-#5df2b2`,
   `content-align-middle`). Text is `<P>` paragraphs, optionally with `<T class>`
   runs.
+- **Quick class vocabulary.** Append `/NN` (0–100) to fill, stroke, or text
+  colors for opacity; stroke dashes are `stroke-solid`, `stroke-dot`,
+  `stroke-dash`, `stroke-dash-dot`, `stroke-long-dash`, and
+  `stroke-long-dash-dot`; text effects are `bold`, `italic`, `underline`,
+  `line-through`, `small-caps`, `superscript`, and `subscript`. The agent guide
+  is the authority for the full class grammar.
 - **Don't hand-compute coordinates when you can help it.** Use layout containers
   (`Stack`/`Grid`) and semantic `select`/`apply`. That's the whole point.
 - **Trust the diff and the warnings.** `diff` before every `push`. If Google
@@ -46,6 +52,14 @@ slidesmith diff <id> --summary          # preview; --slide N to scope
 slidesmith push <id>                    # apply to the same deck
 slidesmith check <id> --contact-sheet   # download renders + geometry QA
 ```
+
+To create a slide, add `slides/NN/content.sml` with a `<Slide>` root and at
+least one element change targeting it: a new-ID element or a copy of a pulled
+element. An empty folder produces nothing; `diff` creates the slide, Google
+appends it, and the next pull renumbers the local folder.
+
+Push diagnostics distinguish actionable `warning:` lines from lower-severity
+`notice:` lines and render warnings first.
 
 `check` writes `.qa/slide-NN.png` and a `.qa/contact-sheet.png` — **look at
 them**; the offline geometry lint can't see visual intent, only overlaps/overflow.

@@ -154,11 +154,14 @@ plain text and styled `T` runs. A `P` may carry paragraph- and text-family
 defaults for that paragraph; a nested `T` may carry text-family overrides.
 
 When creating an element, choose a descriptive ID such as `mission_swarm` or
-`q3-scorecard`. Authored IDs must be 5–50 characters, start with an ASCII letter
-or underscore, and contain only ASCII letters, digits, underscores, and hyphens.
-Slidesmith sends a valid, unoccupied authored ID directly as the Google object
-ID, so a later pull preserves it in SML and in `id_mapping.json`. If that Google
-ID is already occupied, the create request uses a collision-safe numeric suffix.
+`q3-scorecard`. Authored IDs should be 5–50 characters, start with an ASCII
+letter or underscore, and contain only ASCII letters, digits, underscores, and
+hyphens. IDs meeting those constraints survive push/pull round trips verbatim
+when unoccupied. IDs outside them are still accepted, but slidesmith sanitizes
+them into a generated object ID before sending (for example `bad:id` becomes a
+`bad_id_N` object ID), so direct round-trip identity is not preserved. If a valid
+authored ID is already occupied, the create request uses a collision-safe
+numeric suffix.
 Names that Google generated (`g…_N_N`, `pN…`, and `SLIDES_API…`) remain clean
 `eN`/`gN` IDs on pull. Do not author names beginning with `new_`: that prefix is
 reserved for compatibility with older Slidesmith creations and is stripped on
@@ -186,8 +189,11 @@ This paragraph-scoping example is parsed by the documentation contract test:
 
 Pulled decks may contain nested `Group` elements and many Google shape tags;
 keep the pulled tag unless intentionally replacing an element. Common authoring
-tags are `Rect`, `RoundRect`, `Ellipse`, `TextBox`, `Line`, and `Group`. Unknown
-tags fall back to a rectangle when created, so do not guess tag names.
+tags are `Rect`, `RoundRect`, `Ellipse`, `TextBox`, and `Line`. A new `Group`
+(an element ID that is not in the pulled deck) cannot be created through the
+Google Slides API: keep the pulled group ID when editing it, or copy a pulled
+group instead. Request generation fails with `Group elements cannot be created via the API; keep or copy pulled groups instead`. Unknown tags fail loudly, so
+do not guess tag names.
 
 XML rules still apply: escape `&`, `<`, and `>` in text; quote attributes; keep
 `T` inside `P`; and do not put layout containers inside `P` or `T`.
@@ -564,6 +570,9 @@ range override. The precedence is element, then paragraph, then text run.
 - Foreground: `text-color-#rrggbb[/opacity]` or `text-color-theme-name`.
 - Highlight: `bg-#rrggbb`.
 
+`TextStyle.link` is preserved internally when pulled text is copied, but links
+are not authorable through any SML class.
+
 ```sml-classes
 bold
 italic
@@ -787,6 +796,31 @@ invalid atomic batch and returns a warning naming the lost properties. A copied
 adjusted image therefore uses the original image content but may not look
 identical; verify it in the post-push thumbnail and recreate the adjustment in
 the source image when exact fidelity matters.
+
+## Creating a new slide
+
+Slide creation is implicit in the diff workflow; there is no separate CLI
+command. Create a new `slides/NN/content.sml` folder and put a `<Slide>` root
+inside it with at least one element change targeting that slide: either a
+new-ID element or a copy of a pulled element. An empty folder produces no diff
+because slides are discovered from their elements' slide index.
+
+For example, `slides/12/content.sml` can contain:
+
+```xml
+<Slide>
+  <TextBox id="launch_title" x="60" y="60" w="840" h="80">
+    <P>Launch plan</P>
+  </TextBox>
+</Slide>
+```
+
+`diff` emits a `createSlide` request before the element creates. The new slide
+always appends to the end of the deck: the folder number is not an insertion
+position because the request has no `insertionIndex`. After the push, the next
+pull renumbers the local slide folders to match the deck order. Do not author
+element IDs beginning with `new_`; that prefix is reserved for Slidesmith's
+generated slide/object IDs and is stripped during pull.
 
 ## Layout authoring
 

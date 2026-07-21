@@ -112,3 +112,53 @@ slidesmith check "$D" --accept OUT_OF_BOUNDS:1:e3
 slidesmith fmt "$D"                # canonical formatting, semantics unchanged
 slidesmith diff "$D" --summary     # now shows only real changes
 ```
+
+## 10. Add a new slide
+There is no separate slide-creation command. Create a new slide folder with a
+`<Slide>` root and at least one element change targeting it: either a new-ID
+element or a copy of a pulled element. An empty folder produces nothing:
+```bash
+mkdir -p "$D/slides/12"
+$EDITOR "$D/slides/12/content.sml"
+```
+```xml
+<Slide>
+  <TextBox id="launch_title" x="60" y="60" w="840" h="80">
+    <P>Launch plan</P>
+  </TextBox>
+</Slide>
+```
+```bash
+slidesmith diff "$D" --summary
+slidesmith push "$D"
+```
+The folder number identifies the local slide index, but the new slide always
+appends at the end because `createSlide` has no
+`insertionIndex`; the next pull renumbers folders to match deck order.
+
+## 11. Send a background to back
+`reorder` changes live top-level z-order; preview first, then apply:
+```bash
+slidesmith reorder "$D" 'id=background' --op send-to-back --dry-run
+slidesmith reorder "$D" 'id=background' --op send-to-back
+```
+The four operations are `bring-to-front`, `bring-forward`, `send-backward`,
+and `send-to-back`.
+
+## 12. Accept an intentional overlap in QA
+```bash
+slidesmith check "$D" --no-thumbnails       # inspect stable finding IDs
+slidesmith check "$D" --no-thumbnails \
+  --accept OVERLAP:1:card_a,card_b
+```
+For committed intent, add `qa-accept-overlap` to an involved element's class;
+the class is stripped before requests are generated.
+
+## 13. Authoring guardrails
+- Authored IDs meeting the 5–50 character and charset constraints survive
+  push/pull round trips verbatim. IDs outside those constraints are still
+  accepted, but slidesmith sanitizes them into generated object IDs before
+  sending, so the authored name is not preserved.
+  `new_` is reserved; see the agent guide for the full ID rules.
+- A new `<Group>` cannot be created through the API. Keep or copy a pulled
+  group's ID instead; request generation fails with `Group elements cannot be created via the API; keep or copy pulled groups instead`.

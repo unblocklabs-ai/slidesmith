@@ -314,6 +314,64 @@ def test_copy_missing_group_children_or_styles_fails_loudly() -> None:
         )
 
 
+def test_new_group_creation_fails_with_actionable_error() -> None:
+    change = Change(
+        ChangeType.CREATE,
+        "fresh_group",
+        slide_index="01",
+        new_position={"x": 0, "y": 0, "w": 100, "h": 100},
+        tag="Group",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Group elements cannot be created via the API; keep or copy pulled groups instead",
+    ):
+        generate_batch_requests(
+            DiffResult(changes=[change]), {}, {"01": "slide-google"}
+        )
+
+
+def test_pulled_group_move_still_generates_a_normal_request() -> None:
+    pristine = (
+        '<Slide id="s1"><Group id="pulled_group" x="10" y="20" w="100" h="80">'
+        '<Rect id="group_child" x="10" y="20" w="20" h="20" />'
+        "</Group></Slide>"
+    )
+    edited = pristine.replace('x="10" y="20" w="100" h="80"', 'x="30" y="40" w="100" h="80"')
+    changes = diff_slide_content(
+        pristine,
+        edited,
+        {"pulled_group": {"type": "GROUP"}},
+        "01",
+    )
+
+    requests = generate_batch_requests(
+        DiffResult(
+            changes=changes,
+            pristine_styles={"pulled_group": {"type": "GROUP"}},
+        ),
+        {"pulled_group": "group-google", "group_child": "child-google"},
+        {"01": "slide-google"},
+    )
+
+    assert requests == [
+        {
+            "updatePageElementTransform": {
+                "objectId": "group-google",
+                "transform": {
+                    "scaleX": 1,
+                    "scaleY": 1,
+                    "translateX": pt_to_emu(20),
+                    "translateY": pt_to_emu(20),
+                    "unit": "EMU",
+                },
+                "applyMode": "RELATIVE",
+            }
+        }
+    ]
+
+
 def test_font_family_round_trip_preserves_exact_capitalization() -> None:
     style = TextStyle(font_family="IBM Plex Sans")
     classes = style.to_classes()

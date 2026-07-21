@@ -32,6 +32,7 @@ from slidesmith.engine.element_factories import (
     _parse_color,
     _tag_to_type,
 )
+from slidesmith.engine.hierarchy import has_ancestor_in_set
 from slidesmith.engine.text_requests import (
     _create_paragraph_class_update_requests,
     _create_run_style_requests,
@@ -284,23 +285,15 @@ def _map_duplicate_descendants(
 
     removed_source_ids = mapped_source_ids - authored_source_ids
 
-    def has_removed_group_ancestor(child_source_id: str) -> bool:
-        seen: set[str] = set()
-        parent_source_id = pristine_element_parents.get(child_source_id)
-        while parent_source_id and parent_source_id not in seen:
-            if (
-                parent_source_id in removed_source_ids
-                and pristine_element_types.get(parent_source_id) == "GROUP"
-            ):
-                return True
-            seen.add(parent_source_id)
-            parent_source_id = pristine_element_parents.get(parent_source_id)
-        return False
-
     return [
         object_ids[child_source_id]
         for child_source_id in sorted(removed_source_ids)
-        if not has_removed_group_ancestor(child_source_id)
+        if not has_ancestor_in_set(
+            child_source_id,
+            removed_source_ids,
+            pristine_element_parents,
+            pristine_element_types,
+        )
     ]
 
 

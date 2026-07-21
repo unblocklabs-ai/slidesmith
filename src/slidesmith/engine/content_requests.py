@@ -20,6 +20,7 @@ from slidesmith.engine.element_factories import (
     _create_slide_request,
 )
 from slidesmith.engine.id_manager import is_valid_google_object_id
+from slidesmith.engine.hierarchy import has_ancestor_in_set
 from slidesmith.engine.text_requests import (
     _create_paragraph_class_update_requests,
     _create_run_style_requests,
@@ -418,18 +419,8 @@ def _order_deletes_for_safe_removal(
     types = pristine_element_types or {}
     parents = pristine_element_parents or {}
 
-    def has_deleted_group_ancestor(object_id: str) -> bool:
-        seen: set[str] = set()
-        parent_id = parents.get(object_id)
-        while parent_id and parent_id not in seen:
-            if parent_id in valid_ids and types.get(parent_id) == "GROUP":
-                return True
-            seen.add(parent_id)
-            parent_id = parents.get(parent_id)
-        return False
-
     return sorted(
         object_id
         for object_id in valid_ids
-        if not has_deleted_group_ancestor(object_id)
+        if not has_ancestor_in_set(object_id, valid_ids, parents, types)
     )

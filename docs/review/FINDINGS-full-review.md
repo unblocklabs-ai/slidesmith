@@ -73,7 +73,7 @@ deferred to a deliberate pass). Loop: fix → re-review until no real defect rem
 - [x] FR-19 [MEDIUM] Three parallel raw-API tree traversals (conflicts / client index /
   push_progress). Extract one `iter_page_elements(data)`; build all three indexes from
   it. (Composes with FR-2's ancestry fix.)
-- [ ] FR-20 [MEDIUM] Ancestor-in-group-set check duplicated (content_requests.py:406
+- [x] FR-20 [MEDIUM] Ancestor-in-group-set check duplicated (content_requests.py:406
   vs copy_requests.py:285). Extract `has_ancestor_in_set(...)`.
 
 ## TEST GAPS — add coverage (name the silent-failure branch)

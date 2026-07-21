@@ -9,3 +9,4 @@ decks/
 .claude/
 outputs/
 docs/local/
+uv.lock

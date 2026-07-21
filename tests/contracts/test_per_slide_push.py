@@ -209,6 +209,7 @@ def test_partition_groups_existing_and_new_slide_requests(tmp_path: Path) -> Non
             Change(ChangeType.CREATE, "box2", slide_index="02"),
         ]
     )
+    diff_result.generated_slide_ids["02"] = "new_slide_02_1"
     requests = [
         {"createSlide": {"objectId": "new_slide_02_1"}},
         {"updatePageElementTransform": {"objectId": "google_box1"}},
@@ -309,6 +310,9 @@ def test_partition_uses_create_slide_object_id_across_100_boundary(
             Change(ChangeType.CREATE, "box100", slide_index="100"),
         ]
     )
+    diff_result.generated_slide_ids.update(
+        {"99": "new_slide_99_2", "100": "new_slide_100_1"}
+    )
     requests = [
         {"createSlide": {"objectId": "new_slide_100_1"}},
         {"createSlide": {"objectId": "new_slide_99_2"}},
@@ -379,6 +383,9 @@ def test_editing_slide_100_invalidates_ledger_hash_for_batch_that_builds_it(
             Change(ChangeType.CREATE, "box99", slide_index="99"),
             Change(ChangeType.CREATE, "box100", slide_index="100"),
         ]
+    )
+    diff_result.generated_slide_ids.update(
+        {"99": "new_slide_99_2", "100": "new_slide_100_1"}
     )
     requests = [
         {"createSlide": {"objectId": "new_slide_100_1"}},

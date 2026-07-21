@@ -262,9 +262,8 @@ def test_generated_namespace_ids_cannot_shadow_slide_order() -> None:
     data = _presentation([_shape_element("s2"), _shape_element("g7"), _shape_element("m3")])
     data["slides"].append({"objectId": "slide-google-2", "pageElements": []})
     result = process_presentation(data)
-    assert result["id_mapping"]["s1"] == "slide-google"
-    assert result["id_mapping"]["s2"] == "slide-google-2"
-    assert "s2" in result["id_mapping"].values()
+    assert result["id_mapping"]["slide-google"] == "slide-google"
+    assert result["id_mapping"]["slide-google-2"] == "slide-google-2"
     client = SlidesClient(_StaticTransport(data))
     assert client._build_slide_id_mapping(
         result["id_mapping"], result["presentation_info"]["slideOrder"]

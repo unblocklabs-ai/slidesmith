@@ -674,6 +674,7 @@ class SlidesClient:
             slide_id_mapping,
             base_raw or {},
             folder_path,
+            generated_slide_ids=diff_result.generated_slide_ids,
         )
         total_slides = _progress_slide_total(intended_slides, batches)
         recorded = (

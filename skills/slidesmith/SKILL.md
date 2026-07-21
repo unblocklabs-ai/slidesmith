@@ -10,7 +10,7 @@ description: >-
 when_to_use: >-
   The user wants to build or modify a real Google Slides presentation and keep it
   editable/collaboratable (not a rendered image, not a new file each edit).
-version: 0.4.1
+version: 0.5.0
 ---
 
 # slidesmith
@@ -57,9 +57,11 @@ slidesmith --version                    # print the installed package version
 To create a slide, scaffold it locally with `slidesmith add-slide <id>`:
 `--after N` inserts after existing 1-based slide `N`, `--at N` inserts before
 1-based position `N`, and `--blank` creates an empty root. `--layout title-body`
-is the built-in minimal template. With neither position flag, the slide
-appends at the end. The command only writes local SML; run `diff` and `push`
-afterward. A follow-up pull renumbers folders to the actual deck order.
+is the built-in minimal template; its starter geometry and font sizes scale to
+the deck page size, falling back to 960×540 when page-size metadata is
+unavailable or invalid. With neither position flag, the slide appends at the
+end. The command only writes local SML; run `diff` and `push` afterward. A
+follow-up pull renumbers folders to the actual deck order.
 
 Push diagnostics distinguish actionable `warning:` lines from lower-severity
 `notice:` lines and render warnings first.
@@ -81,7 +83,9 @@ The command is local-only. User positions are 1-based and become the API's
 the authoring-only `insertion-index` attribute on the new `<Slide>` root and is
 omitted by pull-generated roots, so a no-edit post-push diff is zero. The next
 pull renumbers `slides/NN` folders to actual deck order. Safe authored IDs are
-5–50 characters and must not start with reserved `new_`. Position bounds use
+5–50 characters, must start with a letter or underscore, and must not start
+with reserved `new_`; remaining characters may be letters, digits, underscores,
+or hyphens. Position bounds use
 only pulled slides: pending insertion-index scaffolds do not increase the
 deck length, so a four-slide deck accepts `--at 1..5` and rejects `--at 6`.
 

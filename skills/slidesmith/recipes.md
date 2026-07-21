@@ -127,7 +127,10 @@ an empty `<Slide>` root. With neither `--after` nor `--at`, the new slide
 appends at the end, preserving the historical implicit-folder behavior.
 `--dry-run` prints the folder, safe authored slide ID, and intended API
 `insertionIndex` without writing. IDs must use Google's 5–50 character
-authored-ID grammar and may not start with reserved `new_`.
+authored-ID grammar, must start with a letter or underscore, and may not start
+with reserved `new_`. The `title-body` starter scales its geometry and font
+sizes to the deck page size, falling back to 960×540 when page-size metadata is
+unavailable or invalid.
 
 The command writes `slides/NN/content.sml` and records a requested position in
 the authoring-only root attribute `insertion-index`; it never pushes by itself.

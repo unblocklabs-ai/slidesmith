@@ -73,7 +73,7 @@ class TestIDManager:
         assert manager.assign_element_id("obj1") == "e1"
         assert manager.assign_element_id("obj2") == "e2"
         assert manager.assign_group_id("grp1") == "g1"
-        assert manager.assign_slide_id("slide1") == "s1"
+        assert manager.assign_slide_id("slide1") == "slide1"
 
     def test_from_dict(self):
         mapping = {"e1": "google1", "e2": "google2", "g1": "group1"}

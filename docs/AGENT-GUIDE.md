@@ -824,8 +824,11 @@ Google Slides API's 0-based `insertionIndex` (`--after 2` and `--at 3` both
 become `2`). If neither is supplied, the new slide uses the existing
 append-at-end behavior and omits `insertionIndex`. `--blank` creates an empty
 slide; the built-in `--layout title-body` creates minimal title/body text boxes.
-`--dry-run` writes nothing. `--id` accepts a 5–50 character authored ID using
-letters, digits, `_`, or `-`, and refuses IDs beginning with reserved `new_`.
+`--dry-run` writes nothing. `--id` accepts a 5–50 character authored ID whose
+first character is a letter or underscore and whose remaining characters use
+letters, digits, `_`, or `-`; it refuses IDs beginning with reserved `new_`.
+The title/body starter's geometry and font sizes scale to the deck page size;
+if page-size metadata is unavailable or invalid, it falls back to 960×540.
 
 Position bounds use only the original pulled deck: pending scaffold folders
 whose root has `insertion-index` are not counted. With `M` original slides,
@@ -1125,7 +1128,8 @@ are re-minted through `google-auth` when available.
 
 `GOG_ACCESS_TOKEN` and `GOOGLE_WORKSPACE_CLI_TOKEN` are bare environment
 tokens and cannot be refreshed by Slidesmith. Before an API-bound command,
-Slidesmith makes one GET to Google's fixed HTTPS tokeninfo endpoint. An
+Slidesmith makes one POST to Google's fixed HTTPS tokeninfo endpoint, sending
+the access token in the form-encoded request body rather than in the URL. An
 invalid or already-expired response fails before deck work and explains the
 gog recovery: run a throwaway `gog` API request to force a refresh, then
 re-export `GOG_ACCESS_TOKEN` and retry. A valid response supplies the remaining

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -33,16 +32,31 @@ def partition_requests_by_slide(
     slide_id_mapping: dict[str, str],
     base_raw: dict[str, Any],
     folder_path: Path,
+    generated_slide_ids: dict[str, str] | None = None,
 ) -> list[SlideBatch]:
     """Partition an already-generated request stream by its target slide.
 
     Request generation stays deck-wide so object-ID allocation and ordering
     remain identical to the default atomic push. This pass only assigns each
     request to a slide and preserves its relative order inside that slide.
+
+    ``generated_slide_ids`` maps local slide index -> generated createSlide
+    object ID (the same orientation as ``DiffResult.generated_slide_ids``,
+    which is used when the argument is omitted); it is inverted internally to
+    route each createSlide request back to its local slide.
     """
     slide_by_page_id = {
         google_id: slide_index
         for slide_index, google_id in slide_id_mapping.items()
+    }
+    generated_slide_ids = (
+        diff_result.generated_slide_ids
+        if generated_slide_ids is None
+        else generated_slide_ids
+    )
+    generated_slide_indices = {
+        object_id: slide_index
+        for slide_index, object_id in generated_slide_ids.items()
     }
     slide_by_object_id: dict[str, str] = {}
 
@@ -91,7 +105,7 @@ def partition_requests_by_slide(
 
         if operation == "createSlide":
             page_id = body.get("objectId")
-            slide_index = _new_slide_index_from_object_id(page_id)
+            slide_index = generated_slide_indices.get(page_id)
             if slide_index is None or slide_index not in missing_slide_indices:
                 raise ValueError(
                     "Cannot map createSlide request to a local slide"
@@ -148,13 +162,6 @@ def partition_requests_by_slide(
         )
         for slide_index in ordered_slide_indices
     ]
-
-
-def _new_slide_index_from_object_id(object_id: Any) -> str | None:
-    if not isinstance(object_id, str):
-        return None
-    match = re.fullmatch(r"new_slide_(.+)_([0-9]+)", object_id)
-    return match.group(1) if match else None
 
 
 def _request_slide_index(

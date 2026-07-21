@@ -44,7 +44,7 @@ def is_valid_google_object_id(value: str) -> bool:
 class IDManager:
     """Manages assignment of clean IDs to elements.
 
-    Human-authored page element IDs are preserved when safe. Generated
+    Human-authored page IDs and page-element IDs are preserved when safe. Generated
     fallbacks use prefixes:
     - s1, s2, ... for slides
     - e1, e2, ... for page elements (shapes, images, lines)
@@ -87,9 +87,13 @@ class IDManager:
         self._reverse_mapping[google_id] = clean_id
         return clean_id
 
-    def assign_slide_id(self, google_id: str) -> str:
-        """Assign a clean slide ID."""
-        return self._assign_id(google_id, "s")
+    def assign_slide_id(
+        self, google_id: str, *, preserve_authored: bool = True
+    ) -> str:
+        """Assign a clean slide ID, preserving safe authored IDs by default."""
+        return self._assign_id(
+            google_id, "s", preserve_authored=preserve_authored
+        )
 
     def assign_element_id(
         self, google_id: str, *, preserve_authored: bool = False

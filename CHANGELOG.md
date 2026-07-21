@@ -26,6 +26,11 @@ agent-legible: name the command/flag and what an operator can now do.
 - `add-slide` now validates `--after`/`--at` against original pulled slides
   even when other pending scaffolds exist, shifts positioned inserts once in
   request order, and sizes the title/body starter to the deck page.
+- Authored `add-slide` slide IDs now become the Google `createSlide` object ID
+  and survive push/refresh round-trips; an occupied object ID gets a safe
+  suffix.
+- Title/body starter font sizes now scale with the deck page, so an untouched
+  scaffold does not self-trigger `TEXT_OVERFLOW` on smaller realistic decks.
 
 ### Added
 
@@ -39,9 +44,11 @@ agent-legible: name the command/flag and what an operator can now do.
 
 ### Changed
 
-- Bare-token 401s and `auth doctor` now report the gog throwaway-request,
-  re-export, and `--resume` recovery path; OAuth and service-account 401
-  guidance is unchanged.
+- Bare-token 401s and `auth doctor` now report the gog throwaway-request and
+  re-export path; per-slide push 401s additionally include `--resume`
+  recovery guidance. OAuth and service-account 401 guidance is unchanged.
+- Documentation now clarifies that relative local image paths resolve from the
+  deck root rather than the individual `slides/NN/` folder.
 
 ## [0.5.0] — 2026-07-21 — Continuity & QA signal
 

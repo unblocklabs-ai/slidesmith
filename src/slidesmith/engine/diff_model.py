@@ -172,3 +172,8 @@ class DiffResult:
 
     # Lossy-but-safe request-generation decisions surfaced by push/CLI.
     warnings: list[PushWarning] = field(default_factory=list)
+
+    # Generated createSlide object IDs, keyed by local slide index.  Request
+    # partitioning must use this explicit association because authored slide
+    # IDs no longer encode their local index.
+    generated_slide_ids: dict[str, str] = field(default_factory=dict)

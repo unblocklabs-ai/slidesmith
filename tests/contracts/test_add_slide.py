@@ -16,6 +16,7 @@ from slidesmith.engine.content_parser import parse_slide_content
 from slidesmith.engine.content_requests import generate_batch_requests
 from slidesmith.engine.id_manager import is_valid_google_object_id
 from slidesmith.engine.push_progress import partition_requests_by_slide
+from slidesmith.engine.qa import check_folder, finding_id, lint_folder
 from slidesmith.engine.slide_scaffold import scaffold_slide
 from slidesmith.engine.transport import PresentationData, Transport
 from slidesmith.workspace import materialize
@@ -82,7 +83,7 @@ def test_add_slide_scaffolds_positioned_blank_slide_and_diff_request() -> None:
                 "insertionIndex": 2,
             }
         }
-        assert requests[0]["createSlide"]["objectId"].startswith("new_slide_05_")
+        assert requests[0]["createSlide"]["objectId"] == "agenda_slide"
 
 
 def test_add_slide_layout_and_append_default_keep_legacy_request_shape(
@@ -191,11 +192,15 @@ def test_multiple_scaffolds_keep_original_coordinates_for_request_shift(
     assert deck == ["first", "A", "second", "B", "C", "D"]
 
 
-def test_title_body_scaffold_stays_within_small_page_bounds(tmp_path: Path) -> None:
+@pytest.mark.parametrize("page_size", [(720.0, 405.0), (320.0, 180.0)])
+def test_title_body_scaffold_stays_within_small_page_bounds(
+    tmp_path: Path, page_size: tuple[float, float]
+) -> None:
     folder = _workspace(tmp_path)
     metadata_path = folder / "presentation.json"
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-    metadata["pageSize"] = {"width": 720.0, "height": 405.0}
+    page_width, page_height = page_size
+    metadata["pageSize"] = {"width": page_width, "height": page_height}
     metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
 
     result = scaffold_slide(folder, layout="title-body", slide_id="small_slide")
@@ -205,10 +210,14 @@ def test_title_body_scaffold_stays_within_small_page_bounds(tmp_path: Path) -> N
     for element in elements:
         assert element.x is not None and element.y is not None
         assert element.w is not None and element.h is not None
-        assert 0 <= element.x <= 720
-        assert 0 <= element.y <= 405
-        assert element.x + element.w <= 720
-        assert element.y + element.h <= 405
+        assert 0 <= element.x <= page_width
+        assert 0 <= element.y <= page_height
+        assert element.x + element.w <= page_width
+        assert element.y + element.h <= page_height
+    assert not any(
+        finding.rule == "TEXT_OVERFLOW" and finding.slide_number == 5
+        for finding in lint_folder(folder)
+    )
 
 
 def test_multiple_positioned_slides_shift_later_indices_and_land_in_order() -> None:
@@ -285,10 +294,11 @@ def test_positioned_new_slides_partition_by_object_id_across_100_boundary(
         )
         for index in ("99", "100")
     ]
-    requests = generate_batch_requests(DiffResult(changes=changes), {}, {})
+    diff_result = DiffResult(changes=changes)
+    requests = generate_batch_requests(diff_result, {}, {})
     batches = partition_requests_by_slide(
         requests,
-        DiffResult(changes=changes),
+        diff_result,
         {},
         {},
         {"slides": []},
@@ -296,12 +306,8 @@ def test_positioned_new_slides_partition_by_object_id_across_100_boundary(
     )
 
     assert [batch.slide_index for batch in batches] == ["99", "100"]
-    assert batches[0].requests[0]["createSlide"]["objectId"].startswith(
-        "new_slide_99_"
-    )
-    assert batches[1].requests[0]["createSlide"]["objectId"].startswith(
-        "new_slide_100_"
-    )
+    assert batches[0].requests[0]["createSlide"]["objectId"] == "slide_99"
+    assert batches[1].requests[0]["createSlide"]["objectId"] == "slide_100"
 
 
 def test_reserved_and_invalid_slide_ids_are_rejected(tmp_path: Path) -> None:
@@ -311,6 +317,21 @@ def test_reserved_and_invalid_slide_ids_are_rejected(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="5-50 characters"):
         scaffold_slide(folder, slide_id="bad")
     assert is_valid_google_object_id("agenda_slide")
+
+
+def test_authored_slide_id_falls_back_when_google_object_id_is_taken() -> None:
+    diff_result = DiffResult(
+        changes=[Change(ChangeType.CREATE_SLIDE, "agenda_slide", slide_index="05")]
+    )
+
+    requests = generate_batch_requests(
+        diff_result,
+        {"existing_element": "agenda_slide"},
+        {},
+    )
+
+    assert requests == [{"createSlide": {"objectId": "agenda_slide_2"}}]
+    assert diff_result.generated_slide_ids == {"05": "agenda_slide_2"}
 
 
 def test_scaffold_refuses_target_folder_if_it_appears_during_write(
@@ -349,14 +370,32 @@ class _CreateSlideTransport(Transport):
     ) -> dict[str, Any]:
         for request in requests:
             body = request.get("createSlide")
+            if isinstance(body, dict):
+                slide = {"objectId": body["objectId"], "pageElements": []}
+                index = body.get("insertionIndex")
+                if index is None:
+                    self.data.setdefault("slides", []).append(slide)
+                else:
+                    self.data.setdefault("slides", []).insert(index, slide)
+                continue
+
+            body = request.get("createShape")
             if not isinstance(body, dict):
                 continue
-            slide = {"objectId": body["objectId"], "pageElements": []}
-            index = body.get("insertionIndex")
-            if index is None:
-                self.data.setdefault("slides", []).append(slide)
-            else:
-                self.data.setdefault("slides", []).insert(index, slide)
+            properties = body["elementProperties"]
+            slide = next(
+                slide
+                for slide in self.data["slides"]
+                if slide["objectId"] == properties["pageObjectId"]
+            )
+            slide["pageElements"].append(
+                {
+                    "objectId": body["objectId"],
+                    "size": copy.deepcopy(properties["size"]),
+                    "transform": copy.deepcopy(properties["transform"]),
+                    "shape": {"shapeType": body["shapeType"]},
+                }
+            )
         self.revision += 1
         self.data["revisionId"] = f"rev-{self.revision}"
         return {"replies": [{} for _ in requests]}
@@ -394,9 +433,9 @@ async def test_per_slide_positioned_multi_add_matches_atomic_order(
         result = []
         for slide in transport.data["slides"]:
             object_id = slide["objectId"]
-            if object_id.startswith("new_slide_05_"):
+            if object_id == "third_insert":
                 result.append("third")
-            elif object_id.startswith("new_slide_06_"):
+            elif object_id == "first_insert":
                 result.append("first")
             else:
                 result.append(object_id)
@@ -433,3 +472,54 @@ async def test_push_refresh_strips_intent_and_no_edit_diff_is_zero(
         "insertion-index" not in path.read_text(encoding="utf-8")
         for path in sorted((folder / "slides").glob("*/content.sml"))
     )
+
+
+@pytest.mark.asyncio
+async def test_authored_slide_id_and_qa_acceptance_survive_push_refresh(
+    tmp_path: Path,
+) -> None:
+    data = json.loads(GOLDEN.read_text(encoding="utf-8"))
+    transport = _CreateSlideTransport(data)
+    client = SlidesClient(transport)
+    await client.pull(data["presentationId"], tmp_path, save_raw=False)
+    folder = tmp_path / data["presentationId"]
+    result = scaffold_slide(folder, blank=True, slide_id="agenda_slide")
+    result.content_path.write_text(
+        "<Slide id=\"agenda_slide\">\n"
+        "  <Rect id=\"accept_left\" x=\"10\" y=\"10\" w=\"100\" h=\"100\" />\n"
+        "  <Rect id=\"accept_right\" x=\"50\" y=\"50\" w=\"100\" h=\"100\" />\n"
+        "</Slide>\n",
+        encoding="utf-8",
+    )
+
+    before = next(
+        finding
+        for finding in lint_folder(folder)
+        if finding.rule == "OVERLAP" and finding.slide_number == 5
+    )
+    acceptance_id = finding_id(before)
+    assert before.slide_id == "agenda_slide"
+    assert check_folder(folder, accept=[acceptance_id], output=lambda _: None) == 0
+
+    diff_result, requests = client.diff_with_result(folder)
+    create_slide = next(request["createSlide"] for request in requests if "createSlide" in request)
+    assert create_slide["objectId"] == "agenda_slide"
+    assert diff_result.generated_slide_ids == {"05": "agenda_slide"}
+
+    await client.push(folder)
+
+    refreshed_slide = next(
+        path
+        for path in sorted((folder / "slides").glob("*/content.sml"))
+        if 'id="agenda_slide"' in path.read_text(encoding="utf-8")
+    )
+    assert 'id="agenda_slide"' in refreshed_slide.read_text(encoding="utf-8")
+    after = next(
+        finding
+        for finding in lint_folder(folder)
+        if finding.rule == "OVERLAP" and finding.slide_number == 5
+    )
+    assert finding_id(after) == acceptance_id
+    output: list[str] = []
+    assert check_folder(folder, output=output.append) == 0
+    assert any("[ACCEPTED]" in line and acceptance_id in line for line in output)

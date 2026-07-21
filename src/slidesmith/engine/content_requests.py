@@ -91,6 +91,7 @@ def _emit_new_slide_requests(
     copies: list[Change],
     creates: list[Change],
     slide_ids: dict[str, str],
+    generated_slide_ids: dict[str, str],
     reserved_object_ids: set[str],
     unique_suffix: Callable[[], str],
 ) -> None:
@@ -132,15 +133,27 @@ def _emit_new_slide_requests(
         key=_slide_sort_key,
     )
 
+    authored_slide_ids = {
+        change.slide_index: change.target_id
+        for change in creates
+        if change.change_type is ChangeType.CREATE_SLIDE and change.slide_index
+    }
+
+    def allocate_slide_id(slide_index: str) -> str:
+        authored_id = authored_slide_ids.get(slide_index)
+        if authored_id is not None:
+            return _allocate_create_object_id(authored_id, reserved_object_ids)
+        while True:
+            suffix = unique_suffix()
+            candidate = f"new_slide_{slide_index}_{suffix}"
+            if candidate not in reserved_object_ids:
+                return candidate
+
     # insertionIndex is evaluated against the deck as it exists at each API
     # request. A request whose desired position is after an earlier insertion
     # therefore moves right once for every earlier target at or before it.
     for position, (slide_index, desired_index) in enumerate(positioned):
-        while True:
-            suffix = unique_suffix()
-            new_slide_id = f"new_slide_{slide_index}_{suffix}"
-            if new_slide_id not in reserved_object_ids:
-                break
+        new_slide_id = allocate_slide_id(slide_index)
         adjusted_index = desired_index + sum(
             1
             for _, earlier_index in positioned[:position]
@@ -148,18 +161,16 @@ def _emit_new_slide_requests(
         )
         requests.append(_create_slide_request(new_slide_id, adjusted_index))
         slide_ids[slide_index] = new_slide_id
+        generated_slide_ids[slide_index] = new_slide_id
         reserved_object_ids.add(new_slide_id)
 
     # Preserve the historical append order exactly for slides without an
     # explicit position, including the legacy implicit-folder workflow.
     for slide_index in unpositioned:
-        while True:
-            suffix = unique_suffix()
-            new_slide_id = f"new_slide_{slide_index}_{suffix}"
-            if new_slide_id not in reserved_object_ids:
-                break
+        new_slide_id = allocate_slide_id(slide_index)
         requests.append(_create_slide_request(new_slide_id))
         slide_ids[slide_index] = new_slide_id
+        generated_slide_ids[slide_index] = new_slide_id
         reserved_object_ids.add(new_slide_id)
 
 
@@ -439,6 +450,7 @@ def generate_batch_requests(
 ) -> list[dict[str, Any]]:
     """Generate ordered Google Slides batchUpdate requests from a diff."""
     requests: list[dict[str, Any]] = []
+    diff_result.generated_slide_ids.clear()
     slide_ids = dict(slide_id_mapping)
     reserved_object_ids = set(id_mapping.values()) | set(slide_ids.values())
     id_allocator = IdAllocator()
@@ -459,6 +471,7 @@ def generate_batch_requests(
         buckets[ChangeType.COPY],
         buckets[ChangeType.CREATE] + buckets[ChangeType.CREATE_SLIDE],
         slide_ids,
+        diff_result.generated_slide_ids,
         reserved_object_ids,
         id_allocator.unique_suffix,
     )

@@ -297,6 +297,9 @@ def _slide_content(
     if layout == "title-body":
         scale_x = page_width / 960.0
         scale_y = page_height / 540.0
+        font_scale = min(scale_x, scale_y)
+        title_font_size = max(8.0, 28.0 * font_scale)
+        body_font_size = max(8.0, 16.0 * font_scale)
         margin_x = min(48.0 * scale_x, page_width / 2)
         title_x = max(0.0, min(margin_x, page_width))
         title_y = max(0.0, min(36.0 * scale_y, page_height))
@@ -311,10 +314,10 @@ def _slide_content(
         body_id = _unique_element_id(slide_id, "body", existing_ids)
         lines.extend(
             [
-                f'  <TextBox id="{title_id}" x="{title_x:g}" y="{title_y:g}" w="{title_w:g}" h="{title_h:g}" class="text-size-28">',
+                f'  <TextBox id="{title_id}" x="{title_x:g}" y="{title_y:g}" w="{title_w:g}" h="{title_h:g}" class="text-size-{title_font_size:g}">',
                 "    <P>Title</P>",
                 "  </TextBox>",
-                f'  <TextBox id="{body_id}" x="{body_x:g}" y="{body_y:g}" w="{body_w:g}" h="{body_h:g}" class="text-size-16">',
+                f'  <TextBox id="{body_id}" x="{body_x:g}" y="{body_y:g}" w="{body_w:g}" h="{body_h:g}" class="text-size-{body_font_size:g}">',
                 "    <P>Body</P>",
                 "  </TextBox>",
             ]

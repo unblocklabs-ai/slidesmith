@@ -544,7 +544,7 @@ def test_qa_baseline_survives_inserting_an_earlier_slide(
     untouched = next(item for item in findings if "untouched" in item.element_ids)
     new_finding = next(item for item in findings if "new" in item.element_ids)
     assert untouched.slide_number == 4
-    assert untouched.slide_id == "s3"
+    assert untouched.slide_id == "focus_areas_slide"
     assert new_finding.slide_id == "s-new"
     assert qa_engine._finding_key(untouched) != qa_engine._finding_key(new_finding)
 
@@ -579,7 +579,7 @@ def test_qa_baseline_survives_deleting_an_earlier_slide(
         item for item in lint_folder(qa_folder) if "untouched" in item.element_ids
     )
     assert current.slide_number == 2
-    assert current.slide_id == "s3"
+    assert current.slide_id == "focus_areas_slide"
 
     output: list[str] = []
     check_folder(qa_folder, output=output.append)
@@ -678,17 +678,17 @@ def test_accepted_finding_survives_slide_renumbering(
     finding = next(
         item for item in lint_folder(qa_folder) if "accepted" in item.element_ids
     )
-    assert finding_id(finding) == "OUT_OF_BOUNDS:s3:accepted"
+    assert finding_id(finding) == "OUT_OF_BOUNDS:focus_areas_slide:accepted"
     record_qa_baseline(qa_folder)
     assert check_folder(qa_folder, accept=[finding_id(finding)]) == 0
 
     accepted_path = qa_folder / ".qa" / "accepted.json"
     accepted = json.loads(accepted_path.read_text(encoding="utf-8"))
     assert accepted["accepted"] == {
-        "OUT_OF_BOUNDS:s3:accepted": {
+        "OUT_OF_BOUNDS:focus_areas_slide:accepted": {
             "rule": "OUT_OF_BOUNDS",
             "slide": 3,
-            "slideId": "s3",
+            "slideId": "focus_areas_slide",
             "elementIds": ["accepted"],
         }
     }
@@ -759,8 +759,11 @@ def test_old_accepted_file_without_slide_id_is_migrated(
     assert check_folder(qa_folder, strict=True, output=output.append) == 0
     assert any(line.startswith("[ACCEPTED]") for line in output)
     migrated = json.loads(accepted_path.read_text(encoding="utf-8"))
-    assert "OUT_OF_BOUNDS:s3:legacy" in migrated["accepted"]
-    assert migrated["accepted"]["OUT_OF_BOUNDS:s3:legacy"]["slideId"] == "s3"
+    assert "OUT_OF_BOUNDS:focus_areas_slide:legacy" in migrated["accepted"]
+    assert (
+        migrated["accepted"]["OUT_OF_BOUNDS:focus_areas_slide:legacy"]["slideId"]
+        == "focus_areas_slide"
+    )
 
 
 def test_push_preflight_block_aborts_before_auth_on_new_overflow(

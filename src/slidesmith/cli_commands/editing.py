@@ -228,7 +228,12 @@ def register_editing_commands(
         epilog=(
             "This is local-only: it writes a new slides/NN/content.sml file; "
             "run diff and push afterward. --after N means after existing slide N; "
-            "--at N means before the 1-based slide position N."
+            "--at N means before the 1-based slide position N. The title-body "
+            "starter scales geometry and font sizes to the deck page size, "
+            "falling back to 960x540 when page-size metadata is unavailable or "
+            "invalid. Authored IDs must be 5-50 characters, start with a letter "
+            "or underscore, use only letters, digits, underscores, or hyphens, "
+            "and must not start with reserved new_."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -261,7 +266,10 @@ def register_editing_commands(
         "--id",
         dest="slide_id",
         metavar="SLIDE_ID",
-        help="Safe authored slide ID (5-50 characters; never starts with new_)",
+        help=(
+            "Safe authored slide ID (5-50 characters; first character is a "
+            "letter or underscore; never starts with new_)"
+        ),
     )
     sas.add_argument(
         "--dry-run",

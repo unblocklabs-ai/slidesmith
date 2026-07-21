@@ -119,7 +119,10 @@ prints the body + slots. Slots support `{{name|default}}`.
 <Image id="hero" src="https://picsum.photos/1600/900" x="60" y="140" w="480" h="270" fit="contain"/>
 <Image id="logo" src="./assets/logo.png" x="800" y="40" w="100" h="40" fit="contain"/>
 ```
-`src` = public URL **or** local path (local uploads to Drive, cached). `fit`:
+`src` = public URL **or** local path (local uploads to Drive, cached). Relative
+local paths resolve from the deck/pull root (the `<ID>/` folder), e.g.
+`<ID>/assets/...`, not from the `slides/NN/` directory containing the SML file.
+`fit`:
 `contain` (aspect-correct, top-left anchored — recommended) or `stretch` (exact
 box, may distort). For an existing image, set a new `src` (optionally with
 `fit`) in SML and use the normal `diff`/`push` loop; this emits

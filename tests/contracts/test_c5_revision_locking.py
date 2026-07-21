@@ -873,6 +873,98 @@ def test_persistence_verification_accepts_canonical_negative_line_geometry(
     assert "warnings" not in response
 
 
+def test_persistence_warning_ignores_horizontal_line_near_degenerate_thickness(
+    tmp_path: Path,
+) -> None:
+    intended = parse_slide_content(
+        '<Slide id="s1"><Line id="rule" x="100" y="20" '
+        'w="848" h="0.01" /></Slide>'
+    )
+    remote = parse_slide_content(
+        '<Slide id="s1"><Line id="rule" x="100" y="20" '
+        'w="848.01" h="236.22" /></Slide>'
+    )
+
+    response = append_persistence_warning_for_test(
+        tmp_path,
+        intended,
+        remote,
+        [],
+        intended_change_keys={("rule", ChangeType.MOVE)},
+    )
+
+    assert "warnings" not in response
+
+
+def test_persistence_warning_still_catches_horizontal_line_length_drop(
+    tmp_path: Path,
+) -> None:
+    intended = parse_slide_content(
+        '<Slide id="s1"><Line id="rule" x="100" y="20" '
+        'w="848" h="0.01" /></Slide>'
+    )
+    remote = parse_slide_content(
+        '<Slide id="s1"><Line id="rule" x="100" y="20" '
+        'w="700" h="236.22" /></Slide>'
+    )
+
+    response = append_persistence_warning_for_test(
+        tmp_path,
+        intended,
+        remote,
+        [],
+        intended_change_keys={("rule", ChangeType.MOVE)},
+    )
+
+    assert response["warnings"][0].severity is WarningSeverity.WARNING
+
+
+def test_persistence_warning_still_catches_non_degenerate_line_move(
+    tmp_path: Path,
+) -> None:
+    intended = parse_slide_content(
+        '<Slide id="s1"><Line id="rule" x="100" y="20" '
+        'w="848" h="2" /></Slide>'
+    )
+    remote = parse_slide_content(
+        '<Slide id="s1"><Line id="rule" x="100.1" y="20" '
+        'w="848" h="2" /></Slide>'
+    )
+
+    response = append_persistence_warning_for_test(
+        tmp_path,
+        intended,
+        remote,
+        [],
+        intended_change_keys={("rule", ChangeType.MOVE)},
+    )
+
+    assert response["warnings"][0].severity is WarningSeverity.WARNING
+
+
+def test_persistence_warning_ignores_vertical_line_near_degenerate_thickness(
+    tmp_path: Path,
+) -> None:
+    intended = parse_slide_content(
+        '<Slide id="s1"><Line id="rule" x="100" y="20" '
+        'w="0.01" h="848" /></Slide>'
+    )
+    remote = parse_slide_content(
+        '<Slide id="s1"><Line id="rule" x="100" y="20" '
+        'w="236.22" h="848.01" /></Slide>'
+    )
+
+    response = append_persistence_warning_for_test(
+        tmp_path,
+        intended,
+        remote,
+        [],
+        intended_change_keys={("rule", ChangeType.MOVE)},
+    )
+
+    assert "warnings" not in response
+
+
 def test_persistence_warning_ignores_created_text_layout_defaults(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

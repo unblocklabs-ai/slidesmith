@@ -76,6 +76,8 @@ slidesmith diff "$D" --summary && slidesmith push "$D"
 <Image id="tall"  src="https://picsum.photos/seed/b/800/1200" x="560" y="150" w="140" h="210" fit="contain"/>
 <Image id="sq"    src="./assets/logo.png"                     x="720" y="150" w="150" h="150" fit="contain"/>
 ```
+Relative local paths such as `./assets/...` resolve from the deck root, not the
+slide folder.
 ```bash
 slidesmith diff "$D" --summary
 slidesmith push "$D"

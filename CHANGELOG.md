@@ -14,7 +14,11 @@ agent-legible: name the command/flag and what an operator can now do.
 
 ## [Unreleased]
 
-_Nothing yet._
+### Fixed
+
+- Post-push persistence verification no longer warns for an unrepresentable
+  near-zero thickness axis on a `LINE`; along-line geometry and translation
+  drift still warn.
 
 ## [0.5.0] — 2026-07-21 — Continuity & QA signal
 

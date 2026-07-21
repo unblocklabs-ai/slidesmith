@@ -19,6 +19,8 @@ from slidesmith.engine.shape_types import TAG_TO_TYPE, VALID_GOOGLE_TYPES
 
 
 PERSISTENCE_GEOMETRY_TOLERANCE_PT = 0.02
+# Google cannot faithfully persist a line's sub-tenth-point cross-axis.
+LINE_NEAR_DEGENERATE_AXIS_THRESHOLD_PT = 0.1
 GOOGLE_DEFAULT_TEXT_LAYOUT_CLASSES = frozenset(
     {
         "content-align-top",
@@ -87,12 +89,22 @@ def _format_geometry(position: dict[str, float] | None) -> str:
 def _geometry_matches_within_tolerance(
     sent: dict[str, float] | None,
     remote: dict[str, float] | None,
+    *,
+    authored_tag: str | None = None,
 ) -> bool:
     """Compare effective geometry using the same per-axis MOVE tolerance."""
     if sent is None or remote is None or set(sent) != set(remote):
         return False
+    ignored_axes = {
+        axis
+        for axis in ("w", "h")
+        if authored_tag == "Line"
+        and axis in sent
+        and abs(float(sent[axis])) < LINE_NEAR_DEGENERATE_AXIS_THRESHOLD_PT
+    }
     return all(
-        abs(float(sent[key]) - float(remote[key]))
+        key in ignored_axes
+        or abs(float(sent[key]) - float(remote[key]))
         < PERSISTENCE_GEOMETRY_TOLERANCE_PT
         for key in sent
     )
@@ -279,9 +291,17 @@ def _persistence_warning_severity(
     if change.change_type == ChangeType.MOVE:
         old = change.old_position
         new = change.new_position
+        key = (change.slide_index or "", change.target_id)
+        intended_element = intended_elements.get(key)
         return (
             None
-            if _geometry_matches_within_tolerance(new, old)
+            if _geometry_matches_within_tolerance(
+                new,
+                old,
+                authored_tag=(
+                    intended_element.tag if intended_element is not None else None
+                ),
+            )
             else WarningSeverity.WARNING
         )
 
@@ -566,6 +586,7 @@ def append_persistence_warning(
 
 __all__ = [
     "GOOGLE_DEFAULT_TEXT_LAYOUT_CLASSES",
+    "LINE_NEAR_DEGENERATE_AXIS_THRESHOLD_PT",
     "PERSISTENCE_GEOMETRY_TOLERANCE_PT",
     "_format_changed_element_style_classes",
     "_format_geometry",

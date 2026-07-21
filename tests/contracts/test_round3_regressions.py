@@ -256,7 +256,10 @@ async def test_copy_generation_warnings_are_returned_by_push(
     monkeypatch.setattr(
         client,
         "diff_with_result",
-        lambda _folder: (diff_result, [{"createImage": {"objectId": "copy"}}]),
+        lambda _folder, **_kwargs: (
+            diff_result,
+            [{"createImage": {"objectId": "copy"}}],
+        ),
     )
 
     async def no_refresh(*_args: object, **_kwargs: object) -> None:

@@ -92,7 +92,7 @@ deferred to a deliberate pass). Loop: fix → re-review until no real defect rem
   preservation (theme.py:595-603).
 - [x] TG-6 [MEDIUM] transport backoff timing (monkeypatch asyncio.sleep, assert bounded
   delay sequence; non-retryable never sleeps) + batch_update 429 policy (POST path).
-- [ ] TG-7 [MEDIUM] keyring malformed-but-valid JSON (list / nonnumeric expires_at) —
+- [x] TG-7 [MEDIUM] keyring malformed-but-valid JSON (list / nonnumeric expires_at) —
   align KeyringSessionStore invalid-token handling with FileSessionStore.
 - [ ] TG-8 [MEDIUM] copy-style UTF-16 replay (copy_requests.py:856) — emoji + combining
   char across runs/paragraphs, assert every start/end index.

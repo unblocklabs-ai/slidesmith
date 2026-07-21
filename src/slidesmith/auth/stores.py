@@ -112,7 +112,9 @@ class KeyringSessionStore:
         try:
             token = SessionToken.from_dict(json.loads(raw))
             return token if token.is_valid() else None
-        except (json.JSONDecodeError, KeyError):
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+            # Malformed-but-valid JSON (e.g. a list, or a non-numeric
+            # expires_at) is treated as "no session", matching FileSessionStore.
             return None
 
     def save(self, profile_name: str, token: SessionToken) -> None:

@@ -30,7 +30,7 @@ deferred to a deliberate pass). Loop: fix → re-review until no real defect rem
 - [x] FR-7 [MEDIUM] Plain `diff` prints prose "No changes detected." breaking its JSON
   stdout contract (cli.py:130) — an agent parsing `diff` as JSON gets prose on the
   empty case. Emit `[]`; reserve prose for `--summary`.
-- [ ] FR-8 [MEDIUM] `ConflictError` → exit 2 for push but exit 1 for replace-image
+- [x] FR-8 [MEDIUM] `ConflictError` → exit 2 for push but exit 1 for replace-image
   (cli.py:227 vs generic handler). Handle ConflictError centrally → exit 2.
 - [ ] FR-9 [MEDIUM] `push --per-slide` progress goes to stdout, unlike all other
   diagnostics on stderr (cli.py:204). Move progress to stderr; stdout = final result.

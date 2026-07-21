@@ -106,6 +106,30 @@ def test_push_conflict_exits_two_and_lists_conflicting_elements(
     assert capsys.readouterr().err == message + "\n"
 
 
+def test_replace_image_conflict_exits_two(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    folder = tmp_path / "deck"
+    folder.mkdir()
+    message = "replace-image aborted: the deck changed during replacement"
+
+    def raise_conflict(coroutine: Any) -> None:
+        coroutine.close()
+        raise ConflictError(message, conflicts=[])
+
+    monkeypatch.setattr(cli, "_warn_if_stale", lambda _folder: None)
+    monkeypatch.setattr(cli, "_token", lambda *_args: "token")
+    monkeypatch.setattr(cli.asyncio, "run", raise_conflict)
+
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main(["replace-image", str(folder), "hero", "replacement.png"])
+
+    assert excinfo.value.code == 2
+    assert capsys.readouterr().err == message + "\n"
+
+
 def test_unhandled_cli_error_exits_one(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],

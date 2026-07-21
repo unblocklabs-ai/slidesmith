@@ -11,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from slidesmith.engine.conflicts import ConflictError
 from slidesmith.engine.json_utils import read_json
 
 
@@ -172,7 +173,6 @@ def _request_id_legend(
 def cmd_push(args: Any) -> None:
     from slidesmith.engine.assets import GoogleDriveAssetUploader
     from slidesmith.engine.client import SlidesClient
-    from slidesmith.engine.conflicts import ConflictError
     from slidesmith.engine.transport import GoogleSlidesTransport
 
     if args.resume and not args.per_slide:
@@ -227,12 +227,7 @@ def cmd_push(args: Any) -> None:
             await uploader.close()
             await transport.close()
 
-    try:
-        asyncio.run(run())
-    except ConflictError as e:
-        # The message already names the conflicting elements and what changed.
-        print(str(e), file=sys.stderr)
-        sys.exit(2)
+    asyncio.run(run())
 
 
 def cmd_replace_image(args: Any) -> None:
@@ -843,6 +838,10 @@ def main(argv: list[str] | None = None) -> None:
     args = p.parse_args(argv)
     try:
         args.func(args)
+    except ConflictError as e:
+        # The message already names the conflicting elements and what changed.
+        print(str(e), file=sys.stderr)
+        sys.exit(2)
     except Exception as e:  # surface a clean one-line error for CLI users
         print(f"error: {e}", file=sys.stderr)
         sys.exit(1)

@@ -145,19 +145,55 @@ class Finding:
     rule: str
     element_ids: tuple[str, ...]
     slide_number: int
+    slide_id: str | None
     description: str
     suggested_fix: str
+    # Current findings serialize this key even when the slide is id-less.
+    # Baselines read from pre-slide-ID files set this false for the legacy case.
+    had_slide_id_key: bool = True
 
 
-def _finding_key(finding: Finding) -> tuple[str, tuple[str, ...], int]:
+def _finding_key(finding: Finding) -> tuple[str, tuple[str, ...], str | None]:
     """Stable identity for comparing lint results across workspace refreshes."""
+    return finding.rule, tuple(sorted(finding.element_ids)), finding.slide_id
+
+
+def _legacy_finding_key(finding: Finding) -> tuple[str, tuple[str, ...], int]:
+    """Identity used by baseline/acceptance files written before slide IDs."""
     return finding.rule, tuple(sorted(finding.element_ids)), finding.slide_number
+
+
+def _findings_match(first: Finding, second: Finding) -> bool:
+    """Match findings while keeping legacy, id-less, and identified identities apart."""
+    # Three cases are intentionally distinct:
+    # 1. A missing slideId key is a pre-slide-ID legacy record; it may use the
+    #    positional fallback against either a current id-less or identified slide.
+    # 2. An explicit null slideId is a current id-less slide; it matches only
+    #    another id-less finding at the same position.
+    # 3. Two real slide IDs match by stable ID, never by position.
+    if not first.had_slide_id_key or not second.had_slide_id_key:
+        return _legacy_finding_key(first) == _legacy_finding_key(second)
+    if first.slide_id is None or second.slide_id is None:
+        return (
+            first.slide_id is None
+            and second.slide_id is None
+            and _legacy_finding_key(first) == _legacy_finding_key(second)
+        )
+    return _finding_key(first) == _finding_key(second)
+
+
+def _legacy_finding_id(finding: Finding) -> str:
+    element_ids = ",".join(sorted(finding.element_ids))
+    return f"{finding.rule}:{finding.slide_number}:{element_ids}"
 
 
 def finding_id(finding: Finding) -> str:
     """Return the stable, CLI-facing identity for a QA finding."""
     element_ids = ",".join(sorted(finding.element_ids))
-    return f"{finding.rule}:{finding.slide_number}:{element_ids}"
+    slide_identity = (
+        finding.slide_id if finding.slide_id is not None else str(finding.slide_number)
+    )
+    return f"{finding.rule}:{slide_identity}:{element_ids}"
 
 
 def _accepted_path(folder: Path) -> Path:
@@ -175,6 +211,95 @@ def _read_accepted_findings(folder: Path) -> dict[str, dict[str, Any]]:
         for identity, value in raw_accepted.items()
         if isinstance(value, dict)
     }
+
+
+def _accepted_record_matches(record: dict[str, Any], finding: Finding) -> bool:
+    """Match a serialized acceptance to a current finding."""
+    if str(record.get("rule", "")) != finding.rule:
+        return False
+    raw_element_ids = record.get("elementIds")
+    if not isinstance(raw_element_ids, list):
+        return False
+    if tuple(sorted(str(value) for value in raw_element_ids)) != tuple(
+        sorted(finding.element_ids)
+    ):
+        return False
+
+    # A missing key is a genuinely legacy record and keeps its old positional
+    # fallback, including against an identified current slide.
+    if "slideId" not in record:
+        raw_slide_number = record.get("slide", record.get("slideNumber"))
+        try:
+            return finding.slide_number == int(raw_slide_number)
+        except (TypeError, ValueError):
+            return False
+
+    raw_slide_id = record["slideId"]
+    if raw_slide_id is not None:
+        return finding.slide_id == str(raw_slide_id)
+
+    raw_slide_number = record.get("slide", record.get("slideNumber"))
+    try:
+        slide_number_matches = finding.slide_number == int(raw_slide_number)
+    except (TypeError, ValueError):
+        return False
+
+    # Explicit null means a current id-less slide, not legacy data. It may
+    # never migrate an acceptance onto an identified slide.
+    return finding.slide_id is None and slide_number_matches
+
+
+def _current_finding_for_identity(
+    identity: str, findings: list[Finding]
+) -> Finding | None:
+    """Resolve a current stable or pre-slide-ID CLI identity."""
+    for finding in findings:
+        if identity in {finding_id(finding), _legacy_finding_id(finding)}:
+            return finding
+    return None
+
+
+def _normalize_accepted_findings(
+    accepted: dict[str, dict[str, Any]], findings: list[Finding]
+) -> dict[str, dict[str, Any]]:
+    """Migrate matching old acceptance keys/records to stable slide IDs."""
+    normalized: dict[str, dict[str, Any]] = {}
+    for identity, record in accepted.items():
+        finding = next(
+            (
+                candidate
+                for candidate in findings
+                if _accepted_record_matches(record, candidate)
+            ),
+            None,
+        )
+        # Preserve the old identity-only migration fallback for malformed or
+        # partially populated legacy records, but never for explicit null.
+        if finding is None and "slideId" not in record:
+            finding = _current_finding_for_identity(identity, findings)
+        if finding is None:
+            normalized[identity] = record
+        else:
+            normalized[finding_id(finding)] = _acceptance_record(finding)
+    return normalized
+
+
+def _remove_accepted_identity(
+    accepted: dict[str, dict[str, Any]], identity: str, findings: list[Finding]
+) -> None:
+    """Remove an acceptance by its current or legacy identity."""
+    target = _current_finding_for_identity(identity, findings)
+    for accepted_identity, record in list(accepted.items()):
+        if accepted_identity == identity or (
+            target is not None
+            and (
+                accepted_identity in {
+                    finding_id(target),
+                }
+                or _accepted_record_matches(record, target)
+            )
+        ):
+            accepted.pop(accepted_identity, None)
 
 
 def _write_accepted_findings(
@@ -198,6 +323,7 @@ def _acceptance_record(finding: Finding) -> dict[str, Any]:
     return {
         "rule": finding.rule,
         "slide": finding.slide_number,
+        "slideId": finding.slide_id,
         "elementIds": sorted(finding.element_ids),
     }
 
@@ -237,19 +363,23 @@ def _finding_to_dict(finding: Finding) -> dict[str, Any]:
         "rule": finding.rule,
         "elementIds": list(finding.element_ids),
         "slideNumber": finding.slide_number,
+        "slideId": finding.slide_id,
         "description": finding.description,
         "suggestedFix": finding.suggested_fix,
     }
 
 
 def _finding_from_dict(data: dict[str, Any]) -> Finding:
+    raw_slide_id = data.get("slideId")
     return Finding(
         severity=str(data["severity"]),
         rule=str(data["rule"]),
         element_ids=tuple(str(value) for value in data["elementIds"]),
         slide_number=int(data["slideNumber"]),
+        slide_id=str(raw_slide_id) if raw_slide_id is not None else None,
         description=str(data["description"]),
         suggested_fix=str(data["suggestedFix"]),
+        had_slide_id_key="slideId" in data,
     )
 
 
@@ -282,6 +412,16 @@ def _read_qa_baseline(folder: Path) -> list[Finding] | None:
     return [_finding_from_dict(item) for item in raw_findings]
 
 
+def _read_slide_id(content_path: Path, slide_number: int) -> str | None:
+    """Read the stable clean ID from a materialized slide root."""
+    root = DefusedET.fromstring(content_path.read_text(encoding="utf-8"))
+    if root.tag != "Slide":
+        raise ValueError(
+            f"Slide {slide_number:02d} must have a clean id on its <Slide> root"
+        )
+    return root.get("id") or None
+
+
 def lint_folder(
     folder: str | Path,
     *,
@@ -312,11 +452,15 @@ def lint_folder(
             slide_number = int(slide_name)
         except ValueError as exc:
             raise ValueError(f"Slide folder name must be numeric: {slide_name}") from exc
+        slide_id = _read_slide_id(
+            folder_path / "slides" / slide_name / "content.sml", slide_number
+        )
 
         findings.extend(
             _find_overlaps(
                 roots,
                 slide_number,
+                slide_id,
                 folder_path,
                 slide_area=page_width * page_height,
             )
@@ -337,6 +481,7 @@ def lint_folder(
                         rule="OUT_OF_BOUNDS",
                         element_ids=(element.clean_id,),
                         slide_number=slide_number,
+                        slide_id=slide_id,
                         description=(
                             f"Element {element.clean_id} extends beyond the "
                             f"{page_width:g} x {page_height:g} pt page."
@@ -381,6 +526,7 @@ def lint_folder(
                         rule="TEXT_OVERFLOW",
                         element_ids=(element.clean_id,),
                         slide_number=slide_number,
+                        slide_id=slide_id,
                         description=(
                             f"Element {element.clean_id} needs {needed} of text height "
                             f"but is {box.h:.1f} pt tall; likely overflow "
@@ -424,13 +570,21 @@ def print_report(
             output(f"QA accepted: {accepted_count} finding(s).")
         return
 
-    baseline_by_key = {_finding_key(item): item for item in baseline}
-    current_keys = {_finding_key(item) for item in findings}
-    new = [item for item in findings if _finding_key(item) not in baseline_by_key]
-    pre_existing = [
-        item for item in findings if _finding_key(item) in baseline_by_key
+    new = [
+        item
+        for item in findings
+        if not any(_findings_match(item, baseline_item) for baseline_item in baseline)
     ]
-    resolved = [item for item in baseline if _finding_key(item) not in current_keys]
+    pre_existing = [
+        item
+        for item in findings
+        if any(_findings_match(item, baseline_item) for baseline_item in baseline)
+    ]
+    resolved = [
+        item
+        for item in baseline
+        if not any(_findings_match(item, current) for current in findings)
+    ]
     active_new = [item for item in new if finding_id(item) not in accepted_ids]
     active_pre_existing = [
         item for item in pre_existing if finding_id(item) not in accepted_ids
@@ -442,7 +596,11 @@ def print_report(
         "NEW = since last pull)"
     )
     for finding in findings:
-        label = "PRE-EXISTING" if _finding_key(finding) in baseline_by_key else "NEW"
+        label = (
+            "PRE-EXISTING"
+            if any(_findings_match(finding, baseline_item) for baseline_item in baseline)
+            else "NEW"
+        )
         _print_finding(
             finding,
             label,
@@ -492,14 +650,18 @@ def check_folder(
     for identity in _sugar_accepted_ids(folder_path, findings):
         accepted[identity] = _acceptance_record(findings_by_id[identity])
     for identity in accept:
-        finding = findings_by_id.get(identity)
+        finding = findings_by_id.get(identity) or _current_finding_for_identity(
+            identity, findings
+        )
         if finding is None:
             raise ValueError(
                 f"Cannot accept unknown current finding ID '{identity}'"
             )
         accepted[identity] = _acceptance_record(finding)
     for identity in unaccept:
-        accepted.pop(identity, None)
+        _remove_accepted_identity(accepted, identity, findings)
+
+    accepted = _normalize_accepted_findings(accepted, findings)
 
     if accepted != original_accepted:
         _write_accepted_findings(folder_path, accepted)
@@ -522,7 +684,11 @@ def push_preflight(
     folder_path = Path(folder)
     findings = lint_folder(folder_path)
     baseline = _read_qa_baseline(folder_path) or []
-    accepted_ids = set(_read_accepted_findings(folder_path))
+    accepted_ids = set(
+        _normalize_accepted_findings(
+            _read_accepted_findings(folder_path), findings
+        )
+    )
     accepted_ids.update(_sugar_accepted_ids(folder_path, findings))
     print_report(
         findings,
@@ -530,9 +696,8 @@ def push_preflight(
         baseline=baseline,
         accepted_ids=accepted_ids,
     )
-    baseline_keys = {_finding_key(finding) for finding in baseline}
     return sum(
-        _finding_key(finding) not in baseline_keys
+        not any(_findings_match(finding, baseline_item) for baseline_item in baseline)
         and finding_id(finding) not in accepted_ids
         for finding in findings
     )
@@ -541,6 +706,7 @@ def push_preflight(
 def _find_overlaps(
     siblings: list[ParsedElement],
     slide_number: int,
+    slide_id: str | None,
     workspace_root: Path,
     *,
     slide_area: float,
@@ -582,6 +748,7 @@ def _find_overlaps(
                     rule="OVERLAP",
                     element_ids=ids,
                     slide_number=slide_number,
+                    slide_id=slide_id,
                     description=(
                         f"Sibling elements {ids[0]} and {ids[1]} overlap by "
                         f"{intersection / smaller_area:.0%} of the smaller element."
@@ -598,6 +765,7 @@ def _find_overlaps(
             _find_overlaps(
                 element.children,
                 slide_number,
+                slide_id,
                 workspace_root,
                 slide_area=slide_area,
             )

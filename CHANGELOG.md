@@ -19,6 +19,10 @@ agent-legible: name the command/flag and what an operator can now do.
 - Post-push persistence verification no longer warns for an unrepresentable
   near-zero thickness axis on a `LINE`; along-line geometry and translation
   drift still warn.
+- `slidesmith check` now keys QA findings and acceptances by stable slide clean
+  IDs when present, so identified untouched findings remain `PRE-EXISTING` when
+  earlier slides are inserted or deleted; freshly authored id-less slides and
+  pre-slide-ID baselines use positional fallback until a pull assigns an ID.
 
 ## [0.5.0] — 2026-07-21 — Continuity & QA signal
 

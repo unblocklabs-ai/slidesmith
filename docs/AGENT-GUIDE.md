@@ -1034,10 +1034,16 @@ ledger. Later checks label current findings `NEW` (since the last pull) or
 counts. Findings introduced by an edit therefore stay `NEW` after push until the
 next explicit pull establishes a new reference point. Findings are warnings by
 default; `--strict` exits 1 when any current finding exists.
-Each current finding line includes a stable ID in the exact form
-`RULE:slide:sorted-element-id[,sorted-element-id...]`. The numeric slide has no
-zero padding, and element IDs are sorted lexically, so finding-list and SML
-element order do not change the ID. Accept an intentional finding locally with
+Each current finding line includes an ID in the form
+`RULE:slide-identity:sorted-element-id[,sorted-element-id...]`. The
+`slide-identity` uses the stable clean ID from the `<Slide id="...">` root when
+present and does not change when an earlier slide is inserted or deleted.
+Freshly authored slides without an ID (not yet pulled) and pre-slide-ID
+baselines fall back to positional slide number, so their `NEW`/`PRE-EXISTING`
+status is not renumber-stable until the slide is pulled and gets an ID. The
+`slide N` text remains the human-facing positional display.
+Element IDs are sorted lexically, so finding-list and SML element order do not
+change the ID. Accept an intentional finding locally with
 `slidesmith check <ID> --no-thumbnails --accept <finding-id>`; reverse that with
 `--unaccept <finding-id>`. These flags may each be repeated, but cannot be mixed
 in one command. `--accept` must name a current finding; `--unaccept` is

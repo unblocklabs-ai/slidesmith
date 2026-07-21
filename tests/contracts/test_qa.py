@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import json
 import re
+import shutil
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
@@ -62,6 +63,35 @@ def _replace_slides(folder: Path, first_slide_body: str) -> None:
             f'<Slide id="{slide_id}">{body}</Slide>',
             encoding="utf-8",
         )
+
+
+def _write_slide_body(folder: Path, slide_number: int, body: str) -> None:
+    content_path = folder / "slides" / f"{slide_number:02d}" / "content.sml"
+    slide_id = ET.fromstring(content_path.read_text(encoding="utf-8")).get("id")
+    content_path.write_text(
+        f'<Slide id="{slide_id}">{body}</Slide>', encoding="utf-8"
+    )
+
+
+def _write_idless_slide(folder: Path, slide_number: int, body: str) -> None:
+    content_path = folder / "slides" / f"{slide_number:02d}" / "content.sml"
+    content_path.write_text(f"<Slide>{body}</Slide>", encoding="utf-8")
+
+
+def _reindex_slides(folder: Path, contents: list[str]) -> None:
+    slides_dir = folder / "slides"
+    shutil.rmtree(slides_dir)
+    for index, content in enumerate(contents, 1):
+        slide_dir = slides_dir / f"{index:02d}"
+        slide_dir.mkdir(parents=True)
+        (slide_dir / "content.sml").write_text(content, encoding="utf-8")
+
+
+def _slide_contents(folder: Path) -> list[str]:
+    return [
+        path.read_text(encoding="utf-8")
+        for path in sorted((folder / "slides").glob("*/content.sml"))
+    ]
 
 
 def _rules(folder: Path) -> list[str]:
@@ -419,6 +449,22 @@ def test_text_overflow_with_nonpositive_width_is_unbounded(
     assert "unbounded amount" in findings[0].description
 
 
+def test_lint_folder_accepts_findings_from_an_idless_authored_slide(
+    qa_folder: Path,
+) -> None:
+    _write_idless_slide(
+        qa_folder,
+        3,
+        '<Rect id="new" x="700" y="10" w="30" h="30" />',
+    )
+
+    findings = lint_folder(qa_folder)
+
+    assert len(findings) == 1
+    assert findings[0].element_ids == ("new",)
+    assert findings[0].slide_id is None
+
+
 def test_check_folder_strict_exit_and_clean_bill(
     qa_folder: Path,
 ) -> None:
@@ -472,6 +518,249 @@ def test_check_labels_new_pre_existing_and_resolved_findings(
     )
     assert any(line.startswith("[NEW] [WARNING] OVERLAP") for line in output)
     assert any(line.startswith("[RESOLVED] [WARNING] OUT_OF_BOUNDS") for line in output)
+
+
+def test_qa_baseline_survives_inserting_an_earlier_slide(
+    qa_folder: Path,
+) -> None:
+    _write_slide_body(
+        qa_folder,
+        3,
+        '<Rect id="untouched" x="700" y="10" w="30" h="30" />',
+    )
+    record_qa_baseline(qa_folder)
+    original_contents = _slide_contents(qa_folder)
+    _reindex_slides(
+        qa_folder,
+        [
+            *original_contents[:2],
+            '<Slide id="s-new"><Rect id="new" x="700" y="10" '
+            'w="30" h="30" /></Slide>',
+            *original_contents[2:],
+        ],
+    )
+
+    findings = lint_folder(qa_folder)
+    untouched = next(item for item in findings if "untouched" in item.element_ids)
+    new_finding = next(item for item in findings if "new" in item.element_ids)
+    assert untouched.slide_number == 4
+    assert untouched.slide_id == "s3"
+    assert new_finding.slide_id == "s-new"
+    assert qa_engine._finding_key(untouched) != qa_engine._finding_key(new_finding)
+
+    output: list[str] = []
+    check_folder(qa_folder, output=output.append)
+    assert output[0] == (
+        "2 findings (1 new, 1 pre-existing, 0 resolved; NEW = since last pull)"
+    )
+    assert any(
+        line.startswith("[PRE-EXISTING] [WARNING] OUT_OF_BOUNDS slide 04 (untouched)")
+        for line in output
+    )
+    assert any(
+        line.startswith("[NEW] [WARNING] OUT_OF_BOUNDS slide 03 (new)")
+        for line in output
+    )
+
+
+def test_qa_baseline_survives_deleting_an_earlier_slide(
+    qa_folder: Path,
+) -> None:
+    _write_slide_body(
+        qa_folder,
+        3,
+        '<Rect id="untouched" x="700" y="10" w="30" h="30" />',
+    )
+    record_qa_baseline(qa_folder)
+    original_contents = _slide_contents(qa_folder)
+    _reindex_slides(qa_folder, [*original_contents[:1], *original_contents[2:]])
+
+    current = next(
+        item for item in lint_folder(qa_folder) if "untouched" in item.element_ids
+    )
+    assert current.slide_number == 2
+    assert current.slide_id == "s3"
+
+    output: list[str] = []
+    check_folder(qa_folder, output=output.append)
+    assert output[0] == (
+        "1 findings (0 new, 1 pre-existing, 0 resolved; NEW = since last pull)"
+    )
+    assert output[1].startswith(
+        "[PRE-EXISTING] [WARNING] OUT_OF_BOUNDS slide 02 (untouched)"
+    )
+
+
+def test_idless_finding_does_not_match_identified_baseline_at_same_position(
+    qa_folder: Path,
+) -> None:
+    _write_slide_body(
+        qa_folder,
+        2,
+        '<Rect id="same_position" x="700" y="10" w="30" h="30" />',
+    )
+    record_qa_baseline(qa_folder)
+    _write_idless_slide(
+        qa_folder,
+        2,
+        '<Rect id="same_position" x="700" y="10" w="30" h="30" />',
+    )
+
+    output: list[str] = []
+    check_folder(qa_folder, output=output.append)
+
+    assert output[0] == (
+        "1 findings (1 new, 0 pre-existing, 1 resolved; NEW = since last pull)"
+    )
+    assert any(line.startswith("[NEW] [WARNING] OUT_OF_BOUNDS") for line in output)
+    assert any(
+        line.startswith("[RESOLVED] [WARNING] OUT_OF_BOUNDS") for line in output
+    )
+
+
+def test_idless_acceptance_does_not_migrate_onto_identified_slide(
+    qa_folder: Path,
+) -> None:
+    _write_idless_slide(
+        qa_folder,
+        2,
+        '<Rect id="accepted_idless" x="700" y="10" w="30" h="30" />',
+    )
+    finding = next(item for item in lint_folder(qa_folder))
+    identity = finding_id(finding)
+    assert identity == "OUT_OF_BOUNDS:2:accepted_idless"
+    assert check_folder(qa_folder, accept=[identity]) == 0
+
+    accepted_path = qa_folder / ".qa" / "accepted.json"
+    accepted = json.loads(accepted_path.read_text(encoding="utf-8"))
+    assert accepted["accepted"][identity]["slideId"] is None
+
+    _write_slide_body(
+        qa_folder,
+        2,
+        '<Rect id="accepted_idless" x="700" y="10" w="30" h="30" />',
+    )
+    output: list[str] = []
+    assert check_folder(qa_folder, strict=True, output=output.append) == 1
+    assert not any(line.startswith("[ACCEPTED]") for line in output)
+
+    persisted = json.loads(accepted_path.read_text(encoding="utf-8"))
+    assert persisted["accepted"][identity]["slideId"] is None
+    assert "OUT_OF_BOUNDS:s2:accepted_idless" not in persisted["accepted"]
+
+
+def test_two_idless_findings_at_same_position_match(
+    qa_folder: Path,
+) -> None:
+    _write_idless_slide(
+        qa_folder,
+        2,
+        '<Rect id="same_idless" x="700" y="10" w="30" h="30" />',
+    )
+    record_qa_baseline(qa_folder)
+
+    output: list[str] = []
+    check_folder(qa_folder, output=output.append)
+
+    assert output[0] == (
+        "1 findings (0 new, 1 pre-existing, 0 resolved; NEW = since last pull)"
+    )
+
+
+def test_accepted_finding_survives_slide_renumbering(
+    qa_folder: Path,
+) -> None:
+    _write_slide_body(
+        qa_folder,
+        3,
+        '<Rect id="accepted" x="700" y="10" w="30" h="30" />',
+    )
+    finding = next(
+        item for item in lint_folder(qa_folder) if "accepted" in item.element_ids
+    )
+    assert finding_id(finding) == "OUT_OF_BOUNDS:s3:accepted"
+    record_qa_baseline(qa_folder)
+    assert check_folder(qa_folder, accept=[finding_id(finding)]) == 0
+
+    accepted_path = qa_folder / ".qa" / "accepted.json"
+    accepted = json.loads(accepted_path.read_text(encoding="utf-8"))
+    assert accepted["accepted"] == {
+        "OUT_OF_BOUNDS:s3:accepted": {
+            "rule": "OUT_OF_BOUNDS",
+            "slide": 3,
+            "slideId": "s3",
+            "elementIds": ["accepted"],
+        }
+    }
+
+    contents = _slide_contents(qa_folder)
+    _reindex_slides(
+        qa_folder,
+        [*contents[:2], '<Slide id="s-new" />', *contents[2:]],
+    )
+    output: list[str] = []
+    assert check_folder(qa_folder, strict=True, output=output.append) == 0
+    assert any(
+        line.startswith(
+            "[ACCEPTED] [PRE-EXISTING] [WARNING] OUT_OF_BOUNDS slide 04 (accepted)"
+        )
+        for line in output
+    )
+
+
+def test_old_baseline_without_slide_id_uses_legacy_slide_number_fallback(
+    qa_folder: Path,
+) -> None:
+    _write_slide_body(
+        qa_folder,
+        3,
+        '<Rect id="legacy" x="700" y="10" w="30" h="30" />',
+    )
+    baseline_path = record_qa_baseline(qa_folder)
+    baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
+    for finding in baseline["findings"]:
+        finding.pop("slideId", None)
+    baseline_path.write_text(json.dumps(baseline), encoding="utf-8")
+
+    output: list[str] = []
+    assert check_folder(qa_folder, output=output.append) == 0
+    assert output[0] == (
+        "1 findings (0 new, 1 pre-existing, 0 resolved; NEW = since last pull)"
+    )
+
+
+def test_old_accepted_file_without_slide_id_is_migrated(
+    qa_folder: Path,
+) -> None:
+    _write_slide_body(
+        qa_folder,
+        3,
+        '<Rect id="legacy" x="700" y="10" w="30" h="30" />',
+    )
+    accepted_path = qa_folder / ".qa" / "accepted.json"
+    accepted_path.parent.mkdir(parents=True)
+    accepted_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "accepted": {
+                    "OUT_OF_BOUNDS:3:legacy": {
+                        "rule": "OUT_OF_BOUNDS",
+                        "slide": 3,
+                        "elementIds": ["legacy"],
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    output: list[str] = []
+    assert check_folder(qa_folder, strict=True, output=output.append) == 0
+    assert any(line.startswith("[ACCEPTED]") for line in output)
+    migrated = json.loads(accepted_path.read_text(encoding="utf-8"))
+    assert "OUT_OF_BOUNDS:s3:legacy" in migrated["accepted"]
+    assert migrated["accepted"]["OUT_OF_BOUNDS:s3:legacy"]["slideId"] == "s3"
 
 
 def test_push_preflight_block_aborts_before_auth_on_new_overflow(
@@ -537,7 +826,7 @@ def test_cli_accept_and_unaccept_round_trip_through_workspace_sidecar(
         qa_folder,
         '<Rect id="outside" x="700" y="10" w="30" h="30" />',
     )
-    identity = "OUT_OF_BOUNDS:1:outside"
+    identity = "OUT_OF_BOUNDS:s1:outside"
 
     cli.main(
         ["check", str(qa_folder), "--no-thumbnails", "--accept", identity]
@@ -550,6 +839,7 @@ def test_cli_accept_and_unaccept_round_trip_through_workspace_sidecar(
             identity: {
                 "rule": "OUT_OF_BOUNDS",
                 "slide": 1,
+                "slideId": "s1",
                 "elementIds": ["outside"],
             }
         },
@@ -576,7 +866,7 @@ def test_accepted_identity_survives_finding_and_element_order_changes(
     second = '<Rect id="right" x="90" y="10" w="100" h="100" />'
     _replace_slides(qa_folder, first + second)
     finding = lint_folder(qa_folder)[0]
-    assert finding_id(finding) == "OVERLAP:1:left,right"
+    assert finding_id(finding) == "OVERLAP:s1:left,right"
     assert check_folder(qa_folder, accept=[finding_id(finding)]) == 0
 
     _replace_slides(qa_folder, second + first)
@@ -602,7 +892,7 @@ def test_qa_accept_class_creates_sidecar_and_never_reaches_api_requests(
     output: list[str] = []
     assert check_folder(qa_folder, strict=True, output=output.append) == 0
 
-    identity = "OUT_OF_BOUNDS:1:outside"
+    identity = "OUT_OF_BOUNDS:s1:outside"
     accepted = json.loads(
         (qa_folder / ".qa" / "accepted.json").read_text(encoding="utf-8")
     )

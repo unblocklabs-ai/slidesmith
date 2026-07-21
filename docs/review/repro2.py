@@ -36,7 +36,7 @@ copy_block_conv = """  <Rect id="cardX" x="300" y="0">
   </Rect>
 </Slide>"""
 ed = sml4.replace("</Slide>", copy_block_conv)
-d = diff_presentation({"01": parse_slide_content(sml4)}, {"01": parse_slide_content(ed)}, res4["styles"], res4["id_mapping"])
+d = diff_presentation({"01": parse_slide_content(sml4)}, {"01": parse_slide_content(ed)}, res4["styles"])
 print("Case1 (copy convention, children at ORIGINAL positions):")
 for c in d.changes:
     print("  change:", c.change_type.value, c.target_id, "translation:", c.translation)
@@ -57,7 +57,7 @@ copy_block_final = """  <Rect id="cardX" x="300" y="0">
   </Rect>
 </Slide>"""
 ed2 = sml4.replace("</Slide>", copy_block_final)
-d2 = diff_presentation({"01": parse_slide_content(sml4)}, {"01": parse_slide_content(ed2)}, res4["styles"], res4["id_mapping"])
+d2 = diff_presentation({"01": parse_slide_content(sml4)}, {"01": parse_slide_content(ed2)}, res4["styles"])
 print("Case2 (children written at FINAL positions):")
 rq2 = generate_batch_requests(d2, res4["id_mapping"], {"01": "slideD"})
 for r in rq2:
@@ -72,7 +72,7 @@ print(json.dumps(rq, indent=1))
 
 # Case 4: user edits ORIGINAL label text while also copying the card -> edit dropped?
 ed3 = sml4.replace("<P>hi</P>", "<P>changed</P>").replace("</Slide>", copy_block_conv)
-d3 = diff_presentation({"01": parse_slide_content(sml4)}, {"01": parse_slide_content(ed3)}, res4["styles"], res4["id_mapping"])
+d3 = diff_presentation({"01": parse_slide_content(sml4)}, {"01": parse_slide_content(ed3)}, res4["styles"])
 print("Case4 (original label text edited AND card copied):")
 for c in d3.changes:
     print("  change:", c.change_type.value, c.target_id, "new_text:", c.new_text)

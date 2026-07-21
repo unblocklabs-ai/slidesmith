@@ -115,7 +115,6 @@ def _requests_for_edit(
         {"01": parse_slide_content(pristine)},
         {"01": parse_slide_content(edited_sml)},
         result["styles"],
-        result["id_mapping"],
     )
     return generate_batch_requests(
         diff, result["id_mapping"], {"01": "slide-google"}

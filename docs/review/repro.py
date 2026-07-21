@@ -47,7 +47,7 @@ edited_sml = pristine_sml.replace("Body", "Bodyz")
 diff = diff_presentation(
     {"01": parse_slide_content(pristine_sml)},
     {"01": parse_slide_content(edited_sml)},
-    result["styles"], result["id_mapping"],
+    result["styles"],
 )
 reqs = generate_batch_requests(diff, result["id_mapping"], {"01": "slideA"})
 print("B. requests:", json.dumps(reqs))
@@ -69,7 +69,7 @@ sml2 = res2["slides"][0]["content"]
 print("B2. pristine SML for remote '  Hello world\\nSecond line\\n':")
 print(sml2)
 ed2 = sml2.replace("Second line", "Second edited")
-d2 = diff_presentation({"01": parse_slide_content(sml2)}, {"01": parse_slide_content(ed2)}, res2["styles"], res2["id_mapping"])
+d2 = diff_presentation({"01": parse_slide_content(sml2)}, {"01": parse_slide_content(ed2)}, res2["styles"])
 rq2 = generate_batch_requests(d2, res2["id_mapping"], {"01": "slideB"})
 print("B2. requests:", json.dumps(rq2))
 remote2 = "  Hello world\nSecond line\n"
@@ -97,7 +97,7 @@ sml3 = res3["slides"][0]["content"]
 print("C. pristine SML (visual size 118.11pt, google scale 0.5):")
 print(sml3)
 ed3 = sml3.replace('x="72"', 'x="100"')
-d3 = diff_presentation({"01": parse_slide_content(sml3)}, {"01": parse_slide_content(ed3)}, res3["styles"], res3["id_mapping"])
+d3 = diff_presentation({"01": parse_slide_content(sml3)}, {"01": parse_slide_content(ed3)}, res3["styles"])
 rq3 = generate_batch_requests(d3, res3["id_mapping"], {"01": "slideC"})
 print("C. move request:", json.dumps(rq3))
 print("C. NOTE: element's actual google transform scale was 0.5; ABSOLUTE scaleX/scaleY=1 => rendered size jumps from 118pt to 236pt")
@@ -105,7 +105,7 @@ print()
 
 # resize attempt: change w
 ed3b = sml3.replace('w="118.11"', 'w="200"')
-d3b = diff_presentation({"01": parse_slide_content(sml3)}, {"01": parse_slide_content(ed3b)}, res3["styles"], res3["id_mapping"])
+d3b = diff_presentation({"01": parse_slide_content(sml3)}, {"01": parse_slide_content(ed3b)}, res3["styles"])
 rq3b = generate_batch_requests(d3b, res3["id_mapping"], {"01": "slideC"})
 print("C2. resize (w 118.11->200) request:", json.dumps(rq3b))
 print()
@@ -150,7 +150,7 @@ copy_block = """  <Rect id="e1" x="300" y="0" w="200" h="200">
   </Rect>
 </Slide>"""
 ed4 = sml4.replace("</Slide>", copy_block)
-d4 = diff_presentation({"01": parse_slide_content(sml4)}, {"01": parse_slide_content(ed4)}, res4["styles"], res4["id_mapping"])
+d4 = diff_presentation({"01": parse_slide_content(sml4)}, {"01": parse_slide_content(ed4)}, res4["styles"])
 for c in d4.changes:
     print("E. change:", c.change_type, c.target_id, "translation:", c.translation, "children:", c.children)
 rq4 = generate_batch_requests(d4, res4["id_mapping"], {"01": "slideD"})

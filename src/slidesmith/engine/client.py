@@ -807,7 +807,6 @@ class SlidesClient:
             pristine_slides,
             current_slides,
             pristine_styles,
-            id_mapping,
             workspace_root=folder_path,
             allow_remote_image_fetch=allow_remote_image_fetch,
         )
@@ -1231,7 +1230,6 @@ class SlidesClient:
             refreshed_slides,
             intended_slides,
             refreshed_styles,
-            read_json(folder_path / ID_MAPPING_FILE, missing_ok=True),
             workspace_root=folder_path,
             allow_remote_image_fetch=True,
         )

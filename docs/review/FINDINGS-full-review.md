@@ -40,7 +40,7 @@ deferred to a deliberate pass). Loop: fix → re-review until no real defect rem
   an `output` callback (qa.py:64). Add output callback.
 
 ### Dead code
-- [ ] FR-12 [MEDIUM] `diff_presentation`'s `_id_mapping` param is never read
+- [x] FR-12 [MEDIUM] `diff_presentation`'s `_id_mapping` param is never read
   (content_diff.py:284); all callers pass it. Remove param + update call sites.
 - [ ] FR-13 [MEDIUM] `Credential` over-modeled — only `.token` is read; provider/kind/
   expires_at/scopes/metadata unused across 5 construction paths (credentials.py).

@@ -281,7 +281,6 @@ def diff_presentation(
     pristine_slides: dict[str, list[ParsedElement]],
     edited_slides: dict[str, list[ParsedElement]],
     pristine_styles: dict[str, dict[str, Any]],
-    _id_mapping: dict[str, str],
     *,
     workspace_root: Path | None = None,
     allow_remote_image_fetch: bool = False,
@@ -299,8 +298,6 @@ def diff_presentation(
         pristine_slides: Original slide content (from pull)
         edited_slides: Modified slide content (after LLM edits)
         pristine_styles: Original styles.json
-        id_mapping: Original id_mapping.json
-
     Returns:
         DiffResult with all detected changes
     """
@@ -1125,7 +1122,6 @@ def diff_slide_content(
         {slide_index: pristine_elements},
         {slide_index: edited_elements},
         pristine_styles,
-        {},
     )
 
     return result.changes

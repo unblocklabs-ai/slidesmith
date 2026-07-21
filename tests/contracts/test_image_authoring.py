@@ -23,7 +23,6 @@ def _diff(sml: str):
         {},
         {"01": parse_slide_content(sml)},
         {},
-        {},
         allow_remote_image_fetch=True,
     )
 

@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from slidesmith import cli
-from slidesmith.engine import class_replacement
+from slidesmith.engine import atomic_files
 from slidesmith.engine.class_replacement import replace_class, replace_classes
 
 
@@ -243,7 +243,7 @@ def test_replace_class_rolls_back_a_mid_commit_failure(
     folder = _workspace(tmp_path)
     paths = sorted((folder / "slides").glob("*/content.sml"))
     before = {path: path.read_bytes() for path in paths}
-    real_replace = class_replacement.replace_file
+    real_replace = atomic_files.replace_file
     calls = 0
 
     def fail_second_replace(source: Path, destination: Path) -> None:
@@ -253,7 +253,7 @@ def test_replace_class_rolls_back_a_mid_commit_failure(
             raise OSError("simulated commit failure")
         real_replace(source, destination)
 
-    monkeypatch.setattr(class_replacement, "replace_file", fail_second_replace)
+    monkeypatch.setattr(atomic_files, "replace_file", fail_second_replace)
 
     with pytest.raises(OSError, match="simulated commit failure"):
         replace_classes(

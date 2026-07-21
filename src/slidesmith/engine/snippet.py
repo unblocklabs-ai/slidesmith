@@ -12,11 +12,11 @@ from typing import Iterable, Sequence
 from defusedxml import ElementTree as DefusedET
 from defusedxml.common import DefusedXmlException
 
+from slidesmith.engine.atomic_files import commit_text_files
 from slidesmith.engine.components import load_components
 from slidesmith.engine.content_parser import ParsedElement, parse_slide_content
 from slidesmith.engine.layout import compile_layout
 from slidesmith.engine.selector import (
-    _commit_text_files,
     _read_roles,
     _read_slides,
     _serialize_roles,
@@ -132,7 +132,7 @@ def copy_snippet(
 
     ET.indent(snippet_root, space="  ")
     output = Path(output_path)
-    _commit_text_files(
+    commit_text_files(
         {output: ET.tostring(snippet_root, encoding="unicode", short_empty_elements=True) + "\n"}
     )
     return SnippetCopyResult(
@@ -260,7 +260,7 @@ def paste_snippet(
     if new_roles != destination_roles:
         pending[folder / "roles.json"] = _serialize_roles(new_roles)
     if not dry_run:
-        _commit_text_files(pending)
+        commit_text_files(pending)
     return SnippetPasteResult(
         destination.index,
         len(roots),

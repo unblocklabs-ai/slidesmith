@@ -13,6 +13,7 @@ from typing import Any, Iterable, Sequence
 
 from defusedxml import ElementTree as DefusedET
 
+from slidesmith.engine.atomic_files import commit_text_files
 from slidesmith.engine.class_replacement import _start_tag_spans
 from slidesmith.engine.classes import ClassKind, classify_class
 from slidesmith.engine.components import load_components
@@ -20,7 +21,6 @@ from slidesmith.engine.content_parser import parse_element_classes, parse_slide_
 from slidesmith.engine.layout import compile_layout
 from slidesmith.engine.selector import (
     _attributes,
-    _commit_text_files,
     _read_roles,
     _read_slides,
     _replace_class_attribute,
@@ -258,7 +258,7 @@ def extract_theme(
 def write_theme(theme: dict[str, Any], output_path: str | Path) -> Path:
     """Write a theme JSON document atomically."""
     path = Path(output_path)
-    _commit_text_files(
+    commit_text_files(
         {path: json.dumps(theme, indent=2, ensure_ascii=False) + "\n"}
     )
     return path
@@ -374,7 +374,7 @@ def apply_theme(
             pending[slide.path] = updated
 
     if not dry_run:
-        _commit_text_files(pending)
+        commit_text_files(pending)
     return ThemeApplyResult(slide_counts, tuple(previews))
 
 

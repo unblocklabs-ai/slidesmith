@@ -64,7 +64,7 @@ deferred to a deliberate pass). Loop: fix → re-review until no real defect rem
   safety-critical fetch → conflict-guard → revision-lock → batch_update → refresh →
   persistence sequence (client.py:889-941 vs 1138-1212). Extract a shared guarded-
   execute + finalize so a safety change reaches both modes.
-- [ ] FR-17 [MEDIUM] Atomic text-file commit duplicated in class_replacement.py vs
+- [x] FR-17 [MEDIUM] Atomic text-file commit duplicated in class_replacement.py vs
   selector.py (theme/snippet import selector's private `_commit_text_files`). Extract
   `engine.atomic_files.commit_text_files`.
 - [ ] FR-18 [MEDIUM] CREATE (element_factories) vs COPY (copy_requests) element

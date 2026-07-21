@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 import re
-import stat
-import tempfile
 from dataclasses import dataclass
-from os import replace as replace_file
 from pathlib import Path
 
+from slidesmith.engine.atomic_files import commit_text_files
 from slidesmith.engine.content_parser import parse_element_classes, parse_slide_content
 from slidesmith.engine.components import load_components
 
@@ -214,45 +212,4 @@ def _replace_class_values(
 
 def _commit_replacements(replacements: dict[Path, str]) -> None:
     """Commit prepared contents and restore originals if a write fails."""
-    changed = {
-        path: updated
-        for path, updated in replacements.items()
-        if updated != path.read_text(encoding="utf-8")
-    }
-    staged: dict[Path, Path] = {}
-    backups: dict[Path, Path] = {}
-    committed: list[Path] = []
-    try:
-        for path, updated in changed.items():
-            mode = stat.S_IMODE(path.stat().st_mode)
-            with tempfile.NamedTemporaryFile(
-                mode="w",
-                encoding="utf-8",
-                dir=path.parent,
-                prefix=f".{path.name}.",
-                suffix=".tmp",
-                delete=False,
-            ) as temporary:
-                temporary.write(updated)
-                staged[path] = Path(temporary.name)
-            staged[path].chmod(mode)
-            with tempfile.NamedTemporaryFile(
-                mode="wb",
-                dir=path.parent,
-                prefix=f".{path.name}.backup.",
-                suffix=".tmp",
-                delete=False,
-            ) as backup:
-                backup.write(path.read_bytes())
-                backups[path] = Path(backup.name)
-            backups[path].chmod(mode)
-        for path, temporary_path in staged.items():
-            replace_file(temporary_path, path)
-            committed.append(path)
-    except Exception:
-        for path in reversed(committed):
-            replace_file(backups[path], path)
-        raise
-    finally:
-        for temporary_path in [*staged.values(), *backups.values()]:
-            temporary_path.unlink(missing_ok=True)
+    commit_text_files(replacements, allow_create=False)

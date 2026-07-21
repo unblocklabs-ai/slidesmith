@@ -4,13 +4,11 @@ from __future__ import annotations
 
 import json
 import operator
-import stat
-import tempfile
 from dataclasses import dataclass
-from os import replace as replace_file
 from pathlib import Path
 from typing import Callable, Iterator, Protocol, Sequence
 
+from slidesmith.engine.atomic_files import commit_text_files
 from slidesmith.engine.class_replacement import _start_tag_spans
 from slidesmith.engine.components import load_components
 from slidesmith.engine.content_parser import (
@@ -530,7 +528,7 @@ def apply_to_elements(
         pending[folder / ROLES_FILE] = _serialize_roles(updated_roles)
 
     if not dry_run:
-        _commit_text_files(pending)
+        commit_text_files(pending)
 
     match_counts = {
         slide.index: len(matches_by_slide.get(slide.index, [])) for slide in slides
@@ -757,56 +755,3 @@ def _replace_class_attribute(
     while insertion > 0 and start_tag[insertion - 1].isspace():
         insertion -= 1
     return start_tag[:insertion] + f' class="{value}"' + start_tag[insertion:]
-
-
-def _commit_text_files(pending: dict[Path, str]) -> None:
-    """Replace prepared files together, restoring prior state after I/O failure."""
-    changed = {
-        path: value
-        for path, value in pending.items()
-        if not path.exists() or path.read_text(encoding="utf-8") != value
-    }
-    staged: dict[Path, Path] = {}
-    backups: dict[Path, Path] = {}
-    existing: set[Path] = set()
-    committed: list[Path] = []
-    try:
-        for path, value in changed.items():
-            path.parent.mkdir(parents=True, exist_ok=True)
-            mode = stat.S_IMODE(path.stat().st_mode) if path.exists() else 0o644
-            if path.exists():
-                existing.add(path)
-                with tempfile.NamedTemporaryFile(
-                    mode="wb",
-                    dir=path.parent,
-                    prefix=f".{path.name}.backup.",
-                    suffix=".tmp",
-                    delete=False,
-                ) as backup:
-                    backup.write(path.read_bytes())
-                    backups[path] = Path(backup.name)
-                backups[path].chmod(mode)
-            with tempfile.NamedTemporaryFile(
-                mode="w",
-                encoding="utf-8",
-                dir=path.parent,
-                prefix=f".{path.name}.",
-                suffix=".tmp",
-                delete=False,
-            ) as temporary:
-                temporary.write(value)
-                staged[path] = Path(temporary.name)
-            staged[path].chmod(mode)
-        for path, temporary_path in staged.items():
-            replace_file(temporary_path, path)
-            committed.append(path)
-    except Exception:
-        for path in reversed(committed):
-            if path in existing:
-                replace_file(backups[path], path)
-            else:
-                path.unlink(missing_ok=True)
-        raise
-    finally:
-        for temporary_path in [*staged.values(), *backups.values()]:
-            temporary_path.unlink(missing_ok=True)

@@ -35,12 +35,13 @@ FAKE_URL = "https://drive.google.com/uc?export=download&id=fake-drive-file"
 
 
 class FakeUploader:
-    def __init__(self) -> None:
+    def __init__(self, url: str = FAKE_URL) -> None:
         self.calls: list[tuple[Path, str]] = []
+        self.url = url
 
     async def upload(self, path: Path, *, mime_type: str) -> UploadedAsset:
         self.calls.append((path, mime_type))
-        return UploadedAsset(file_id="fake-drive-file", url=FAKE_URL)
+        return UploadedAsset(file_id="fake-drive-file", url=self.url)
 
     async def close(self) -> None:
         pass
@@ -430,7 +431,31 @@ async def test_existing_image_replace_warns_when_remote_source_differs(
         "image replacement did not persist" in warning.message
         for warning in response["warnings"]
     )
-    assert any(FAKE_URL in warning.message for warning in response["warnings"])
+    assert any(
+        "https://drive.google.com/uc" in warning.message
+        for warning in response["warnings"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_existing_image_replace_redacts_signed_source_in_persistence_warning(
+    tmp_path: Path,
+) -> None:
+    transport, _, folder = await _workspace(tmp_path)
+    signed_url = "https://drive.google.com/uc?X-Goog-Signature=SECRET"
+    uploader = FakeUploader(signed_url)
+    client = SlidesClient(transport, uploader)
+    image_id = _first_clean_id(folder, transport.data, "image")
+    _write_png(folder, relative="assets/replacement.png", size=(900, 600))
+    _author_existing_image(folder, image_id, "./assets/replacement.png", "stretch")
+    transport.replacement_source_url = "https://drive.google.com/other-file"
+
+    response = await client.push(folder)
+
+    messages = [warning.message for warning in response["warnings"]]
+    assert any("image replacement did not persist" in message for message in messages)
+    assert all("SECRET" not in message for message in messages)
+    assert any("https://drive.google.com/uc" in message for message in messages)
 
 
 @pytest.mark.asyncio
@@ -461,12 +486,12 @@ async def test_remote_stretch_dimension_fetch_failure_falls_back_with_notice(
     transport, client, folder = await _workspace(tmp_path)
     _append_local_image(
         folder,
-        source="https://example.com/oversize.png",
+        source="https://example.com/oversize.png?X-Goog-Signature=SECRET",
         fit="stretch",
     )
 
     def fail_dimensions(_url: str) -> tuple[int, int]:
-        raise ValueError("image download exceeds the 25 MB limit")
+        raise ValueError(f"image download failed for {_url}")
 
     monkeypatch.setattr(
         "slidesmith.engine.content_diff.fetch_image_dimensions", fail_dimensions
@@ -479,6 +504,9 @@ async def test_remote_stretch_dimension_fetch_failure_falls_back_with_notice(
         and "follow-up resize" in warning.message
         for warning in response["warnings"]
     )
+    messages = [warning.message for warning in response["warnings"]]
+    assert all("SECRET" not in message for message in messages)
+    assert any("https://example.com/oversize.png" in message for message in messages)
     create = next(
         request["createImage"]
         for request in transport.batch_calls[-1]["requests"]

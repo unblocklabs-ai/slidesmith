@@ -13,6 +13,7 @@ from slidesmith.engine.content_parser import (
     flatten_elements,
 )
 from slidesmith.engine.diff_model import PushWarning, WarningSeverity
+from slidesmith.engine.image_fetch import redact_image_url
 from slidesmith.engine.json_utils import read_json
 from slidesmith.engine.shape_types import TAG_TO_TYPE, VALID_GOOGLE_TYPES
 
@@ -228,7 +229,8 @@ def _normalized_persistence_detail(
         if remote_source is not None and expected_source is not None:
             return (
                 f"image replacement did not persist on {change.target_id} "
-                f"(sent {expected_source!r}, remote now {remote_source!r})"
+                f"(sent {redact_image_url(expected_source)!r}, "
+                f"remote now {redact_image_url(remote_source)!r})"
             )
 
     return None

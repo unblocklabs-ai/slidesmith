@@ -39,6 +39,11 @@ agent-legible: name the command/flag and what an operator can now do.
   discoverable `qa-accept-overlap` class.
 
 ### Fixed
+- **Security:** local image sources are now constrained to the presentation
+  workspace before inspection or Drive upload, and credential-bearing image URLs
+  are redacted from summaries, fetch notices, and persistence warnings.
+- `snippet paste` now rejects Group subtrees early with an actionable message;
+  paste the children individually or use the supported pulled-group copy path.
 - New authored `<Group>` elements now fail loudly with an actionable API
   limitation message; pulled and copied groups remain supported.
 - **`slidesmith --version`** now prints the package version without requiring a

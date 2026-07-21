@@ -36,12 +36,36 @@ def test_snippet_copy_captures_subtree_relative_to_origin(tmp_path: Path) -> Non
     assert result.elements == 3
 
 
-def test_snippet_paste_inserts_at_frame_remaps_ids_and_content(
+def test_snippet_paste_rejects_group_subtree_before_writing(
     tmp_path: Path,
 ) -> None:
     source, destination = _snippet_workspaces(tmp_path)
     snippet = tmp_path / "card.sml"
     copy_snippet(source, "id~=card", snippet)
+    before = _snapshot(destination)
+
+    with pytest.raises(
+        ValueError,
+        match="snippet paste cannot recreate Group elements; copy the group via the "
+        "supported pulled-group copy path or paste its children individually",
+    ):
+        paste_snippet(
+            destination,
+            1,
+            snippet,
+            role_maps=[("title", "headline")],
+            frame=(300, 100, 400, 200),
+        )
+
+    assert _snapshot(destination) == before
+
+
+def test_snippet_paste_inserts_leaf_subtree_at_frame_with_roles_and_styles(
+    tmp_path: Path,
+) -> None:
+    _, destination = _snippet_workspaces(tmp_path)
+    snippet = tmp_path / "card.sml"
+    _write_leaf_snippet(snippet)
     path = destination / "slides" / "01" / "content.sml"
     before = parse_slide_content(path.read_text(encoding="utf-8"))[0]
 
@@ -53,37 +77,45 @@ def test_snippet_paste_inserts_at_frame_remaps_ids_and_content(
         frame=(300, 100, 400, 200),
     )
 
-    content = path.read_text(encoding="utf-8")
     elements = {
-        element.clean_id: element for element in parse_slide_content(content)
+        element.clean_id: element
+        for element in parse_slide_content(path.read_text(encoding="utf-8"))
     }
-    assert elements["destination_title"].paragraphs == ["Destination headline"]
     assert (
         elements["destination_title"].x,
         elements["destination_title"].y,
         elements["destination_title"].w,
         elements["destination_title"].h,
-    ) == (before.x, before.y, before.w, before.h)
-    group = elements["snippet_1__card"]
-    assert (group.x, group.y, group.w, group.h) == (300, 100, 400, 200)
-    nested = {element.clean_id: element for element in group.children}
-    assert (nested["snippet_1__card_title"].x, nested["snippet_1__card_title"].y) == (
-        320,
-        120,
+        elements["destination_title"].paragraphs,
+    ) == (before.x, before.y, before.w, before.h, ["Destination headline"])
+    background = elements["snippet_1__card_bg"]
+    assert (background.x, background.y, background.w, background.h) == (
+        300,
+        100,
+        400,
+        200,
     )
-    assert nested["snippet_1__card_title"].paragraphs == ["Destination headline"]
-    assert nested["snippet_1__card_title"].styles is not None
+    assert background.styles is not None
+    assert background.styles.fill is not None
+    assert background.styles.fill.color is not None
+    assert background.styles.fill.color.hex == "#112233"
+    title = elements["snippet_1__card_title"]
+    assert (title.x, title.y, title.w, title.h) == (320, 120, 360, 60)
+    assert title.paragraphs == ["Destination headline"]
+    assert title.styles is not None
+    assert title.styles.text_style is not None
+    assert title.styles.text_style.font_family == "Montserrat"
     roles = json.loads((destination / "roles.json").read_text(encoding="utf-8"))
     assert roles["snippet_1__card_title"] == "headline"
     assert roles["snippet_1__card_bg"] == "panel"
     assert result.id_prefix == "snippet_1"
-    assert result.inserted_elements == 3
+    assert result.inserted_elements == 2
 
 
 def test_snippet_paste_allocates_next_noncolliding_prefix(tmp_path: Path) -> None:
     source, destination = _snippet_workspaces(tmp_path)
     snippet = tmp_path / "card.sml"
-    copy_snippet(source, "id~=card", snippet)
+    _write_leaf_snippet(snippet)
 
     first = paste_snippet(destination, 1, snippet)
     second = paste_snippet(destination, 1, snippet)
@@ -98,9 +130,11 @@ def test_snippet_paste_dry_run_performs_zero_writes(
 ) -> None:
     source, destination = _snippet_workspaces(tmp_path)
     snippet = tmp_path / "card.sml"
-    cli.main(
-        ["snippet", "copy", str(source), "id~=card", "-o", str(snippet)]
+    (source / "slides" / "01" / "content.sml").write_text(
+        '<Slide><Rect id="badge" x="0" y="0" w="80" h="24" /></Slide>',
+        encoding="utf-8",
     )
+    cli.main(["snippet", "copy", str(source), "id=badge", "-o", str(snippet)])
     capsys.readouterr()
     before = _snapshot(destination)
 
@@ -114,8 +148,6 @@ def test_snippet_paste_dry_run_performs_zero_writes(
             str(snippet),
             "--frame",
             "300,100,400,200",
-            "--map",
-            "title:headline",
             "--dry-run",
         ]
     )
@@ -210,3 +242,16 @@ def _snapshot(folder: Path) -> dict[Path, bytes]:
         for path in sorted(folder.rglob("*"))
         if path.is_file()
     }
+
+
+def _write_leaf_snippet(path: Path) -> None:
+    path.write_text(
+        '<Snippet version="1" width="200" height="100" sourceSlide="1">'
+        '<Rect id="card_bg" x="0" y="0" w="200" h="100" '
+        'class="fill-#112233 stroke-none" role="panel" />'
+        '<TextBox id="card_title" x="10" y="10" w="180" h="30" '
+        'class="font-family-montserrat text-size-24 text-color-#f2ede2 bold" '
+        'role="title"><P>Competitive title</P></TextBox>'
+        '</Snippet>',
+        encoding="utf-8",
+    )

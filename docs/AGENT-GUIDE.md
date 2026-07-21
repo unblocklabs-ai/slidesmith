@@ -670,9 +670,10 @@ and optional `fit="stretch|contain"`:
        x="48" y="72" w="624" h="351" fit="contain" />
 ```
 
-Local paths and absolute `file://` URLs use the same element syntax. Relative
-paths are resolved from the pulled presentation folder, not from the individual
-`slides/NN/` directory:
+Local paths and `file://` URLs pointing inside the presentation workspace use the
+same element syntax. Relative paths are resolved from the pulled presentation
+folder, not from the individual `slides/NN/` directory. Sources that resolve
+outside the workspace are rejected before image inspection or upload:
 
 ```xml
 <Image id="company_logo" src="./assets/logo.png"
@@ -690,11 +691,10 @@ remain in the user's Drive and are link-readable; Slidesmith does not delete
 them after insertion.
 
 Successful uploads are recorded in `<ID>/.assets.json`. Each entry stores the
-workspace-relative canonical path (or an absolute path for a file outside the
-workspace), the file-content SHA-256, Drive `fileId`, and public URL. A later
-push of that exact path and content hash reuses the URL without uploading
-again. Changing the bytes creates a new entry and upload. Do not hand-edit this
-cache unless repairing a known-bad Drive file or URL.
+workspace-relative canonical path, the file-content SHA-256, Drive `fileId`, and
+public URL. A later push of that exact path and content hash reuses the URL
+without uploading again. Changing the bytes creates a new entry and upload.
+Do not hand-edit this cache unless repairing a known-bad Drive file or URL.
 
 `stretch` is the default Google Slides API behavior: the image fills the
 authored box and may be distorted. `contain` preserves the source aspect ratio.

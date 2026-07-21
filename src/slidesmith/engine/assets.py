@@ -76,14 +76,21 @@ def image_source_kind(source: str) -> Literal["local", "remote"]:
 
 def resolve_local_image_path(workspace: Path, source: str) -> Path:
     """Resolve a local source relative to the presentation workspace root."""
+    workspace_root = workspace.resolve()
     parsed = urllib.parse.urlsplit(source)
     if parsed.scheme.lower() == "file":
         path = Path(urllib.parse.unquote(parsed.path))
     else:
         path = Path(source).expanduser()
         if not path.is_absolute():
-            path = workspace / path
-    return path.resolve()
+            path = workspace_root / path
+    resolved = path.resolve()
+    if not resolved.is_relative_to(workspace_root):
+        raise ValueError(
+            f"Local image source {source!r} resolves outside the presentation "
+            f"workspace {workspace_root}; place assets inside the deck folder"
+        )
+    return resolved
 
 
 def inspect_local_image(path: Path, *, source: str | None = None) -> tuple[int, int, str]:

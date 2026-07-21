@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import http.client
 import ipaddress
+import re
 import socket
 import ssl
 from dataclasses import dataclass
@@ -19,6 +20,10 @@ _REDIRECT_STATUSES = {301, 302, 303, 307, 308}
 _READ_CHUNK_BYTES = 64 * 1024
 MAX_IMAGE_BYTES = 25 * 1024 * 1024
 MAX_IMAGE_PIXELS = 100_000_000
+_SCHEME_URL_TOKEN = re.compile(
+    r"(?P<scheme>[a-z](?>[a-z0-9+.-]{0,31}))://[^\s<>\"']+",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -26,6 +31,30 @@ class _ResolvedUrl:
     parsed: SplitResult
     port: int
     addresses: tuple[str, ...]
+
+
+def redact_image_url(value: str) -> str:
+    """Remove remote-image credentials and query strings from user-facing text."""
+    return _SCHEME_URL_TOKEN.sub(_redact_image_url_token, value)
+
+
+def _redact_image_url_token(match: re.Match[str]) -> str:
+    token = match.group(0)
+    trailing = ""
+    while token and token[-1] in ".,;:!?)]}":
+        trailing = token[-1] + trailing
+        token = token[:-1]
+    try:
+        parsed = urlsplit(token)
+        if not parsed.netloc or parsed.hostname is None:
+            raise ValueError("URL has no valid host")
+        # Accessing port validates malformed bracketed hosts and invalid ports.
+        _ = parsed.port
+        netloc = parsed.netloc.rsplit("@", 1)[-1]
+        redacted = parsed._replace(netloc=netloc, query="", fragment="")
+        return redacted.geturl() + trailing
+    except ValueError:
+        return f"{match.group('scheme').lower()}://[redacted]" + trailing
 
 
 class _PinnedHTTPConnection(http.client.HTTPConnection):
@@ -114,7 +143,7 @@ def fetch_image_dimensions(url: str) -> tuple[int, int]:
                     location = response.getheader("Location")
                     if not location:
                         raise ValueError(
-                            f"redirect from {current_url!r} omitted Location"
+                            f"redirect from {redact_image_url(current_url)!r} omitted Location"
                         )
                     if redirect_count == _MAX_REDIRECTS:
                         raise ValueError("too many image redirects")
@@ -137,7 +166,8 @@ def fetch_image_dimensions(url: str) -> tuple[int, int]:
                 return image.size
     except (OSError, ssl.SSLError, http.client.HTTPException, ValueError) as exc:
         raise ValueError(
-            f"Could not fetch image dimensions from {url!r} for fit='contain': {exc}"
+            f"Could not fetch image dimensions from {redact_image_url(url)!r} "
+            f"for fit='contain': {redact_image_url(str(exc))}"
         ) from exc
 
     raise AssertionError("unreachable")
@@ -146,7 +176,7 @@ def fetch_image_dimensions(url: str) -> tuple[int, int]:
 def _require_public_address(address: ipaddress.IPv4Address | ipaddress.IPv6Address, url: str) -> None:
     if not address.is_global:
         raise ValueError(
-            f"image URL {url!r} targets non-public address {address}"
+            f"image URL {redact_image_url(url)!r} targets non-public address {address}"
         )
 
 

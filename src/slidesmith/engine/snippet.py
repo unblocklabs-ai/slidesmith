@@ -174,6 +174,11 @@ def paste_snippet(
     roots = [copy.deepcopy(element) for element in snippet_root]
     if not roots:
         raise ValueError("Snippet contains no elements")
+    if any(element.tag == "Group" for root in roots for element in root.iter()):
+        raise ValueError(
+            "snippet paste cannot recreate Group elements; copy the group via "
+            "the supported pulled-group copy path or paste its children individually"
+        )
     snippet_ids = [
         element.get("id")
         for root in roots

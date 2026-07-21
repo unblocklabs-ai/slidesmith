@@ -13,6 +13,7 @@ from slidesmith.engine.assets import (
 from slidesmith.engine.content_parser import ParsedElement, validate_authored_image_geometry
 from slidesmith.engine.diff_model import PushWarning, WarningSeverity
 from slidesmith.engine.image_fetch import fetch_image_dimensions as _fetch_image_dimensions
+from slidesmith.engine.image_fetch import redact_image_url
 
 _ORIGINAL_FETCH_IMAGE_DIMENSIONS = _fetch_image_dimensions
 
@@ -79,7 +80,7 @@ def get_effective_position(
     if pixel_width <= 0 or pixel_height <= 0:
         raise ValueError(
             f"Could not determine positive pixel dimensions for Image element "
-            f"'{elem.clean_id}' from {elem.src!r}"
+            f"'{elem.clean_id}' from {redact_image_url(elem.src)!r}"
         )
 
     image_aspect = pixel_width / pixel_height
@@ -141,7 +142,7 @@ def get_image_source_dimensions(
                         f"could not fetch dimensions for remote stretch image "
                         f"'{elem.clean_id}'; using target-shaped geometry. The "
                         "image may need a follow-up resize; persistence "
-                        f"verification will report actual drift ({exc})",
+                        f"verification will report actual drift ({redact_image_url(str(exc))})",
                     )
                 )
             return None

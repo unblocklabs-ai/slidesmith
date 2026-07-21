@@ -87,6 +87,42 @@ def test_format_diff_summary_renders_each_change_type_and_count() -> None:
 39 requests total"""
 
 
+def test_diff_summary_redacts_remote_query_and_preserves_plain_and_local_sources() -> None:
+    result = DiffResult(
+        changes=[
+            Change(
+                ChangeType.IMAGE_UPDATE,
+                "signed",
+                slide_index="01",
+                src="https://cdn.example/hero.png?X-Goog-Signature=SECRET",
+                fit="stretch",
+            ),
+            Change(
+                ChangeType.IMAGE_UPDATE,
+                "plain",
+                slide_index="01",
+                src="https://cdn.example/plain.png",
+                fit="stretch",
+            ),
+            Change(
+                ChangeType.IMAGE_UPDATE,
+                "local",
+                slide_index="01",
+                src="./assets/logo.png",
+                fit="stretch",
+            ),
+        ]
+    )
+
+    summary = format_diff_summary(result, 3)
+
+    assert "SECRET" not in summary
+    assert "https://cdn.example/hero.png" in summary
+    assert "?[redacted]" not in summary
+    assert "https://cdn.example/plain.png" in summary
+    assert "src='./assets/logo.png'" in summary
+
+
 def test_diff_summary_cli_uses_compact_stdout_without_legend(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,

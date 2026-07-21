@@ -32,6 +32,7 @@ from slidesmith.engine.classes import (
 from slidesmith.engine.components import ComponentLibrary, load_components
 from slidesmith.engine.layout import compile_layout
 from slidesmith.engine.assets import image_source_kind
+from slidesmith.engine.image_fetch import redact_image_url
 
 QA_ACCEPT_CLASS_PREFIX = "qa-accept-"
 
@@ -254,7 +255,8 @@ def _parse_image_authoring(
         image_source_kind(src)
     except ValueError as exc:
         raise ValueError(
-            f"Invalid src on Image element '{element_id}': {exc}, got {src!r}"
+            f"Invalid src on Image element '{element_id}': {exc}, "
+            f"got {redact_image_url(src)!r}"
         ) from exc
 
     resolved_fit = fit or "stretch"

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from slidesmith.engine.content_parser import ElementStyles
 from slidesmith.engine.diff_model import Change, ChangeType, DiffResult
+from slidesmith.engine.image_fetch import redact_image_url
 
 
 def format_diff_summary(diff_result: DiffResult, request_count: int) -> str:
@@ -71,7 +72,8 @@ def _format_summary_change(change: Change) -> str:
         return f"MOVE {change.target_id}{_format_frame(change.new_position)}"
 
     if change.change_type == ChangeType.IMAGE_UPDATE:
-        return f"IMAGE {change.target_id}: replace src={change.src!r} fit={change.fit}"
+        source = redact_image_url(change.src) if change.src is not None else None
+        return f"IMAGE {change.target_id}: replace src={source!r} fit={change.fit}"
 
     if change.change_type == ChangeType.COPY:
         source_id = change.source_id or change.target_id

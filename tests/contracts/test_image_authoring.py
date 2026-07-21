@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import time
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -13,6 +14,7 @@ from PIL import Image
 
 from slidesmith.engine import content_diff
 from slidesmith.engine import image_fetch
+from slidesmith.engine.assets import resolve_local_image_path
 from slidesmith.engine.content_diff import Change, ChangeType, DiffResult, diff_presentation
 from slidesmith.engine.content_parser import parse_slide_content
 from slidesmith.engine.content_requests import generate_batch_requests
@@ -231,6 +233,56 @@ def test_parser_accepts_image_src_and_fit_without_changing_pulled_images() -> No
 
 
 @pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (
+            "HTTPS://user:pass@cdn/hero.png?token=UPPERSECRET#fragment",
+            "https://cdn/hero.png",
+        ),
+        (
+            "https://user:pass@cdn/hero.png",
+            "https://cdn/hero.png",
+        ),
+        (
+            "https://user:pass@[broken]/hero.png",
+            "https://[redacted]",
+        ),
+        (
+            "https://[broken]?token=MALFORMEDSECRET",
+            "https://[redacted]",
+        ),
+        ("https://cdn/hero.png?token=SECRET#fragment", "https://cdn/hero.png"),
+        ("https://cdn/hero.png", "https://cdn/hero.png"),
+        ("./path", "./path"),
+        ("logo.png", "logo.png"),
+    ],
+)
+def test_redact_image_url_fails_closed_for_malformed_remote_urls(
+    value: str,
+    expected: str,
+) -> None:
+    redacted = image_fetch.redact_image_url(value)
+
+    assert redacted == expected
+    assert "SECRET" not in redacted
+
+
+def test_redact_image_url_leaves_overlong_non_url_scheme_run_unchanged() -> None:
+    value = "a" * 50_000 + " :// not a URL"
+
+    assert image_fetch.redact_image_url(value) == value
+
+
+def test_redact_image_url_rejects_adversarial_scheme_run_quickly() -> None:
+    value = "a" * 50_000 + " :// not a URL"
+
+    started = time.perf_counter()
+    image_fetch.redact_image_url(value)
+
+    assert time.perf_counter() - started < 0.5
+
+
+@pytest.mark.parametrize(
     "src",
     [
         "data:image/png;base64,AAAA",
@@ -258,6 +310,20 @@ def test_parser_accepts_local_image_sources(src: str) -> None:
 
     assert image.src == src
     assert image.fit == "stretch"
+
+
+def test_local_image_resolution_stays_inside_workspace(tmp_path: Path) -> None:
+    workspace = tmp_path / "deck"
+    inside = workspace / "assets" / "logo.png"
+    inside.parent.mkdir(parents=True)
+    Image.new("RGB", (10, 10), "navy").save(inside)
+
+    assert resolve_local_image_path(workspace, "./assets/logo.png") == inside.resolve()
+    assert resolve_local_image_path(workspace, inside.as_uri()) == inside.resolve()
+
+    for source in ("../escape.png", str(tmp_path / "outside.png")):
+        with pytest.raises(ValueError, match="resolves outside the presentation workspace"):
+            resolve_local_image_path(workspace, source)
 
 
 def test_parser_rejects_unknown_image_fit_loudly() -> None:

@@ -235,12 +235,26 @@ class GoogleDriveAssetUploader:
         if not isinstance(file_id, str) or not file_id:
             raise AssetUploadError("Google Drive upload response did not include a file ID")
 
-        await self._request(
-            "POST",
-            f"{DRIVE_API_BASE}/files/{urllib.parse.quote(file_id)}/permissions",
-            params={"fields": "id"},
-            json={"type": "anyone", "role": "reader"},
-        )
+        try:
+            await self._request(
+                "POST",
+                f"{DRIVE_API_BASE}/files/{urllib.parse.quote(file_id)}/permissions",
+                params={"fields": "id"},
+                json={"type": "anyone", "role": "reader"},
+            )
+        except AssetUploadError as permission_error:
+            try:
+                await self._request(
+                    "DELETE",
+                    f"{DRIVE_API_BASE}/files/{urllib.parse.quote(file_id)}",
+                    expect_json=False,
+                )
+            except AssetUploadError as cleanup_error:
+                raise AssetUploadError(
+                    f"{permission_error}; cleanup of uploaded Drive file "
+                    f"{file_id!r} also failed: {cleanup_error}"
+                ) from permission_error
+            raise
         metadata_response = await self._request(
             "GET",
             f"{DRIVE_API_BASE}/files/{urllib.parse.quote(file_id)}",
@@ -254,7 +268,14 @@ class GoogleDriveAssetUploader:
             )
         return UploadedAsset(file_id=file_id, url=web_content_link)
 
-    async def _request(self, method: str, url: str, **kwargs: Any) -> dict[str, Any]:
+    async def _request(
+        self,
+        method: str,
+        url: str,
+        *,
+        expect_json: bool = True,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
         try:
             response = await self._client.request(method, url, **kwargs)
             response.raise_for_status()
@@ -265,7 +286,14 @@ class GoogleDriveAssetUploader:
             ) from exc
         except httpx.RequestError as exc:
             raise AssetUploadError(f"Google Drive asset network error: {exc}") from exc
-        result = response.json()
+        if not expect_json:
+            return {}
+        try:
+            result = response.json()
+        except ValueError as exc:
+            raise AssetUploadError(
+                "Google Drive asset response contained invalid JSON"
+            ) from exc
         if not isinstance(result, dict):
             raise AssetUploadError("Google Drive asset response was not a JSON object")
         return result

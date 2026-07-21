@@ -7,11 +7,16 @@ import json
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
 from PIL import Image
 
 from slidesmith import cli
-from slidesmith.engine.assets import UploadedAsset
+from slidesmith.engine.assets import (
+    AssetUploadError,
+    GoogleDriveAssetUploader,
+    UploadedAsset,
+)
 from slidesmith.engine.client import SlidesClient
 from slidesmith.engine.content_parser import parse_slide_content
 from slidesmith.engine.transport import APIError, PresentationData, Transport
@@ -276,6 +281,58 @@ async def test_asset_cache_uploads_same_local_path_and_hash_only_once_across_ret
         == FAKE_URL
         for call in transport.batch_calls
     )
+
+
+@pytest.mark.asyncio
+async def test_drive_permission_failure_deletes_uploaded_file_and_stays_typed(
+    tmp_path: Path,
+) -> None:
+    image_path = _write_png(tmp_path)
+    requests: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append((request.method, request.url.path))
+        if request.url.path == "/upload/drive/v3/files":
+            return httpx.Response(200, json={"id": "created-file"})
+        if request.url.path == "/drive/v3/files/created-file/permissions":
+            return httpx.Response(403, text="permission denied")
+        if (
+            request.method == "DELETE"
+            and request.url.path == "/drive/v3/files/created-file"
+        ):
+            return httpx.Response(204)
+        raise AssertionError(f"unexpected Drive request: {request.method} {request.url}")
+
+    uploader = GoogleDriveAssetUploader("token")
+    await uploader._client.aclose()
+    uploader._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        with pytest.raises(AssetUploadError, match="permission denied"):
+            await uploader.upload(image_path, mime_type="image/png")
+    finally:
+        await uploader.close()
+
+    assert requests == [
+        ("POST", "/upload/drive/v3/files"),
+        ("POST", "/drive/v3/files/created-file/permissions"),
+        ("DELETE", "/drive/v3/files/created-file"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_drive_malformed_json_raises_typed_asset_error() -> None:
+    uploader = GoogleDriveAssetUploader("token")
+    await uploader._client.aclose()
+    uploader._client = httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda _request: httpx.Response(200, content=b"not-json")
+        )
+    )
+    try:
+        with pytest.raises(AssetUploadError, match="invalid JSON"):
+            await uploader._request("GET", "https://www.googleapis.com/drive/v3/files/1")
+    finally:
+        await uploader.close()
 
 
 @pytest.mark.asyncio

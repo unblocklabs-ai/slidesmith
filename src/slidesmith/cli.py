@@ -480,7 +480,12 @@ def cmd_check(args: Any) -> None:
         async def run() -> list[Path]:
             transport = GoogleSlidesTransport(token)
             try:
-                return await download_thumbnails(transport, folder, qa_dir)
+                return await download_thumbnails(
+                    transport,
+                    folder,
+                    qa_dir,
+                    output=print,
+                )
             finally:
                 await transport.close()
 

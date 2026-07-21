@@ -38,7 +38,11 @@ CONTACT_SHEET_LABEL_HEIGHT = 24
 
 
 async def download_thumbnails(
-    transport: Any, folder: Path, qa_dir: Path
+    transport: Any,
+    folder: Path,
+    qa_dir: Path,
+    *,
+    output: Callable[[str], None] = print,
 ) -> list[Path]:
     """Download each materialized slide thumbnail in numeric slide order."""
     metadata = read_json(folder / "presentation.json", missing_ok=False)
@@ -61,7 +65,7 @@ async def download_thumbnails(
         output_path = qa_dir / f"slide-{slide_number}.png"
         output_path.write_bytes(png)
         output_paths.append(output_path)
-        print(output_path, flush=True)
+        output(str(output_path))
     return output_paths
 
 

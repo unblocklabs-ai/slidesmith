@@ -68,6 +68,28 @@ def _rules(folder: Path) -> list[str]:
     return [finding.rule for finding in lint_folder(folder)]
 
 
+async def test_download_thumbnails_routes_paths_through_output_callback(
+    qa_folder: Path,
+) -> None:
+    class FakeTransport:
+        async def get_page_thumbnail(
+            self,
+            _presentation_id: str,
+            page_object_id: str,
+        ) -> bytes:
+            return f"png:{page_object_id}".encode()
+
+    qa_dir = qa_folder / ".qa"
+    qa_dir.mkdir()
+    messages: list[str] = []
+
+    paths = await qa_engine.download_thumbnails(
+        FakeTransport(), qa_folder, qa_dir, output=messages.append
+    )
+
+    assert messages == [str(path) for path in paths]
+
+
 async def test_get_page_thumbnail_fetches_metadata_then_png() -> None:
     requests: list[httpx.Request] = []
     png = b"\x89PNG\r\n\x1a\nthumbnail"
@@ -807,8 +829,23 @@ def test_cli_downloads_thumbnails_sequentially_and_prints_paths(
         assert target
         return "fake-token"
 
+    original_download_thumbnails = qa_engine.download_thumbnails
+
+    async def record_output_callback(
+        transport: Any,
+        folder: Path,
+        qa_dir: Path,
+        *,
+        output: Any,
+    ) -> list[Path]:
+        assert output is print
+        return await original_download_thumbnails(
+            transport, folder, qa_dir, output=output
+        )
+
     monkeypatch.setattr(cli, "_token", fake_token)
     monkeypatch.setattr("slidesmith.engine.transport.GoogleSlidesTransport", FakeTransport)
+    monkeypatch.setattr(qa_engine, "download_thumbnails", record_output_callback)
 
     cli.main(["check", str(qa_folder)])
 

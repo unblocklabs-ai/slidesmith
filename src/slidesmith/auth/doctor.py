@@ -16,9 +16,11 @@ from slidesmith.auth.browser_flow import (
     probe_bare_token as _probe_bare_token,
 )
 from slidesmith.auth.discovery import (
+    GogcliDiscoveryResult,
     OAuthClientCredentials,
     _find_gogcli_client_credentials,
     _find_gws_client_credentials,
+    _inspect_gogcli_client_credentials,
 )
 from slidesmith.auth.stores import (
     FileSessionStore,
@@ -29,6 +31,7 @@ from slidesmith.auth.stores import (
 )
 
 ClientDiscovery = Callable[[], OAuthClientCredentials | None]
+GogcliDiagnostic = Callable[[], GogcliDiscoveryResult]
 
 
 def _inspect_session_payload(payload: Any) -> tuple[str, SessionToken | None]:
@@ -60,12 +63,23 @@ def auth_doctor_lines(
     *,
     find_gws_client_credentials: ClientDiscovery = _find_gws_client_credentials,
     find_gogcli_client_credentials: ClientDiscovery = _find_gogcli_client_credentials,
+    inspect_gogcli_client_credentials: GogcliDiagnostic = (
+        _inspect_gogcli_client_credentials
+    ),
     probe_bare_token: Callable[[str], BareTokenProbeResult] = _probe_bare_token,
 ) -> list[str]:
     """Return a layered, secret-safe authentication diagnosis."""
-    oauth_creds = (
-        find_gws_client_credentials() or find_gogcli_client_credentials()
-    )
+    oauth_creds = find_gws_client_credentials()
+    gogcli_result: GogcliDiscoveryResult | None = None
+    if oauth_creds is None:
+        if (
+            find_gogcli_client_credentials is _find_gogcli_client_credentials
+            or inspect_gogcli_client_credentials is not _inspect_gogcli_client_credentials
+        ):
+            gogcli_result = inspect_gogcli_client_credentials()
+            oauth_creds = gogcli_result.credentials
+        else:
+            oauth_creds = find_gogcli_client_credentials()
     server_url = os.environ.get("EXTRASUITE_SERVER_URL", "").strip()
     service_account = os.environ.get("SERVICE_ACCOUNT_PATH", "").strip()
     bare_token = os.environ.get("GOOGLE_WORKSPACE_CLI_TOKEN") or os.environ.get(
@@ -82,16 +96,6 @@ def auth_doctor_lines(
             bare_probe_status = "unreachable"
             bare_expires_at = None
 
-    if oauth_creds is not None:
-        credential_line = (
-            f"OAuth client credentials: FOUND ({oauth_creds.source}: "
-            f"{oauth_creds.location})"
-        )
-        profile_name = f"{oauth_creds.source}-default"
-    else:
-        credential_line = "OAuth client credentials: ABSENT"
-        profile_name = _DEFAULT_PROFILE
-
     gateway_source = "environment variable EXTRASUITE_SERVER_URL"
     if not server_url:
         gateway_path = Path.home() / ".config" / "extrasuite" / "gateway.json"
@@ -104,7 +108,56 @@ def auth_doctor_lines(
         except (OSError, ValueError, AttributeError):
             pass
 
+    if oauth_creds is not None:
+        credential_line = (
+            f"OAuth client credentials: FOUND ({oauth_creds.source}: "
+            f"{oauth_creds.location})"
+        )
+        profile_name = (
+            _DEFAULT_PROFILE if server_url else f"{oauth_creds.source}-default"
+        )
+    elif gogcli_result is not None and gogcli_result.status == "keyring-unreadable":
+        assert gogcli_result.client_path is not None
+        credential_line = (
+            "OAuth client credentials: INCOMPLETE (gogcli metadata: "
+            f"{gogcli_result.client_path})"
+        )
+        profile_name = _DEFAULT_PROFILE if server_url else "gogcli-default"
+    elif gogcli_result is not None and gogcli_result.status == "ambiguous":
+        credential_line = "OAuth client credentials: AMBIGUOUS (gogcli named clients)"
+        profile_name = _DEFAULT_PROFILE if server_url else "gogcli-default"
+    else:
+        credential_line = "OAuth client credentials: ABSENT"
+        profile_name = _DEFAULT_PROFILE
+
     lines = [credential_line]
+    if gogcli_result is not None and gogcli_result.status == "keyring-unreadable":
+        assert gogcli_result.client_path is not None
+        lines.append(
+            f"gogcli client id found at {gogcli_result.client_path}, but the client "
+            "secret lives in the OS keyring and could not be read "
+            f"(service {gogcli_result.keyring_service}, "
+            f"key {gogcli_result.keyring_key})."
+        )
+        lines.append(
+            "On macOS, the first read by a new process can trigger a Keychain "
+            "authorization prompt; choose 'Always Allow'."
+        )
+        lines.append(
+            "If gog uses a custom keyring service, set "
+            "GOG_KEYRING_SERVICE_NAME to the same value."
+        )
+        lines.append(
+            "Fallbacks: export GOG_ACCESS_TOKEN, or re-import with "
+            "`gog auth credentials <file> --insecure` (less secure)."
+        )
+    elif gogcli_result is not None and gogcli_result.status == "ambiguous":
+        lines.append("gogcli found multiple named client files and no default client:")
+        lines.extend(f"  {path}" for path in gogcli_result.ambiguous_paths)
+        lines.append(
+            "Disambiguate by keeping one named client file or creating the intended "
+            "default client as credentials.json, then run auth doctor again."
+        )
     if server_url:
         lines.append(f"ExtraSuite gateway: FOUND ({gateway_source})")
     if service_account:
@@ -185,15 +238,34 @@ def auth_doctor_lines(
             lines.append(f"File store: PRESENT ({file_store.path}); token {detail}")
 
     service_account_valid = bool(service_account and Path(service_account).is_file())
+    immediate_auth = service_account_valid or bool(bare_token)
+    token_statuses = {keyring_status, file_status}
+    other_auth_usable = bool(
+        server_url
+        or service_account_valid
+        or (bare_token and bare_probe_status != "invalid")
+    )
     credentials_found = bool(
         oauth_creds is not None
         or server_url
         or service_account_valid
         or bool(bare_token)
     )
-    immediate_auth = service_account_valid or bool(bare_token)
-    token_statuses = {keyring_status, file_status}
-    if not credentials_found:
+    if (
+        gogcli_result is not None
+        and gogcli_result.status == "keyring-unreadable"
+        and not other_auth_usable
+    ):
+        verdict = "GOGCLI CLIENT SECRET UNREADABLE"
+        next_command = "export GOG_ACCESS_TOKEN or re-import gog credentials --insecure"
+    elif (
+        gogcli_result is not None
+        and gogcli_result.status == "ambiguous"
+        and not other_auth_usable
+    ):
+        verdict = "GOGCLI CLIENT AMBIGUOUS"
+        next_command = "disambiguate the gogcli named client files, then rerun auth doctor"
+    elif not credentials_found:
         verdict = "CREDENTIAL ABSENT"
         next_command = "gws auth setup"
     elif bare_probe_status == "invalid" and bare_token:

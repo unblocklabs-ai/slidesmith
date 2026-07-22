@@ -56,6 +56,11 @@ slidesmith check <id> --contact-sheet   # download renders + geometry QA
 slidesmith --version                    # print the installed package version
 ```
 
+Newer gog versions may store only the OAuth client ID in `credentials.json` and
+keep the client secret in the OS keyring. `slidesmith auth doctor` checks both;
+if the keyring read is unavailable, follow its macOS Keychain guidance or use
+`GOG_ACCESS_TOKEN` / `gog auth credentials <file> --insecure` as a fallback.
+
 To create a slide, scaffold it locally with `slidesmith add-slide <id>`:
 `--after N` inserts after existing 1-based slide `N`, `--at N` inserts before
 1-based position `N`, and `--blank` creates an empty root. `--layout title-body`

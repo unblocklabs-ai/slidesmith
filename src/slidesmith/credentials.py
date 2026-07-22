@@ -37,9 +37,11 @@ from slidesmith.auth.browser_flow import (
     probe_bare_token as _probe_bare_token,
 )
 from slidesmith.auth.discovery import (
+    GogcliDiscoveryResult,  # noqa: F401
     OAuthClientCredentials,  # noqa: F401
     _find_gogcli_client_credentials,  # noqa: F401
     _find_gws_client_credentials,  # noqa: F401
+    _inspect_gogcli_client_credentials,  # noqa: F401
     _parse_oauth_client_json,  # noqa: F401
 )
 from slidesmith.auth.doctor import auth_doctor_lines as _auth_doctor_lines
@@ -156,6 +158,7 @@ def auth_doctor_lines() -> list[str]:
     return _auth_doctor_lines(
         find_gws_client_credentials=_find_gws_client_credentials,
         find_gogcli_client_credentials=_find_gogcli_client_credentials,
+        inspect_gogcli_client_credentials=_inspect_gogcli_client_credentials,
         probe_bare_token=_probe_bare_token,
     )
 

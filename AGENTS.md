@@ -18,8 +18,10 @@ image or a throwaway `.pptx`.
 - Requires Python 3.11+ and the `slidesmith` CLI (`uv pip install -e .` in a
   checkout puts it on PATH).
 - Authenticate first: `slidesmith auth doctor` diagnoses credentials. Auth is
-  zero-config if the user has `gogcli`; otherwise a `GOG_ACCESS_TOKEN` env token
-  or a service account (`SERVICE_ACCOUNT_PATH`) works.
+  zero-config if the user has `gogcli`; newer gog versions keep the client ID in
+  `credentials.json` and the client secret in the OS keyring. Otherwise a
+  `GOG_ACCESS_TOKEN` env token or a service account (`SERVICE_ACCOUNT_PATH`)
+  works.
 
 ## The core loop
 

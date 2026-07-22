@@ -1110,6 +1110,16 @@ expiry, a verdict, and one next command. It distinguishes missing OAuth client
 credentials, denied/broken Keychain access, an absent session, and an expired
 session.
 
+For gogcli, discovery checks the data directory before the config directory and
+supports both legacy full JSON and newer metadata-only `credentials.json` files.
+With newer gog, the client secret is read from the OS keyring (service
+`gogcli`, or the trimmed `GOG_KEYRING_SERVICE_NAME` override), and a named
+client uses the matching `client/<name>/client-secret` key. If the client ID is
+found but the keyring secret cannot be read, doctor explains the macOS
+Keychain “Always Allow” prompt and offers `GOG_ACCESS_TOKEN` or
+`gog auth credentials <file> --insecure` (less secure). If multiple named
+clients exist without a default, doctor lists them and asks you to disambiguate.
+
 `slidesmith auth login` always forces fresh browser consent. A refreshable
 login stores its refresh token in the OS keyring and
 `~/.config/slidesmith/session.json` when each is available. If Google withholds
@@ -1158,6 +1168,8 @@ SLIDESMITH_TOKEN_STORE=file slidesmith pull "<presentation-url-or-id>"
 Set `SLIDESMITH_TOKEN_STORE=keyring` to force Keychain reads. With no setting,
 Slidesmith tries Keychain and, on any Keychain exception, emits one stderr notice
 and falls back to the file. If the doctor says `CREDENTIAL ABSENT`, configure a
-gws or gogcli OAuth client first; if it says `TOKEN EXPIRED`, `SESSION TOKEN
-ABSENT`, or `KEYRING DENIED OR BROKEN`, run `slidesmith auth login` from a
+gws or gogcli OAuth client first. For `GOGCLI CLIENT SECRET UNREADABLE`, use the
+printed keyring guidance or a bare token; for `GOGCLI CLIENT AMBIGUOUS`,
+disambiguate the named files. If it says `TOKEN EXPIRED`, `SESSION TOKEN ABSENT`,
+or `KEYRING DENIED OR BROKEN`, run `slidesmith auth login` from a
 browser-capable session and retry the agent command.

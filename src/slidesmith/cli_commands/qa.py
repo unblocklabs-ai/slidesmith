@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import sys
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -32,12 +33,27 @@ def cmd_check(args: Any) -> None:
         )
     _cli_helper("_warn_if_stale", _warn_if_stale)(folder)
     if not args.no_thumbnails:
-        from slidesmith.engine.transport import GoogleSlidesTransport
-
         metadata = read_json(folder / "presentation.json", missing_ok=False)
         # Preserve the pre-auth workspace validation order from the inline engine.
         read_json(folder / "id_mapping.json", missing_ok=False)
         presentation_id = metadata["presentationId"]
+
+        try:
+            from slidesmith.engine.client import diff_folder_with_result
+
+            diff_result, _ = diff_folder_with_result(folder)
+            if diff_result.changes:
+                print(
+                    "warning: contact sheet and thumbnails reflect the REMOTE deck "
+                    "and do NOT include pending local edits; run `slidesmith push` "
+                    "to sync first",
+                    file=sys.stderr,
+                )
+        except (OSError, ValueError, KeyError, zipfile.BadZipFile):
+            pass
+
+        from slidesmith.engine.transport import GoogleSlidesTransport
+
         token = _cli_helper("_token", _token)("slide.pull", presentation_id)
         qa_dir = folder / ".qa"
         qa_dir.mkdir(parents=True, exist_ok=True)
@@ -97,7 +113,10 @@ def register_qa_commands(
     sc.add_argument(
         "--contact-sheet",
         action="store_true",
-        help="Compose downloaded thumbnails into .qa/contact-sheet.png",
+        help=(
+            "Compose downloaded thumbnails into .qa/contact-sheet.png; "
+            "thumbnails always reflect the remote deck"
+        ),
     )
     acceptance = sc.add_mutually_exclusive_group()
     acceptance.add_argument(

@@ -8,6 +8,8 @@ Conversion: 1 pt = 12700 EMU
 
 from __future__ import annotations
 
+from decimal import Decimal
+
 # Conversion constant: 1 point = 12700 EMU
 EMU_PER_PT = 12700
 
@@ -86,3 +88,21 @@ def format_pt(value: float, precision: int = 2) -> str:
     if rounded == int(rounded):
         return str(int(rounded))
     return str(rounded)
+
+
+def format_lossless_float(value: float, *, positional: bool = False) -> str:
+    """Format a float with shortest-round-trip precision.
+
+    Unlike :func:`format_pt`, this does not impose a decimal precision or
+    normalize binary floating-point values.  When requested, exponent
+    notation is expanded to a positional decimal so grammars that accept
+    only decimal digits can parse the lossless result.
+    """
+    numeric = float(value)
+    if numeric.is_integer():
+        return str(int(numeric))
+
+    rendered = repr(numeric)
+    if positional and ("e" in rendered or "E" in rendered):
+        return format(Decimal(rendered), "f")
+    return rendered

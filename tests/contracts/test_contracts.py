@@ -14,20 +14,28 @@ set SLIDESMITH_LIVE_DECK=<presentationId> to enable.
 from __future__ import annotations
 
 import json
+import math
 import os
+import re
 import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from slidesmith.engine.classes import (
+    Color,
     ContentAlignment,
+    Fill,
     ParagraphStyle,
     Stroke,
+    Transform,
     TextStyle,
     parse_paragraph_style_classes,
     parse_content_alignment_class,
+    parse_fill_class,
+    parse_position_classes,
     parse_stroke_classes,
     parse_text_style_classes,
 )
@@ -168,6 +176,164 @@ def test_styled_pull_forward_classes_use_existing_reverse_mappings() -> None:
 
     assert ContentAlignment.MIDDLE.to_class() == "content-align-middle"
     assert parse_content_alignment_class("content-align-middle") is ContentAlignment.MIDDLE
+
+
+def test_fractional_line_spacing_api_payload_round_trips_through_sml_parser() -> None:
+    node = RenderNode(
+        clean_id="copy",
+        bounds=BoundingBox(10, 20, 240, 60),
+        element={
+            "shape": {
+                "shapeType": "TEXT_BOX",
+                "text": {
+                    "textElements": [
+                        {"paragraphMarker": {"style": {"lineSpacing": 88.4215}}},
+                        {"textRun": {"content": "Fractional\n", "style": {}}},
+                    ]
+                },
+            }
+        },
+    )
+
+    content = generate_slide_content([node])
+    assert 'class="leading-88.4215"' in content
+
+    parsed = parse_slide_content(content)
+    assert parsed[0].styles is not None
+    paragraph_style = parsed[0].styles.paragraph_style
+    assert paragraph_style is not None
+    assert paragraph_style.line_spacing == 88.4215
+    assert ParagraphStyle(line_spacing=paragraph_style.line_spacing).to_classes() == [
+        "leading-88.4215"
+    ]
+
+
+def test_fractional_line_spacing_emit_parse_emit_is_idempotent() -> None:
+    emitted = ParagraphStyle(line_spacing=88.4215).to_classes()
+    assert emitted == ["leading-88.4215"]
+
+    parsed = parse_paragraph_style_classes(emitted)
+    assert parsed is not None
+    assert parsed.line_spacing == 88.4215
+    assert parsed.to_classes() == emitted
+
+
+def test_line_spacing_formatter_preserves_binary_float_noise() -> None:
+    emitted = ParagraphStyle(line_spacing=88.42099999999999).to_classes()
+    assert emitted == ["leading-88.42099999999999"]
+
+
+def test_integral_float_line_spacing_emits_without_decimal_point() -> None:
+    assert ParagraphStyle(line_spacing=100.0).to_classes() == ["leading-100"]
+
+
+@pytest.mark.parametrize(
+    "line_spacing",
+    [
+        5e-324,
+        1e-300,
+        1e-5,
+        0.1,
+        88.42099999999999,
+        1.2345678901234567,
+        100.0,
+        1e300,
+    ],
+)
+def test_positive_line_spacing_emission_is_parser_inverse(
+    line_spacing: float,
+) -> None:
+    emitted = ParagraphStyle(line_spacing=line_spacing).to_classes()
+    assert len(emitted) == 1
+    match = re.fullmatch(r"leading-(\d+(?:\.\d+)?)", emitted[0])
+    assert match is not None
+
+    parsed = parse_paragraph_style_classes(emitted)
+    assert parsed is not None
+    assert parsed.line_spacing == line_spacing
+    assert float(match.group(1)) == line_spacing
+
+
+@pytest.mark.parametrize("line_spacing", [0.0, -1.0, math.nan, math.inf, -math.inf])
+def test_non_positive_or_non_finite_line_spacing_is_not_emitted(
+    line_spacing: float,
+) -> None:
+    assert ParagraphStyle(line_spacing=line_spacing).to_classes() == []
+
+
+@pytest.mark.parametrize(
+    ("style", "parser"),
+    [
+        (
+            Transform(
+                translate_x_pt=12.345,
+                translate_y_pt=20,
+                width_pt=30.125,
+                height_pt=40,
+            ),
+            parse_position_classes,
+        ),
+        (
+            Transform(
+                translate_x_pt=-12,
+                translate_y_pt=20,
+                width_pt=30,
+                height_pt=40,
+            ),
+            parse_position_classes,
+        ),
+        (
+            Stroke(color=Color(hex="#112233", alpha=0.4), weight_pt=0.75),
+            parse_stroke_classes,
+        ),
+        (
+            Fill(color=Color(hex="#112233", alpha=0.4)),
+            lambda classes: parse_fill_class(classes[0]),
+        ),
+        (Stroke(weight_pt=2), parse_stroke_classes),
+        (TextStyle(font_size_pt=12.345), parse_text_style_classes),
+        (
+            TextStyle(font_size_pt=14, font_weight=400),
+            parse_text_style_classes,
+        ),
+        (
+            ParagraphStyle(
+                line_spacing=88.421,
+                space_above_pt=6.5,
+                space_below_pt=8,
+                indent_start_pt=18.25,
+                indent_first_line_pt=4,
+            ),
+            parse_paragraph_style_classes,
+        ),
+        (
+            ParagraphStyle(
+                line_spacing=88,
+                space_above_pt=6,
+                space_below_pt=8,
+                indent_start_pt=18,
+                indent_first_line_pt=4,
+            ),
+            parse_paragraph_style_classes,
+        ),
+    ],
+)
+def test_emitted_numeric_class_tokens_round_trip(style: Any, parser: Any) -> None:
+    emitted = style.to_classes() if hasattr(style, "to_classes") else [style.to_class()]
+    parsed = parser(emitted)
+    assert parsed is not None
+
+    if isinstance(parsed, dict):
+        expected = {
+            token.split("-", 1)[0]: float(token.split("-", 1)[1])
+            for token in emitted
+            if token.split("-", 1)[0] in {"x", "y", "w", "h"}
+        }
+        assert parsed == expected
+    elif hasattr(parsed, "to_classes"):
+        assert parsed.to_classes() == emitted
+    else:
+        assert parsed.to_class() == emitted[0]
 
 
 def test_styled_line_create_uses_line_api_and_round_trips() -> None:
@@ -547,6 +713,18 @@ def _text_edit_requests(
     return generate_batch_requests(
         DiffResult(changes=changes), {"e1": "g_e1"}, {"01": "g_s1"}
     )
+
+
+def test_alignment_edit_replays_exact_fractional_line_spacing() -> None:
+    pristine = (
+        '<Slide id="s1"><TextBox id="e1" x="0" y="0" w="100" h="50" '
+        'class="text-align-left leading-88.4215"><P>Alpha</P></TextBox></Slide>'
+    )
+    edited = pristine.replace("text-align-left", "text-align-center")
+
+    request = _text_edit_requests(pristine, edited)[0]["updateParagraphStyle"]
+    assert request["style"]["lineSpacing"] == 88.4215
+    assert request["fields"] == "alignment,lineSpacing"
 
 
 def test_c3_single_word_edit_preserves_explicit_run_style(

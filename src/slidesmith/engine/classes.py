@@ -10,13 +10,20 @@ Class naming follows the pattern: {property}-{subproperty}-{value}[/{modifier}]
 from __future__ import annotations
 
 import contextlib
+import math
 import re
 import urllib.parse
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
-from slidesmith.engine.units import emu_to_pt, format_pt, hex_to_rgb, rgb_to_hex
+from slidesmith.engine.units import (
+    emu_to_pt,
+    format_lossless_float,
+    format_pt,
+    hex_to_rgb,
+    rgb_to_hex,
+)
 
 
 class PropertyState(Enum):
@@ -560,7 +567,7 @@ class ParagraphStyle:
     """Paragraph styling."""
 
     alignment: TextAlignment | None = None
-    line_spacing: int | None = None  # Percentage (100 = single)
+    line_spacing: float | None = None  # Percentage (100 = single)
     space_above_pt: float | None = None
     space_below_pt: float | None = None
     indent_start_pt: float | None = None
@@ -588,7 +595,9 @@ class ParagraphStyle:
                 ps.alignment = TextAlignment(align)
 
         # Line spacing
-        ps.line_spacing = style_obj.get("lineSpacing")
+        line_spacing = style_obj.get("lineSpacing")
+        if line_spacing is not None:
+            ps.line_spacing = float(line_spacing)
 
         # Space above/below
         space_above = style_obj.get("spaceAbove")
@@ -636,8 +645,14 @@ class ParagraphStyle:
                 classes.append(align_map[self.alignment])
 
         # Line spacing
-        if self.line_spacing is not None:
-            classes.append(f"leading-{self.line_spacing}")
+        if (
+            self.line_spacing is not None
+            and math.isfinite(self.line_spacing)
+            and self.line_spacing > 0
+        ):
+            classes.append(
+                f"leading-{format_lossless_float(self.line_spacing, positional=True)}"
+            )
 
         # Space above/below
         if self.space_above_pt is not None:
@@ -943,8 +958,8 @@ def parse_paragraph_style_classes(classes: list[str]) -> ParagraphStyle | None:
             found = True
 
         # Line spacing
-        elif match := re.match(r"^leading-(\d+)$", cls):
-            ps.line_spacing = int(match.group(1))
+        elif match := re.match(r"^leading-(\d+(?:\.\d+)?)$", cls):
+            ps.line_spacing = float(match.group(1))
             found = True
 
         # Space above/below

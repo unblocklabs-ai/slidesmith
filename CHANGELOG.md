@@ -14,7 +14,16 @@ agent-legible: name the command/flag and what an operator can now do.
 
 ## [Unreleased]
 
-_Nothing yet._
+### Fixed
+
+- Fractional paragraph line-spacing values such as `leading-88.421` now
+  round-trip through pull-generated SML and its parser.
+
+### Changed
+
+- `slidesmith check` warns when local edits are pending before downloading
+  thumbnails, making clear that the thumbnails/contact sheet show the remote
+  deck and advising `slidesmith push` to sync first.
 
 ## [0.7.0] — 2026-07-22 — Plugin installs & keyring-native gog auth
 

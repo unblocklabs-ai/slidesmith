@@ -73,8 +73,10 @@ follow-up pull renumbers folders to the actual deck order.
 Push diagnostics distinguish actionable `warning:` lines from lower-severity
 `notice:` lines and render warnings first.
 
-`check` writes `.qa/slide-NN.png` and a `.qa/contact-sheet.png` — **look at
-them**; the offline geometry lint can't see visual intent, only overlaps/overflow.
+`check` writes remote-deck thumbnails at `.qa/slide-NN.png` and a
+`.qa/contact-sheet.png` — **look at them**; the offline geometry lint can't see
+visual intent, only overlaps/overflow. If local edits are pending, `check`
+warns that these images do not include them; run `slidesmith push` first.
 
 ## Core capabilities
 

@@ -8,7 +8,14 @@ Tests cover:
 
 import pytest
 
-from slidesmith.engine.units import emu_to_pt, format_pt, hex_to_rgb, pt_to_emu, rgb_to_hex
+from slidesmith.engine.units import (
+    emu_to_pt,
+    format_lossless_float,
+    format_pt,
+    hex_to_rgb,
+    pt_to_emu,
+    rgb_to_hex,
+)
 
 
 class TestEmuPtConversion:
@@ -121,3 +128,29 @@ class TestFormatPt:
     def test_format_pt_near_integer(self) -> None:
         """Values very close to integers should become integers."""
         assert format_pt(100.0001) == "100"
+
+
+class TestFormatLosslessFloat:
+    """Test shortest-round-trip formatting for precision-sensitive values."""
+
+    def test_preserves_meaningful_digits(self) -> None:
+        value = 88.4215
+        assert format_lossless_float(value) == "88.4215"
+        assert float(format_lossless_float(value)) == value
+
+    def test_emits_integral_float_without_decimal_point(self) -> None:
+        assert format_lossless_float(100.0) == "100"
+
+    def test_preserves_binary_float_noise(self) -> None:
+        value = 88.42099999999999
+        assert format_lossless_float(value) == repr(value)
+
+    def test_can_expand_exponent_notation_positionally(self) -> None:
+        value = 1e-5
+        rendered = format_lossless_float(value, positional=True)
+        assert rendered == "0.00001"
+        assert float(rendered) == value
+
+    def test_preserves_a_long_shortest_round_trip_value(self) -> None:
+        value = 1.2345678901234567
+        assert format_lossless_float(value) == repr(value)

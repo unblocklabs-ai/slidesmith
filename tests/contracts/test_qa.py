@@ -6,7 +6,9 @@ import copy
 import json
 import re
 import shutil
+from types import SimpleNamespace
 import xml.etree.ElementTree as ET
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 
@@ -17,7 +19,11 @@ from PIL import Image
 from slidesmith import cli
 from slidesmith.engine import content_diff
 from slidesmith.engine import qa as qa_engine
-from slidesmith.engine.client import SlidesClient, diff_folder
+from slidesmith.engine.client import (
+    SlidesClient,
+    diff_folder,
+    diff_folder_with_result,
+)
 from slidesmith.engine.qa import (
     CONTACT_SHEET_GAP,
     CONTACT_SHEET_LABEL_HEIGHT,
@@ -51,6 +57,12 @@ def qa_folder(tmp_path: Path) -> Path:
     folder = materialize(data, tmp_path)
     _replace_slides(folder, "")
     return folder
+
+
+@pytest.fixture
+def clean_qa_folder(tmp_path: Path) -> Path:
+    data = json.loads(GOLDEN.read_text(encoding="utf-8"))
+    return materialize(data, tmp_path)
 
 
 def _replace_slides(folder: Path, first_slide_body: str) -> None:
@@ -108,6 +120,7 @@ def test_check_help_documents_overlap_suppression(
     assert "qa-accept-overlap" in help_text
     assert "90%" in help_text
     assert "backgrounds" in help_text
+    assert "thumbnails always reflect the remote deck" in help_text
 
 
 async def test_download_thumbnails_routes_paths_through_output_callback(
@@ -1036,11 +1049,242 @@ def test_cli_no_thumbnails_uses_no_auth_or_transport(
 
     monkeypatch.setattr(cli, "_token", forbidden)
     monkeypatch.setattr("slidesmith.engine.transport.GoogleSlidesTransport", forbidden)
+    monkeypatch.setattr(
+        "slidesmith.engine.client.diff_folder_with_result", forbidden
+    )
 
     cli.main(["check", str(qa_folder), "--no-thumbnails"])
 
     assert "no issues found" in capsys.readouterr().out
     assert not (qa_folder / ".qa").exists()
+
+
+def test_cli_thumbnail_check_validates_metadata_before_dirty_diff(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    folder = tmp_path / "deck"
+    folder.mkdir()
+
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main(["check", str(folder)])
+
+    assert excinfo.value.code == 1
+    error = capsys.readouterr().err
+    assert f"Missing Slidesmith workspace file: {folder / 'presentation.json'}" in error
+    assert "Pristine zip not found" not in error
+
+
+def test_cli_thumbnail_check_validates_presentation_id_before_dirty_diff(
+    clean_qa_folder: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    metadata_path = clean_qa_folder / "presentation.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    del metadata["presentationId"]
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main(["check", str(clean_qa_folder)])
+
+    assert excinfo.value.code == 1
+    assert capsys.readouterr().err == "error: 'presentationId'\n"
+
+
+def test_cli_thumbnail_check_propagates_unexpected_diff_errors(
+    clean_qa_folder: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def raise_unexpected(_folder: Path) -> Any:
+        raise AssertionError("unexpected diff programming error")
+
+    monkeypatch.setattr(
+        "slidesmith.engine.client.diff_folder_with_result", raise_unexpected
+    )
+
+    with pytest.raises(AssertionError, match="unexpected diff programming error"):
+        cli.cmd_check(
+            SimpleNamespace(
+                folder=clean_qa_folder,
+                contact_sheet=False,
+                no_thumbnails=False,
+                strict=False,
+                accept=[],
+                unaccept=[],
+            )
+        )
+
+
+def test_cli_thumbnail_check_clean_worktree_has_no_remote_state_warning(
+    clean_qa_folder: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    calls: list[str] = []
+
+    class FakeTransport:
+        def __init__(self, token: str) -> None:
+            assert token == "fake-token"
+
+        async def get_page_thumbnail(
+            self,
+            _presentation_id: str,
+            page_object_id: str,
+            _size: str = "LARGE",
+        ) -> bytes:
+            calls.append(page_object_id)
+            return b"png"
+
+        async def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(cli, "_token", lambda *_args: "fake-token")
+    monkeypatch.setattr(
+        "slidesmith.engine.transport.GoogleSlidesTransport", FakeTransport
+    )
+
+    cli.main(["check", str(clean_qa_folder)])
+
+    assert calls
+    assert "contact sheet and thumbnails reflect the REMOTE deck" not in (
+        capsys.readouterr().err
+    )
+
+
+def test_cli_contact_sheet_warns_when_local_edits_are_pending(
+    clean_qa_folder: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _write_slide_body(
+        clean_qa_folder,
+        1,
+        '<Rect id="local" x="10" y="10" w="20" h="20" />',
+    )
+
+    image = Image.new("RGB", (20, 20), "white")
+    image_buffer = BytesIO()
+    image.save(image_buffer, format="PNG")
+    image.close()
+    thumbnail = image_buffer.getvalue()
+
+    events: list[str] = []
+
+    def record_diff(folder: Path) -> Any:
+        events.append("diff")
+        return diff_folder_with_result(folder)
+
+    class FakeTransport:
+        def __init__(self, token: str) -> None:
+            assert token == "fake-token"
+
+        async def get_page_thumbnail(
+            self,
+            _presentation_id: str,
+            _page_object_id: str,
+            _size: str = "LARGE",
+        ) -> bytes:
+            events.append("thumbnail")
+            return thumbnail
+
+        async def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(
+        "slidesmith.engine.client.diff_folder_with_result", record_diff
+    )
+    monkeypatch.setattr(cli, "_token", lambda *_args: "fake-token")
+    monkeypatch.setattr(
+        "slidesmith.engine.transport.GoogleSlidesTransport", FakeTransport
+    )
+
+    cli.main(["check", str(clean_qa_folder), "--contact-sheet"])
+
+    captured = capsys.readouterr()
+    assert events[0] == "diff"
+    assert "warning: contact sheet and thumbnails reflect the REMOTE deck" in (
+        captured.err
+    )
+    assert "do NOT include pending local edits" in captured.err
+    assert "`slidesmith push`" in captured.err
+    assert (clean_qa_folder / ".qa" / "contact-sheet.png").exists()
+
+
+def _corrupt_first_deflate_entry(zip_path: Path) -> None:
+    """Rewrite a zip so its first entry decompresses to a zlib error.
+
+    Overwrites the first byte of the entry's deflate stream with an invalid
+    block type (BTYPE=3), which zlib rejects deterministically.
+    """
+    import zipfile as _zipfile
+
+    payload = ("x" * 4096).encode("utf-8")
+    with _zipfile.ZipFile(zip_path, "w", _zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("styles.json", payload)
+    raw = bytearray(zip_path.read_bytes())
+    name_len = int.from_bytes(raw[26:28], "little")
+    extra_len = int.from_bytes(raw[28:30], "little")
+    data_offset = 30 + name_len + extra_len
+    raw[data_offset] = 0x06
+    zip_path.write_bytes(bytes(raw))
+
+
+@pytest.mark.parametrize(
+    "pristine_state", ["missing", "corrupt", "corrupt-entry"]
+)
+def test_cli_thumbnail_check_skips_warning_when_pristine_diff_fails(
+    clean_qa_folder: Path,
+    pristine_state: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    pristine_zip = clean_qa_folder / ".pristine" / "presentation.zip"
+    if pristine_state == "missing":
+        pristine_zip.unlink()
+    elif pristine_state == "corrupt-entry":
+        _corrupt_first_deflate_entry(pristine_zip)
+    else:
+        pristine_zip.write_bytes(b"not a zip archive")
+
+    class FakeTransport:
+        def __init__(self, token: str) -> None:
+            assert token == "fake-token"
+
+        async def get_page_thumbnail(
+            self,
+            _presentation_id: str,
+            _page_object_id: str,
+            _size: str = "LARGE",
+        ) -> bytes:
+            return b"png"
+
+        async def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(cli, "_token", lambda *_args: "fake-token")
+    monkeypatch.setattr(
+        "slidesmith.engine.transport.GoogleSlidesTransport", FakeTransport
+    )
+
+    cli.main(["check", str(clean_qa_folder)])
+
+    captured = capsys.readouterr()
+    assert "contact sheet and thumbnails reflect the REMOTE deck" not in (
+        captured.err
+    )
+
+
+def test_read_pristine_normalizes_deflate_corruption_to_value_error(
+    clean_qa_folder: Path,
+) -> None:
+    from slidesmith.engine.workspace_reader import _read_pristine
+
+    _corrupt_first_deflate_entry(
+        clean_qa_folder / ".pristine" / "presentation.zip"
+    )
+
+    with pytest.raises(ValueError, match="Pristine zip is corrupt"):
+        _read_pristine(clean_qa_folder)
 
 
 def test_cli_no_thumbnails_does_not_fetch_remote_contain_dimensions(

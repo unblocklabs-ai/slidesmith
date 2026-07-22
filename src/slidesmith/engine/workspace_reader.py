@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import zipfile
+import zlib
 from pathlib import Path
 from typing import Any
 
@@ -91,20 +92,27 @@ def _read_pristine(
     slides: dict[str, list[Any]] = {}
     styles: dict[str, dict[str, Any]] = {}
 
-    with zipfile.ZipFile(zip_path, "r") as zf:
-        # Read styles.json
-        if STYLES_FILE in zf.namelist():
-            styles = json.loads(zf.read(STYLES_FILE).decode("utf-8"))
+    try:
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            # Read styles.json
+            if STYLES_FILE in zf.namelist():
+                styles = json.loads(zf.read(STYLES_FILE).decode("utf-8"))
 
-        # Read slide content files
-        for name in zf.namelist():
-            if name.startswith(f"{SLIDES_DIR}/") and name.endswith("/content.sml"):
-                # Extract slide index from path like "slides/01/content.sml"
-                parts = name.split("/")
-                if len(parts) >= 2:
-                    slide_index = parts[1]
-                    content = zf.read(name).decode("utf-8")
-                    slides[slide_index] = parse_slide_content(content)
+            # Read slide content files
+            for name in zf.namelist():
+                if name.startswith(f"{SLIDES_DIR}/") and name.endswith(
+                    "/content.sml"
+                ):
+                    # Extract slide index from path like "slides/01/content.sml"
+                    parts = name.split("/")
+                    if len(parts) >= 2:
+                        slide_index = parts[1]
+                        content = zf.read(name).decode("utf-8")
+                        slides[slide_index] = parse_slide_content(content)
+    except zlib.error as exc:
+        # A recognizable but corrupt archive must surface as the same error
+        # family as other bad-input failures, not a raw decompression error.
+        raise ValueError(f"Pristine zip is corrupt: {zip_path} ({exc})") from exc
 
     return slides, styles
 

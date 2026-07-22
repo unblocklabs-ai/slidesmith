@@ -43,8 +43,10 @@ generated request count. It is intended for a quick human review; use plain
 slide, which is useful for inspecting a focused edit without unrelated deck
 changes.
 `check --no-thumbnails` is also local-only.
-Plain `check`, run after push, downloads current slide thumbnails into
-`<ID>/.qa/` before running geometry QA, so it needs authentication. `push`
+Plain `check` downloads slide thumbnails from the remote deck into `<ID>/.qa/`
+before running geometry QA, so it needs authentication. If local SML edits are
+pending, it warns that these thumbnails (and any contact sheet) do not include
+them; run `slidesmith push` to sync first. `push`
 re-fetches the remote deck, aborts if a locally touched object changed remotely,
 uses a revision lock for the write, and refreshes the local projection after a
 successful batch. Use `push --force` only when the user explicitly accepts
@@ -85,10 +87,10 @@ This is a deliberate atomicity tradeoff: earlier slide batches remain applied
 when a later slide fails. Do not use `--per-slide` when the deck must change as
 one all-or-nothing operation; use plain `push` instead.
 
-Add `--contact-sheet` to plain `check` to compose the downloaded PNGs into a
-labeled two-column overview at `<ID>/.qa/contact-sheet.png`. It is useful for a
-quick whole-deck visual scan. It requires those downloads and therefore cannot
-be used with `--no-thumbnails`.
+Add `--contact-sheet` to plain `check` to compose the downloaded remote PNGs
+into a labeled two-column overview at `<ID>/.qa/contact-sheet.png`. It is useful
+for a quick whole-deck visual scan. It requires those downloads and therefore
+cannot be used with `--no-thumbnails`.
 
 After a successful refresh, `push` compares the intended local changes with the
 remote-truth projection. When both values are cheap to derive from the captured
@@ -607,7 +609,7 @@ Paragraph classes may be element-level defaults or scoped to one `P`. A
 
 - Alignment: `text-align-left`, `text-align-center`, `text-align-right`,
   `text-align-justify`.
-- Line spacing percentage: `leading-integer`.
+- Line spacing percentage: `leading-number` (integer or decimal).
 - Paragraph spacing in points: `space-above-points`, `space-below-points`.
 - Indentation in points: `indent-start-points`, `indent-first-points`.
 - Direction: `dir-rtl`.

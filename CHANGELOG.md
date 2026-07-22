@@ -14,12 +14,40 @@ agent-legible: name the command/flag and what an operator can now do.
 
 ## [Unreleased]
 
+_Nothing yet._
+
+## [0.7.0] — 2026-07-22 — Plugin installs & keyring-native gog auth
+
+Ships slidesmith as an installable agent plugin for three harnesses, and makes
+zero-config auth work with newer `gog` releases that keep the OAuth client
+secret in the OS keyring instead of `credentials.json` (reported by an agent
+whose fresh gog install could not authenticate). Auth doctor gains actionable
+verdicts for keyring-unreadable and ambiguous-client states, hardened through
+three adversarial review rounds. Tag `stage-21`. 720 tests.
+
 ### Added
 - Installable as an agent plugin: thin manifests for **Claude Code**
   (`.claude-plugin/`) and **Codex** (`.codex-plugin/` + `.agents/plugins/`),
   a root **`AGENTS.md`**, and the packaged skill made publishable to
   **OpenClaw**'s ClawHub (publish is a maintainer step). One-command install
   per harness is documented in [docs/PLUGINS.md](docs/PLUGINS.md).
+
+### Fixed
+- gogcli OAuth client discovery now supports newer gog releases that store
+  only the client ID in `credentials.json` and the client secret in the OS
+  keyring (service `gogcli`, `GOG_KEYRING_SERVICE_NAME` honored), resolves
+  gog's data/config directories with the real precedence
+  (`GOG_DATA_DIR`/`GOG_CONFIG_DIR` > `GOG_HOME` > XDG > platform defaults),
+  and dedupes named clients by normalized name with data-dir precedence;
+  legacy full-JSON `credentials.json` files keep working.
+- `slidesmith auth doctor` no longer reports `CREDENTIAL ABSENT` for
+  keyring-backed gog installs: new `GOGCLI CLIENT SECRET UNREADABLE` verdict
+  with macOS Keychain "Always Allow" guidance and fallbacks, and
+  `GOGCLI CLIENT AMBIGUOUS` listing conflicting named client files. Failure
+  verdicts yield to any runtime-usable auth path; session-profile inspection
+  now matches runtime selection (gateway → `default`, OAuth client →
+  `<source>-default`), and a cached session alone no longer reports `READY`
+  when the runtime would refuse to start.
 
 ## [0.6.1] — 2026-07-21 — Created-element persistence fidelity
 
@@ -251,7 +279,8 @@ Tags `stage-1` … `stage-6`. The living-deck co-editing core.
 Descends from think41/extrasuite's extraslide (MIT — see `NOTICE`), heavily
 rewritten.
 
-[Unreleased]: https://github.com/unblocklabs-ai/slidesmith/compare/stage-20-created-element-persistence...HEAD
+[Unreleased]: https://github.com/unblocklabs-ai/slidesmith/compare/stage-21-plugins-and-keyring-auth...HEAD
+[0.7.0]: https://github.com/unblocklabs-ai/slidesmith/releases/tag/stage-21-plugins-and-keyring-auth
 [0.6.1]: https://github.com/unblocklabs-ai/slidesmith/releases/tag/stage-20-created-element-persistence
 [0.6.0]: https://github.com/unblocklabs-ai/slidesmith/releases/tag/stage-19-first-class-slides
 [0.5.0]: https://github.com/unblocklabs-ai/slidesmith/releases/tag/stage-18-continuity-and-qa-signal

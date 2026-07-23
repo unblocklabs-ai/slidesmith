@@ -14,6 +14,22 @@ agent-legible: name the command/flag and what an operator can now do.
 
 ## [Unreleased]
 
+_Nothing yet._
+
+## [0.8.0] — 2026-07-23 — Agent-native authoring & trust
+
+The full seven-phase campaign from ranked agent dogfood feedback, plus a
+second live-dogfood-driven hardening round. Decks can now be created and
+shared without leaving slidesmith; pulled SML document order is guaranteed
+to match paint order; `fit="cover"` lands with a live-validated derive path
+for new remote images; QA text measurement is paragraph-, inset-, and
+autofit-aware with a field-calibrated vertical inset; the new `advise` +
+`group` commands surface actionable pattern suggestions; and the request
+planner now resolves effective per-range styling so scope moves can never
+emit default-selecting resets (the "heading turned black" class of bug).
+Persistence verification stays strict while dropping every false-warning
+class observed in the field. Tag `stage-22`. 927 tests.
+
 ### Added
 
 - Added `slidesmith create --title ... [--share ...]` to create a Google Slides
@@ -348,7 +364,8 @@ Tags `stage-1` … `stage-6`. The living-deck co-editing core.
 Descends from think41/extrasuite's extraslide (MIT — see `NOTICE`), heavily
 rewritten.
 
-[Unreleased]: https://github.com/unblocklabs-ai/slidesmith/compare/stage-21-plugins-and-keyring-auth...HEAD
+[Unreleased]: https://github.com/unblocklabs-ai/slidesmith/compare/stage-22-agent-native-authoring...HEAD
+[0.8.0]: https://github.com/unblocklabs-ai/slidesmith/releases/tag/stage-22-agent-native-authoring
 [0.7.0]: https://github.com/unblocklabs-ai/slidesmith/releases/tag/stage-21-plugins-and-keyring-auth
 [0.6.1]: https://github.com/unblocklabs-ai/slidesmith/releases/tag/stage-20-created-element-persistence
 [0.6.0]: https://github.com/unblocklabs-ai/slidesmith/releases/tag/stage-19-first-class-slides

@@ -3,16 +3,19 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
+import math
 from pathlib import Path
 from typing import Any
 
 import httpx
 import pytest
-from PIL import Image
+from PIL import Image, ImageOps
 
 from slidesmith import cli
 from slidesmith.engine.assets import (
+    AssetCache,
     AssetUploadError,
     GoogleDriveAssetUploader,
     UploadedAsset,
@@ -22,6 +25,7 @@ from slidesmith.engine.content_diff import ChangeType
 from slidesmith.engine.content_parser import parse_slide_content
 from slidesmith.engine.diff_model import WarningSeverity
 from slidesmith.engine.transport import APIError, PresentationData, Transport
+from slidesmith.engine.image_replace import CoverFitPushError
 from slidesmith.engine.units import pt_to_emu
 
 GOLDEN = (
@@ -56,6 +60,7 @@ class ImageTransport(Transport):
         self.omit_replacement_source_url = False
         self.replacement_geometry_offset_pt = 0.0
         self.created_source_url: str | None = None
+        self.fail_cover_replace = False
 
     async def get_presentation(self, presentation_id: str) -> PresentationData:
         return PresentationData(presentation_id, copy.deepcopy(self.data))
@@ -98,6 +103,15 @@ class ImageTransport(Transport):
                     }
                 )
             if replace := request.get("replaceImage"):
+                if (
+                    self.fail_cover_replace
+                    and replace.get("imageReplaceMethod") == "CENTER_CROP"
+                ):
+                    raise APIError(
+                        "API error (400): Invalid requests[1].replaceImage: "
+                        "CENTER_CROP not supported in this fixture",
+                        status_code=400,
+                    )
                 element = _find_raw_element(self.data, replace["imageObjectId"])
                 element["image"]["contentUrl"] = replace["url"]
                 if self.omit_replacement_source_url:
@@ -280,6 +294,266 @@ async def test_local_image_insert_emits_create_image_with_fake_uploaded_url(
     assert create["url"] == FAKE_URL
     assert uploader.calls == [(folder / "assets" / "logo.png", "image/png")]
     assert response.get("warnings", []) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("source_size", "target_aspect", "expected_box"),
+    [
+        ((4, 2), 1.0, (1, 0, 3, 2)),
+        ((2, 4), 1.0, (0, 1, 2, 3)),
+    ],
+)
+async def test_local_cover_asset_center_crops_wide_and_tall_sources_deterministically(
+    tmp_path: Path,
+    source_size: tuple[int, int],
+    target_aspect: float,
+    expected_box: tuple[int, int, int, int],
+) -> None:
+    workspace = tmp_path / "deck"
+    source = workspace / "assets" / "source.png"
+    source.parent.mkdir(parents=True)
+    pixels = Image.new("RGB", source_size)
+    for y in range(source_size[1]):
+        for x in range(source_size[0]):
+            pixels.putpixel((x, y), (x * 30, y * 30, 1))
+    pixels.save(source)
+
+    uploader = FakeUploader()
+    cache = AssetCache(workspace)
+    first_url = await cache.resolve_cover("./assets/source.png", target_aspect, uploader)
+    derived_path = uploader.calls[0][0]
+    first_mtime = derived_path.stat().st_mtime_ns
+    with Image.open(derived_path) as derived:
+        expected = pixels.crop(expected_box)
+        assert derived.size == expected.size
+        assert derived.tobytes() == expected.tobytes()
+
+    second_url = await cache.resolve_cover("./assets/source.png", target_aspect, uploader)
+
+    assert second_url == first_url
+    assert len(uploader.calls) == 1
+    assert derived_path.stat().st_mtime_ns == first_mtime
+    assert json.loads((workspace / ".assets.json").read_text())["assets"][0][
+        "kind"
+    ] == "cover"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("source_size", "target_aspect"),
+    [((5, 3), 3 / 4), ((3, 5), 4 / 3)],
+    ids=("wide-into-tall", "tall-into-wide"),
+)
+async def test_local_cover_asset_resamples_odd_dimensions_to_exact_target_aspect(
+    tmp_path: Path,
+    source_size: tuple[int, int],
+    target_aspect: float,
+) -> None:
+    workspace = tmp_path / "deck"
+    source = workspace / "assets" / "odd.png"
+    source.parent.mkdir(parents=True)
+    Image.new("RGB", source_size, "navy").save(source)
+
+    uploader = FakeUploader()
+    await AssetCache(workspace).resolve_cover("./assets/odd.png", target_aspect, uploader)
+
+    with Image.open(uploader.calls[0][0]) as derived:
+        assert derived.width / derived.height == pytest.approx(target_aspect)
+
+
+@pytest.mark.asyncio
+async def test_local_cover_asset_bounds_irrational_aspect_raster_and_validates_same_ratio(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "deck"
+    source = workspace / "assets" / "irrational.png"
+    source.parent.mkdir(parents=True)
+    Image.new("RGB", (4, 2), "navy").save(source)
+
+    uploader = FakeUploader()
+    await AssetCache(workspace).resolve_cover(
+        "./assets/irrational.png", math.pi, uploader, element_id="hero"
+    )
+
+    with Image.open(uploader.calls[0][0]) as derived:
+        assert derived.size == (355, 113)
+        assert max(derived.size) <= 4096
+        assert derived.width * 113 == derived.height * 355
+
+
+@pytest.mark.asyncio
+async def test_local_cover_asset_golden_ratio_walks_down_to_in_bounds_rational(
+    tmp_path: Path,
+) -> None:
+    """limit_denominator alone picks 4181/2584, whose numerator exceeds the
+    4096px cap; the walk-down must land on the safe 2584/1597 rational
+    instead of rejecting a realistic aspect."""
+    workspace = tmp_path / "deck"
+    source = workspace / "assets" / "golden.png"
+    source.parent.mkdir(parents=True)
+    Image.new("RGB", (8, 4), "navy").save(source)
+
+    uploader = FakeUploader()
+    await AssetCache(workspace).resolve_cover(
+        "./assets/golden.png", (1 + 5**0.5) / 2, uploader, element_id="hero"
+    )
+
+    with Image.open(uploader.calls[0][0]) as derived:
+        assert max(derived.size) <= 4096
+        assert derived.width * 1597 == derived.height * 2584
+
+
+@pytest.mark.asyncio
+async def test_local_cover_asset_rejects_unbounded_aspect_with_element_name(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "deck"
+    source = workspace / "assets" / "extreme.png"
+    source.parent.mkdir(parents=True)
+    Image.new("RGB", (4, 4), "navy").save(source)
+
+    with pytest.raises(
+        ValueError,
+        match=r"Image element 'hero'.*no safe rational raster.*4096",
+    ):
+        await AssetCache(workspace).resolve_cover(
+            "./assets/extreme.png", 1e9, FakeUploader(), element_id="hero"
+        )
+
+
+@pytest.mark.asyncio
+async def test_local_cover_asset_ignores_pre_exif_derivation_cache_key(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "deck"
+    source = workspace / "assets" / "oriented.jpg"
+    source.parent.mkdir(parents=True)
+    pixels = Image.new("RGB", (4, 2), "navy")
+    exif = pixels.getexif()
+    exif[274] = 6
+    pixels.save(source, format="JPEG", quality=100, exif=exif)
+
+    source_hash = hashlib.sha256(source.read_bytes()).hexdigest()
+    old_key = hashlib.sha256(
+        f"{source_hash}\0{(1.0).hex()}".encode("ascii")
+    ).hexdigest()
+    stale_path = workspace / ".slidesmith-cover" / f"{old_key}.png"
+    stale_path.parent.mkdir(parents=True)
+    Image.new("RGB", (2, 2), "red").save(stale_path)
+
+    uploader = FakeUploader()
+    await AssetCache(workspace).resolve_cover(
+        "./assets/oriented.jpg", 1.0, uploader, element_id="hero"
+    )
+
+    assert uploader.calls[0][0] != stale_path
+    assert uploader.calls[0][0].exists()
+
+
+@pytest.mark.asyncio
+async def test_local_cover_asset_applies_exif_orientation_before_portrait_crop(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "deck"
+    source = workspace / "assets" / "portrait.jpg"
+    source.parent.mkdir(parents=True)
+    pixels = Image.new("RGB", (4, 2))
+    for y in range(2):
+        for x in range(4):
+            pixels.putpixel((x, y), (x * 50, y * 100, 20))
+    exif = pixels.getexif()
+    exif[274] = 6
+    pixels.save(source, format="JPEG", quality=100, exif=exif)
+
+    uploader = FakeUploader()
+    await AssetCache(workspace).resolve_cover(
+        "./assets/portrait.jpg", 1.0, uploader, element_id="hero"
+    )
+
+    with Image.open(source) as opened, Image.open(uploader.calls[0][0]) as derived:
+        oriented = ImageOps.exif_transpose(opened)
+        expected = oriented.crop((0, 1, 2, 3))
+        assert derived.size == (2, 2)
+        assert derived.getpixel((0, 0))[0] == pytest.approx(
+            expected.getpixel((0, 0))[0], abs=10
+        )
+
+
+@pytest.mark.asyncio
+async def test_local_cover_asset_rejects_animated_source_with_element_name(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "deck"
+    source = workspace / "assets" / "animated.gif"
+    source.parent.mkdir(parents=True)
+    Image.new("RGB", (4, 4), "red").save(
+        source,
+        save_all=True,
+        append_images=[Image.new("RGB", (4, 4), "blue")],
+        duration=100,
+        loop=0,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"Image element 'hero'.*animated.*static source",
+    ):
+        await AssetCache(workspace).resolve_cover(
+            "./assets/animated.gif", 1.0, FakeUploader(), element_id="hero"
+        )
+
+
+@pytest.mark.asyncio
+async def test_new_local_cover_uses_derived_asset_through_normal_upload_path(
+    tmp_path: Path,
+) -> None:
+    transport, _, folder = await _workspace(tmp_path)
+    uploader = FakeUploader()
+    client = SlidesClient(transport, uploader)
+    _write_png(folder, size=(400, 200))
+    _append_local_image(folder, fit="cover", geometry='x="12" y="18" w="100" h="100"')
+
+    await client.push(folder)
+
+    create = next(
+        request["createImage"]
+        for request in transport.batch_calls[-1]["requests"]
+        if "createImage" in request
+    )
+    assert create["url"] == FAKE_URL
+    assert uploader.calls[0][0].parent.name == ".slidesmith-cover"
+    assert uploader.calls[0][0].suffix == ".png"
+    assert [next(iter(request)) for request in transport.batch_calls[-1]["requests"]] == [
+        "createImage"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_new_remote_cover_rejection_names_cover_fit_and_element(
+    tmp_path: Path,
+) -> None:
+    transport, _, folder = await _workspace(tmp_path)
+    client = SlidesClient(transport)
+    _append_local_image(
+        folder,
+        source="https://example.com/remote.png",
+        fit="cover",
+    )
+    transport.fail_cover_replace = True
+
+    with pytest.raises(
+        CoverFitPushError,
+        match=r"cover fit replaceImage was rejected.*local_logo",
+    ):
+        await client.push(folder)
+
+    sent = transport.batch_calls[-1]["requests"]
+    assert [next(iter(request)) for request in sent] == [
+        "createImage",
+        "replaceImage",
+        "updatePageElementTransform",
+    ]
 
 
 @pytest.mark.asyncio
@@ -843,13 +1117,18 @@ async def test_missing_local_image_file_errors_loudly(tmp_path: Path) -> None:
         client.diff(folder)
 
 
-def test_local_image_fit_cover_stays_clearly_unsupported() -> None:
+def test_local_image_fit_cover_is_accepted_and_unknown_fit_is_rejected() -> None:
+    image = parse_slide_content(
+        '<Slide><Image id="local_logo" src="./assets/logo.png" fit="cover" '
+        'x="1" y="2" w="100" h="100" /></Slide>'
+    )[0]
+    assert image.fit == "cover"
     with pytest.raises(
         ValueError,
-        match=r"fit='cover'.*unsupported.*cropProperties are read-only",
+        match=r"Invalid fit 'tile'.*stretch.*contain.*cover",
     ):
         parse_slide_content(
-            '<Slide><Image id="local_logo" src="./assets/logo.png" fit="cover" '
+            '<Slide><Image id="local_logo" src="./assets/logo.png" fit="tile" '
             'x="1" y="2" w="100" h="100" /></Slide>'
         )
 

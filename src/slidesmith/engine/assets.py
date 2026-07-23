@@ -4,15 +4,17 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import secrets
 import urllib.parse
 from dataclasses import dataclass
+from fractions import Fraction
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Any, Literal, Protocol
 
 import httpx
-from PIL import Image, UnidentifiedImageError
+from PIL import Image, ImageOps, UnidentifiedImageError
 
 from slidesmith.engine.image_fetch import validate_public_image_url
 
@@ -20,6 +22,11 @@ ASSET_CACHE_FILE = ".assets.json"
 DRIVE_API_BASE = "https://www.googleapis.com/drive/v3"
 DRIVE_UPLOAD_BASE = "https://www.googleapis.com/upload/drive/v3"
 SUPPORTED_IMAGE_MIME_TYPES = {"image/gif", "image/jpeg", "image/png"}
+# Bump this whenever cover rasterization changes; old derived rasters must not
+# survive an algorithm fix (the current version includes EXIF orientation).
+COVER_DERIVATION_VERSION = 2
+COVER_MAX_DIMENSION_PX = 4096
+COVER_MAX_PIXELS = COVER_MAX_DIMENSION_PX * COVER_MAX_DIMENSION_PX
 
 
 @dataclass(frozen=True)
@@ -130,10 +137,129 @@ class AssetCache:
     async def resolve(self, source: str, uploader: AssetUploader) -> str:
         """Reuse or upload a local image, then return its public URL."""
         local_path = resolve_local_image_path(self.workspace, source)
-        _, _, mime_type = inspect_local_image(local_path, source=source)
+        data = self._read()
+        return await self._resolve_path(
+            local_path,
+            uploader,
+            data,
+            source=source,
+        )
+
+    async def resolve_cover(
+        self,
+        source: str,
+        target_aspect: float,
+        uploader: AssetUploader,
+        *,
+        element_id: str | None = None,
+    ) -> str:
+        """Center-crop a local source once, then resolve it like any asset.
+
+        The derived filename is keyed by the source content hash, the exact
+        target aspect-ratio float representation, and the derivation version.
+        The resulting PNG is therefore stable across retries while ignoring
+        rasters produced before an algorithm fix. The final raster uses the
+        largest bounded integer rational target-aspect canvas that fits inside
+        the crop when possible, so Google cannot refit a rounded crop with a
+        different pixel aspect.
+        """
+        if not math.isfinite(target_aspect) or target_aspect <= 0:
+            raise ValueError("Cover target aspect ratio must be finite and positive")
+        local_path = resolve_local_image_path(self.workspace, source)
+        label = f"Image element '{element_id}'" if element_id else f"Local image {source!r}"
+        try:
+            with Image.open(local_path) as opened:
+                if getattr(opened, "is_animated", False) or getattr(
+                    opened, "n_frames", 1
+                ) > 1:
+                    raise ValueError(
+                        f"{label} uses an animated or multi-frame image; cover fit "
+                        "requires a static source"
+                    )
+                mime_type = opened.get_format_mimetype()
+                if mime_type not in SUPPORTED_IMAGE_MIME_TYPES:
+                    raise ValueError(
+                        f"Local image {source!r} has unsupported format {mime_type!r}; "
+                        "Google Slides accepts PNG, JPEG, or GIF"
+                    )
+                image = ImageOps.exif_transpose(opened).copy()
+        except ValueError:
+            raise
+        except (OSError, UnidentifiedImageError) as exc:
+            raise ValueError(
+                f"Could not derive cover asset from local image {source!r}: {exc}"
+            ) from exc
+
+        width, height = image.size
+        if width <= 0 or height <= 0:
+            raise ValueError(f"Local image {source!r} has invalid pixel dimensions")
+        source_hash = hashlib.sha256(local_path.read_bytes()).hexdigest()
+        aspect_key = target_aspect.hex()
+        derived_key = hashlib.sha256(
+            f"{source_hash}\0{aspect_key}\0{COVER_DERIVATION_VERSION}".encode("ascii")
+        ).hexdigest()
+        derived_path = self.workspace / ".slidesmith-cover" / f"{derived_key}.png"
+        data = self._read()
+
+        derived_is_valid = False
+        if derived_path.is_file():
+            try:
+                with Image.open(derived_path) as derived:
+                    derived_is_valid = _aspect_matches(derived.size, target_aspect)
+            except (OSError, UnidentifiedImageError):
+                derived_is_valid = False
+
+        if not derived_is_valid:
+            derived_path.parent.mkdir(parents=True, exist_ok=True)
+            source_aspect = width / height
+            if source_aspect > target_aspect:
+                crop_width = max(1, min(width, round(height * target_aspect)))
+                left = (width - crop_width) // 2
+                box = (left, 0, left + crop_width, height)
+            else:
+                crop_height = max(1, min(height, round(width / target_aspect)))
+                top = (height - crop_height) // 2
+                box = (0, top, width, top + crop_height)
+            cropped = image.crop(box)
+            try:
+                target_size = _exact_aspect_size(cropped.size, target_aspect)
+            except ValueError as exc:
+                raise ValueError(f"{label} has no safe cover raster: {exc}") from exc
+            if cropped.size != target_size:
+                cropped = cropped.resize(target_size, Image.Resampling.LANCZOS)
+            if cropped.mode in {"CMYK", "YCbCr"}:
+                cropped = cropped.convert("RGB")
+            try:
+                cropped.save(derived_path, format="PNG", optimize=False)
+            except OSError as exc:
+                raise ValueError(
+                    f"Could not derive cover asset from local image {source!r}: {exc}"
+                ) from exc
+
+        return await self._resolve_path(
+            derived_path,
+            uploader,
+            data,
+            extra={
+                "kind": "cover",
+                "sourceSha256": source_hash,
+                "targetAspect": aspect_key,
+            },
+        )
+
+    async def _resolve_path(
+        self,
+        local_path: Path,
+        uploader: AssetUploader,
+        data: dict[str, Any],
+        *,
+        source: str | None = None,
+        extra: dict[str, str] | None = None,
+    ) -> str:
+        label = source or self._path_key(local_path)
+        _, _, mime_type = inspect_local_image(local_path, source=label)
         content_hash = hashlib.sha256(local_path.read_bytes()).hexdigest()
         path_key = self._path_key(local_path)
-        data = self._read()
 
         for entry in data["assets"]:
             if entry.get("path") == path_key and entry.get("sha256") == content_hash:
@@ -151,6 +277,7 @@ class AssetCache:
                 "sha256": content_hash,
                 "fileId": uploaded.file_id,
                 "url": uploaded.url,
+                **(extra or {}),
             }
         )
         self._write(data)
@@ -200,6 +327,76 @@ class AssetCache:
         finally:
             if temporary_path is not None and temporary_path.exists():
                 temporary_path.unlink()
+
+
+def _aspect_matches(size: tuple[int, int], target_aspect: float) -> bool:
+    width, height = size
+    if width <= 0 or height <= 0:
+        return False
+    try:
+        ratio = _bounded_aspect_ratio(target_aspect)
+    except ValueError:
+        return False
+    return width * ratio.denominator == height * ratio.numerator
+
+
+def _bounded_aspect_ratio(target_aspect: float) -> Fraction:
+    """Return one bounded rational used by both sizing and cache validation."""
+    exact = Fraction(str(target_aspect))
+    # limit_denominator bounds only the denominator; a wide aspect can land a
+    # numerator above the cap even though a coarser in-bounds rational exists
+    # (golden ratio -> 4181/2584 rejected while 2584/1597 fits). Walk the
+    # denominator limit down until both terms and the pixel product fit.
+    limit = COVER_MAX_DIMENSION_PX
+    while limit >= 1:
+        ratio = exact.limit_denominator(limit)
+        if (
+            ratio.numerator > 0
+            and ratio.denominator > 0
+            and ratio.numerator <= COVER_MAX_DIMENSION_PX
+            and ratio.denominator <= COVER_MAX_DIMENSION_PX
+            and ratio.numerator * ratio.denominator <= COVER_MAX_PIXELS
+        ):
+            return ratio
+        if ratio.numerator > COVER_MAX_DIMENSION_PX:
+            # Shrink proportionally so the numerator also lands in bounds.
+            limit = min(
+                limit - 1,
+                (ratio.denominator * COVER_MAX_DIMENSION_PX) // ratio.numerator,
+            )
+        else:
+            limit -= 1
+    raise ValueError(
+        f"target aspect {target_aspect:g} has no safe rational raster within "
+        f"{COVER_MAX_DIMENSION_PX}px per dimension and {COVER_MAX_PIXELS} pixels"
+    )
+
+
+def _exact_aspect_size(
+    cropped_size: tuple[int, int], target_aspect: float
+) -> tuple[int, int]:
+    """Choose the largest bounded deterministic integer canvas at one ratio."""
+    cropped_width, cropped_height = cropped_size
+    if cropped_width <= 0 or cropped_height <= 0:
+        raise ValueError("cover crop has invalid pixel dimensions")
+    ratio = _bounded_aspect_ratio(target_aspect)
+    max_units = min(
+        COVER_MAX_DIMENSION_PX // ratio.numerator,
+        COVER_MAX_DIMENSION_PX // ratio.denominator,
+        math.isqrt(COVER_MAX_PIXELS // (ratio.numerator * ratio.denominator)),
+    )
+    crop_units = min(
+        cropped_width // ratio.numerator,
+        cropped_height // ratio.denominator,
+    )
+    units = max(1, min(crop_units, max_units))
+    width = ratio.numerator * units
+    height = ratio.denominator * units
+    if width > COVER_MAX_DIMENSION_PX or height > COVER_MAX_DIMENSION_PX:
+        raise ValueError("cover raster exceeds the maximum dimension")
+    if width * height > COVER_MAX_PIXELS:
+        raise ValueError("cover raster exceeds the maximum pixel count")
+    return width, height
 
 
 class GoogleDriveAssetUploader:

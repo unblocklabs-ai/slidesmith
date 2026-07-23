@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+import math
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +13,7 @@ from slidesmith.engine.content_parser import (
     ParsedRun,
     flatten_elements,
 )
+from slidesmith.engine.assets import image_source_kind
 from slidesmith.engine.diff_model import PushWarning, WarningSeverity
 from slidesmith.engine.image_fetch import redact_image_url
 from slidesmith.engine.json_utils import read_json
@@ -27,6 +29,10 @@ from slidesmith.engine.shape_types import TAG_TO_TYPE, VALID_GOOGLE_TYPES
 
 
 PERSISTENCE_GEOMETRY_TOLERANCE_PT = 0.02
+# Crop offsets are normalized fractions.  A 2.5e-4 bound permits the small
+# float jitter observed in Slides responses, while catching a meaningful shift
+# between opposing offsets instead of independently forgiving both sides.
+PERSISTENCE_CROP_TOLERANCE = 2.5e-4
 # Google cannot faithfully persist a line's sub-tenth-point cross-axis.
 LINE_NEAR_DEGENERATE_AXIS_THRESHOLD_PT = 0.1
 GOOGLE_DEFAULT_TEXT_LAYOUT_CLASSES = frozenset(
@@ -86,6 +92,113 @@ def _remote_image_source_urls(folder_path: Path) -> dict[tuple[str, str], str]:
         if isinstance(slide, dict):
             walk(slide.get("pageElements", []), f"{index:02d}")
     return sources
+
+
+def _remote_image_crop_properties(
+    folder_path: Path,
+) -> dict[tuple[str, str], dict[str, float]]:
+    """Read refreshed read-only crop offsets for images that expose them."""
+    raw = read_json(folder_path / ".pristine" / "base.json", missing_ok=True)
+    id_mapping = read_json(folder_path / "id_mapping.json", missing_ok=True)
+    clean_ids = {google_id: clean_id for clean_id, google_id in id_mapping.items()}
+    crops: dict[tuple[str, str], dict[str, float]] = {}
+    api_fields = {
+        "left": "leftOffset",
+        "right": "rightOffset",
+        "top": "topOffset",
+        "bottom": "bottomOffset",
+    }
+
+    def walk(elements: list[Any], slide_index: str) -> None:
+        for element in elements:
+            google_id = element.get("objectId")
+            clean_id = clean_ids.get(google_id)
+            image = element.get("image")
+            image_properties = image.get("imageProperties") if isinstance(image, dict) else None
+            crop = (
+                image_properties.get("cropProperties")
+                if isinstance(image_properties, dict)
+                else None
+            )
+            if clean_id and isinstance(crop, dict):
+                offsets: dict[str, float] = {}
+                for name, api_name in api_fields.items():
+                    value = crop.get(api_name, 0)
+                    offsets[name] = (
+                        float(value)
+                        if isinstance(value, (int, float)) and math.isfinite(value)
+                        else math.nan
+                    )
+                crops[(slide_index, clean_id)] = offsets
+            group = element.get("elementGroup")
+            if isinstance(group, dict):
+                walk(group.get("children", []), slide_index)
+
+    for index, slide in enumerate(raw.get("slides", []), 1):
+        if isinstance(slide, dict):
+            walk(slide.get("pageElements", []), f"{index:02d}")
+    return crops
+
+
+def _expected_center_crop(change: Change) -> dict[str, float] | None:
+    """Calculate CENTER_CROP offsets when the replacement pixels are known."""
+    if not change.new_position:
+        return None
+    if not change.image_pixel_width or not change.image_pixel_height:
+        return None
+    source_aspect = change.image_pixel_width / change.image_pixel_height
+    frame_aspect = change.new_position["w"] / change.new_position["h"]
+    if not math.isfinite(source_aspect) or source_aspect <= 0:
+        return None
+    if source_aspect > frame_aspect:
+        horizontal = (1 - frame_aspect / source_aspect) / 2
+        return {"left": horizontal, "right": horizontal, "top": 0, "bottom": 0}
+    if source_aspect < frame_aspect:
+        vertical = (1 - source_aspect / frame_aspect) / 2
+        return {"left": 0, "right": 0, "top": vertical, "bottom": vertical}
+    return {"left": 0, "right": 0, "top": 0, "bottom": 0}
+
+
+def _crop_matches_centered(
+    actual: dict[str, float], expected: dict[str, float] | None
+) -> bool:
+    fields = ("left", "right", "top", "bottom")
+    if not all(math.isfinite(float(actual.get(field, math.nan))) for field in fields):
+        return False
+    left = float(actual["left"])
+    right = float(actual["right"])
+    top = float(actual["top"])
+    bottom = float(actual["bottom"])
+    # The tolerance is inclusive; pad by one float epsilon so a nominal
+    # exactly-at-bound offset (0.12525 - 0.125 = 2.5000000000000002e-4) is
+    # not rejected by binary rounding noise.
+    bound = PERSISTENCE_CROP_TOLERANCE + 1e-12
+    if abs(left - right) > bound or abs(top - bottom) > bound:
+        return False
+    if expected is not None:
+        return (
+            abs((left + right) / 2 - (expected["left"] + expected["right"]) / 2)
+            <= bound
+            and abs((top + bottom) / 2 - (expected["top"] + expected["bottom"]) / 2)
+            <= bound
+        )
+    return True
+
+
+def _cover_crop_is_exempt_for_local_create(
+    change: Change, *, newly_created: bool
+) -> bool:
+    """Local cover creates already use an aspect-matched derived raster."""
+    return (
+        newly_created
+        and change.fit == "cover"
+        and change.src is not None
+        and image_source_kind(change.src) == "local"
+    )
+
+
+def _format_crop(crop: dict[str, float]) -> str:
+    return ", ".join(f"{field}={crop[field]:g}" for field in ("left", "right", "top", "bottom"))
 
 
 def _format_geometry(position: dict[str, float] | None) -> str:
@@ -351,6 +464,9 @@ def _normalized_persistence_detail(
     intended_elements: dict[tuple[str, str], ParsedElement],
     remote_image_sources: dict[tuple[str, str], str] | None = None,
     expected_image_sources: dict[tuple[str, str], str] | None = None,
+    remote_image_crop_properties: dict[tuple[str, str], dict[str, float]] | None = None,
+    *,
+    newly_created: bool = False,
 ) -> str | None:
     """Describe sent and refreshed values when both are cheaply available."""
     if change.change_type == ChangeType.MOVE:
@@ -410,6 +526,27 @@ def _normalized_persistence_detail(
                     f"(sent {sent_geometry!r}, remote now {remote_geometry!r})"
                 )
         key = (change.slide_index or "", change.target_id)
+        if (
+            change.fit == "cover"
+            and remote_image_crop_properties is not None
+            and not _cover_crop_is_exempt_for_local_create(
+                change, newly_created=newly_created
+            )
+        ):
+            actual_crop = remote_image_crop_properties.get(key)
+            if actual_crop is None:
+                return (
+                    f"image crop on {change.target_id} did not persist "
+                    "(expected centered crop, remote now missing cropProperties)"
+                )
+            if not _crop_matches_centered(actual_crop, _expected_center_crop(change)):
+                expected_crop = _expected_center_crop(change)
+                return (
+                    f"image crop on {change.target_id} did not persist "
+                    f"(expected centered crop "
+                    f"{_format_crop(expected_crop) if expected_crop else 'with equal opposing offsets'}, "
+                    f"remote now {_format_crop(actual_crop)})"
+                )
         remote_source = (remote_image_sources or {}).get(key)
         expected_source = (expected_image_sources or {}).get(key, change.src)
         if remote_source is not None and expected_source is not None:
@@ -430,6 +567,7 @@ def _is_normalized_persistence_change(
     newly_created: bool,
     remote_image_sources: dict[tuple[str, str], str] | None = None,
     expected_image_sources: dict[tuple[str, str], str] | None = None,
+    remote_image_crop_properties: dict[tuple[str, str], dict[str, float]] | None = None,
 ) -> bool:
     """Return whether a refresh difference is known Google normalization."""
     return (
@@ -440,6 +578,7 @@ def _is_normalized_persistence_change(
             newly_created=newly_created,
             remote_image_sources=remote_image_sources,
             expected_image_sources=expected_image_sources,
+            remote_image_crop_properties=remote_image_crop_properties,
         )
         in (None, WarningSeverity.NOTICE)
     )
@@ -456,6 +595,7 @@ def _persistence_warning_severity(
     span_cache: dict[int, list[EffectiveTextSpan] | None] | None = None,
     remote_image_sources: dict[tuple[str, str], str] | None = None,
     expected_image_sources: dict[tuple[str, str], str] | None = None,
+    remote_image_crop_properties: dict[tuple[str, str], dict[str, float]] | None = None,
 ) -> WarningSeverity | None:
     """Classify a refreshed divergence, suppressing harmless geometry/defaults."""
     removed_classes = (
@@ -496,11 +636,29 @@ def _persistence_warning_severity(
             remote_element is not None
             and intended_element is not None
             and remote_element.tag == "Image"
-            and remote_element.src is None
-            and remote_element.fit is None
+            and (
+                (remote_element.src is None and remote_element.fit is None)
+                or (
+                    change.fit == "cover"
+                    and remote_element.fit == "cover"
+                    and remote_element.src is not None
+                )
+            )
         ):
             return WarningSeverity.WARNING
         remote_source = (remote_image_sources or {}).get(key)
+        if (
+            change.fit == "cover"
+            and remote_image_crop_properties is not None
+            and not _cover_crop_is_exempt_for_local_create(
+                change, newly_created=newly_created
+            )
+        ):
+            actual_crop = remote_image_crop_properties.get(key)
+            if actual_crop is None or not _crop_matches_centered(
+                actual_crop, _expected_center_crop(change)
+            ):
+                return WarningSeverity.WARNING
         if remote_source is None:
             # Google may omit sourceUrl on refresh; retain the prior
             # unverifiable-success behavior rather than inventing a warning.
@@ -769,6 +927,7 @@ def append_persistence_warning(
     remote_elements = _index_parsed_elements(refreshed_slides)
     intended_elements = _index_parsed_elements(intended_slides)
     remote_image_sources = _remote_image_source_urls(folder_path)
+    remote_image_crop_properties = _remote_image_crop_properties(folder_path)
     span_cache: dict[int, list[EffectiveTextSpan] | None] = {}
     author_removed_by_key: dict[
         tuple[str, str, ChangeType], frozenset[str]
@@ -809,6 +968,7 @@ def append_persistence_warning(
                 span_cache=span_cache,
                 remote_image_sources=remote_image_sources,
                 expected_image_sources=expected_image_sources,
+                remote_image_crop_properties=remote_image_crop_properties,
             ),
         )
         for change in unpersisted
@@ -843,6 +1003,10 @@ def append_persistence_warning(
                 intended_elements,
                 remote_image_sources,
                 expected_image_sources,
+                remote_image_crop_properties,
+                newly_created=(
+                    (change.slide_index or "", change.target_id) in create_copy_targets
+                ),
             )
             or f"{change.target_id} ({change.change_type.value.replace('_', ' ')})"
             for change in changes

@@ -693,7 +693,7 @@ not call Google APIs or run a diff; inspect the result with
 ## Authoring images from URLs or local files
 
 Create an image with an HTTP or HTTPS `src`, an authored point-valued frame,
-and optional `fit="stretch|contain"`:
+and optional `fit="stretch|contain|cover"`:
 
 ```xml
 <Image id="hero_image" src="https://picsum.photos/1200/675"
@@ -728,6 +728,18 @@ Do not hand-edit this cache unless repairing a known-bad Drive file or URL.
 
 `stretch` is the default Google Slides API behavior: the image fills the
 authored box and may be distorted. `contain` preserves the source aspect ratio.
+`cover` preserves the source aspect ratio while center-cropping to fill the
+authored frame. New local cover sources are deterministically center-cropped by
+Pillow into an AssetCache-derived file keyed by source content hash, target
+aspect ratio, and derivation version, then resampled to the largest bounded
+exact rational target-aspect canvas that fits the crop when possible before
+upload. The raster is capped at 4096px per dimension and 16,777,216 total
+pixels. EXIF orientation is applied before cover math, and animated or
+multi-frame local sources are rejected with a static-source error. New remote
+cover sources use an isolated create-at-frame followed by
+`replaceImage` with `imageReplaceMethod="CENTER_CROP"` and an authored-frame
+geometry pin; this same-batch sequence, including its pin, is a hypothesis and
+needs one live validation push before release.
 During offline `diff`, only a remote `contain` source downloads an image. At
 push time, remote `stretch` dimensions are also fetched when possible to improve
 intrinsic geometry. These fetches send no credentials, reject non-public
@@ -737,8 +749,9 @@ dimensions are read directly with Pillow and never pass through the HTTP fetcher
 Slidesmith shrinks either
 the authored width or height, keeping the resulting frame anchored at the
 authored top-left `x`, `y` position. Authored `x` and `y` must be finite; `w` and
-`h` must be finite and strictly positive for local and remote images under both
-`stretch` and `contain`. This post-contain frame is the single effective geometry used by
+`h` must be finite and strictly positive for local and remote images under
+`stretch`, `contain`, and `cover`. This effective frame is the single geometry
+used by
 request generation, diff/persistence comparison, and offline QA/preflight.
 
 For remote-URL images, offline `diff` may omit push-time geometry-pin requests
@@ -746,9 +759,17 @@ and exact intrinsic sizing because pixel dimensions are only fetched at push.
 Local-file images have their dimensions available offline, so their previews are
 exact.
 
-Google's `cropProperties` are **READ-ONLY via the API**, so `fit="cover"` is
-impossible. Slidesmith rejects `cover` instead of pretending it can create that
-result. Crop the source image before authoring when a cover treatment is needed.
+Google's `cropProperties` are **READ-ONLY via the API**. Pull intentionally
+keeps the current source-less representation for images, including images whose
+crop offsets look centered: adding `src`/`fit` to those generated elements would
+make ordinary edit-in-place and source replacement ambiguous because the pulled
+URL is a volatile render URL rather than authored source. Therefore pull does
+not infer `fit="cover"`; author it explicitly when replacing a source. A live
+validation push for new remote cover images is intentionally deferred to the
+maintainer. After a cover replacement, persistence verification reads refreshed
+crop offsets and checks them against the centered crop with a small float
+tolerance; contain/stretch images retain their existing source and geometry
+checks.
 
 For direct HTTP(S) sources, the image must be publicly fetchable, less than 50
 MB, and less than 25 megapixels. A URL following the
@@ -775,6 +796,7 @@ replace the pixels of a pulled image with explicit, previewable geometry:
 slidesmith replace-image <ID> hero_image ./assets/new-hero.png
 slidesmith replace-image <ID> hero_image https://example.com/new-hero.png
 slidesmith replace-image <ID> hero_image ./assets/new-hero.png --fit stretch
+slidesmith replace-image <ID> hero_image ./assets/new-hero.png --fit cover --dry-run
 slidesmith replace-image <ID> hero_image ./assets/new-hero.png --dry-run
 ```
 
@@ -783,11 +805,11 @@ fails if the target is not an image. The default `--fit contain` reads the new
 image dimensions, fits that aspect ratio inside the old bounds, and anchors the
 result at the old top-left `x`, `y`; one of `w` or `h` may therefore shrink.
 `--fit stretch` keeps the exact old `x`, `y`, `w`, and `h`, accepting image
-distortion. Both modes emit `replaceImage` with
-`imageReplaceMethod="CENTER_INSIDE"` followed by an explicit relative
-`updatePageElementTransform` that undoes Google's automatic centering and pins
-the selected geometry. `--dry-run` prints that geometry and both requests
-without uploading or writing.
+distortion. `--fit cover` keeps the exact old frame and emits
+`replaceImage` with `imageReplaceMethod="CENTER_CROP"` followed by a relative
+geometry pin. Contain and stretch continue to emit `CENTER_INSIDE` followed by
+the existing pin. `--dry-run` prints that geometry and both requests without
+uploading or writing.
 
 Remote dimensions use the same SSRF-guarded, redirect-validated, bounded fetcher
 as authored `fit="contain"`; local dimensions are read with Pillow before the
@@ -795,8 +817,9 @@ existing Drive upload and `.assets.json` reuse path. As with `createImage`,
 Slides fetches the URL once and stores its own copy. Some existing image effects
 may be removed by Google's replacement operation. Run it only on a clean
 workspace: the command refuses pending SML changes before its authoritative
-post-write refresh can overwrite them. Cover/crop remains impossible because
-Google exposes image crop properties as read-only through this API.
+post-write refresh can overwrite them. Google exposes image crop properties as
+read-only through this API; cover uses the native `CENTER_CROP` replacement
+method instead of writing crop properties.
 
 An `Image` inside `Stack` or `Grid` participates like any other child. Give it
 the required fixed `w`/`h` for that container axis, use a positive `flex` for

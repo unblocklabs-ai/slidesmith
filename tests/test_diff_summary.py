@@ -123,6 +123,45 @@ def test_diff_summary_redacts_remote_query_and_preserves_plain_and_local_sources
     assert "src='./assets/logo.png'" in summary
 
 
+def test_diff_summary_names_cover_fit_for_new_image() -> None:
+    result = DiffResult(
+        changes=[
+            Change(
+                ChangeType.CREATE,
+                "hero",
+                slide_index="01",
+                tag="Image",
+                fit="cover",
+                new_position={"x": 1, "y": 2, "w": 3, "h": 4},
+            )
+        ]
+    )
+
+    assert "CREATE hero (Image fit=cover 3x4 @1,2)" in format_diff_summary(
+        result, 2
+    )
+
+
+@pytest.mark.parametrize("fit", ["contain", "stretch"])
+def test_diff_summary_keeps_non_cover_image_create_rendering(fit: str) -> None:
+    result = DiffResult(
+        changes=[
+            Change(
+                ChangeType.CREATE,
+                "hero",
+                slide_index="01",
+                tag="Image",
+                fit=fit,
+                new_position={"x": 1, "y": 2, "w": 3, "h": 4},
+            )
+        ]
+    )
+
+    assert format_diff_summary(result, 1) == (
+        "Slide 01\n  CREATE hero (Image 3x4 @1,2)\n\n1 requests total"
+    )
+
+
 def test_diff_summary_cli_uses_compact_stdout_without_legend(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,

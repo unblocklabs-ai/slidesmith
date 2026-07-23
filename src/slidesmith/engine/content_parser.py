@@ -304,16 +304,10 @@ def _parse_image_authoring(
         ) from exc
 
     resolved_fit = fit or "stretch"
-    if resolved_fit not in {"stretch", "contain"}:
-        if resolved_fit == "cover":
-            raise ValueError(
-                f"Invalid fit 'cover' on Image element '{element_id}': fit='cover' "
-                "is unsupported because Google Slides cropProperties are read-only; "
-                "expected 'stretch' or 'contain'"
-            )
+    if resolved_fit not in {"stretch", "contain", "cover"}:
         raise ValueError(
             f"Invalid fit {resolved_fit!r} on Image element '{element_id}': "
-            "expected 'stretch' or 'contain'"
+            "expected 'stretch', 'contain', or 'cover'"
         )
     return src, resolved_fit
 

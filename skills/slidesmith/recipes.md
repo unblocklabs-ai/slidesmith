@@ -75,6 +75,7 @@ slidesmith diff "$D" --summary && slidesmith push "$D"
 <Image id="hero"  src="https://picsum.photos/seed/a/1600/900" x="56"  y="150" w="480" h="270" fit="contain"/>
 <Image id="tall"  src="https://picsum.photos/seed/b/800/1200" x="560" y="150" w="140" h="210" fit="contain"/>
 <Image id="sq"    src="./assets/logo.png"                     x="720" y="150" w="150" h="150" fit="contain"/>
+<!-- Use fit="cover" when the frame must be filled with a center crop. -->
 ```
 Relative local paths such as `./assets/...` resolve from the deck root, not the
 slide folder.

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
+import re
 from typing import Any
 
 from slidesmith.engine.assets import (
@@ -35,6 +36,7 @@ from slidesmith.engine.push_progress import (
 from slidesmith.engine.transport import APIError, Transport
 from slidesmith.engine import push_executor as _push_executor
 from slidesmith.engine.image_replace import (
+    CoverFitPushError,
     _find_element_with_parent_transform,
     _replacement_geometry_requests,
     _replacement_image_dimensions,
@@ -118,6 +120,51 @@ async def finalize_push(
         clear_progress=clear_progress,
         refresh=refresh_after_success,
     )
+
+
+def _cover_element_ids(
+    diff_result: DiffResult,
+    id_mapping: dict[str, str],
+    requests: list[dict[str, Any]],
+    failed_request_index: int | None,
+) -> list[str]:
+    """Map one failed CENTER_CROP request or its paired pin to a clean ID."""
+    if failed_request_index is None or not 0 <= failed_request_index < len(requests):
+        return []
+
+    cover_ids_by_object = {
+        id_mapping.get(change.target_id)
+        or diff_result.generated_image_ids.get(change.target_id): change.target_id
+        for change in diff_result.changes
+        if change.fit == "cover"
+    }
+
+    request = requests[failed_request_index]
+    image_request = request.get("replaceImage")
+    if isinstance(image_request, dict) and image_request.get(
+        "imageReplaceMethod"
+    ) == "CENTER_CROP":
+        element_id = cover_ids_by_object.get(image_request.get("imageObjectId"))
+        return [element_id] if element_id else []
+
+    # The geometry pin immediately follows its CENTER_CROP replacement. Keep
+    # unrelated style/text failures on their original API error path.
+    if failed_request_index == 0:
+        return []
+    previous = requests[failed_request_index - 1].get("replaceImage")
+    if not isinstance(previous, dict) or previous.get("imageReplaceMethod") != "CENTER_CROP":
+        return []
+    element_id = cover_ids_by_object.get(previous.get("imageObjectId"))
+    return [element_id] if element_id else []
+
+
+def _failed_request_index(error: APIError) -> int | None:
+    """Extract Google's failed batch request index from an API error message."""
+    explicit = getattr(error, "failed_request_index", None)
+    if isinstance(explicit, int) and explicit >= 0:
+        return explicit
+    match = re.search(r"\brequests\[(\d+)\]", str(error))
+    return int(match.group(1)) if match else None
 
 
 class SlidesClient:
@@ -335,7 +382,7 @@ class SlidesClient:
         # Resolve only the outgoing request URLs at push time.
         id_mapping = read_json(folder_path / ID_MAPPING_FILE, missing_ok=True)
         resolved_image_sources = await self._resolve_local_asset_requests(
-            folder_path, requests
+            folder_path, requests, diff_result
         )
         expected_image_sources = self._expected_image_sources(
             diff_result,
@@ -385,15 +432,23 @@ class SlidesClient:
             _missing_base_warning() if base_raw is None and not force else None
         )
         await transport.refresh_if_expiring()
-        response = await execute_guarded_batch(
-            transport=transport,
-            presentation_id=presentation_id,
-            requests=requests,
-            base_raw=base_raw,
-            id_mapping=id_mapping,
-            guard_conflicts=not force,
-            lock_revision=not force,
-        )
+        try:
+            response = await execute_guarded_batch(
+                transport=transport,
+                presentation_id=presentation_id,
+                requests=requests,
+                base_raw=base_raw,
+                id_mapping=id_mapping,
+                guard_conflicts=not force,
+                lock_revision=not force,
+            )
+        except APIError as exc:
+            cover_ids = _cover_element_ids(
+                diff_result, id_mapping, requests, _failed_request_index(exc)
+            )
+            if cover_ids:
+                raise CoverFitPushError(cover_ids, exc) from exc
+            raise
         return await finalize_push(
             transport=transport,
             folder_path=folder_path,
@@ -427,8 +482,10 @@ class SlidesClient:
     ) -> dict[str, Any]:
         """Replace an image and explicitly pin its requested page geometry."""
         folder_path = Path(folder_path)
-        if fit not in {"contain", "stretch"}:
-            raise ValueError("replace-image --fit must be 'contain' or 'stretch'")
+        if fit not in {"contain", "stretch", "cover"}:
+            raise ValueError(
+                "replace-image --fit must be 'contain', 'stretch', or 'cover'"
+            )
         metadata = read_json(folder_path / PRESENTATION_FILE, missing_ok=False)
         presentation_id = metadata.get("presentationId")
         if not isinstance(presentation_id, str) or not presentation_id:
@@ -457,9 +514,12 @@ class SlidesClient:
         if "image" not in target:
             raise ValueError(f"Element {element_id!r} is not an image")
 
-        pixel_width, pixel_height = self._replacement_image_dimensions(
-            folder_path, new_source
-        )
+        if fit == "cover":
+            pixel_width = pixel_height = None
+        else:
+            pixel_width, pixel_height = self._replacement_image_dimensions(
+                folder_path, new_source
+            )
         old_geometry = get_bounds(target, parent_transform)
         geometry, pin_request = _replacement_geometry_requests(
             google_id,
@@ -472,7 +532,9 @@ class SlidesClient:
             "replaceImage": {
                 "imageObjectId": google_id,
                 "url": new_source,
-                "imageReplaceMethod": "CENTER_INSIDE",
+                "imageReplaceMethod": (
+                    "CENTER_CROP" if fit == "cover" else "CENTER_INSIDE"
+                ),
             }
         }
         requests = [replace_request, pin_request]
@@ -505,6 +567,8 @@ class SlidesClient:
                     "replace-image aborted: the deck changed between validation "
                     "and the write; re-pull and retry"
                 ) from exc
+            if fit == "cover":
+                raise CoverFitPushError([element_id], exc) from exc
             raise
 
         await refresh_after_success(transport, folder_path, presentation_id, response)
@@ -571,8 +635,22 @@ class SlidesClient:
         self,
         folder_path: Path,
         requests: list[dict[str, Any]],
+        diff_result: DiffResult,
     ) -> dict[str, str]:
         resolved_image_sources: dict[str, str] = {}
+        cover_changes = {
+            change.target_id: change
+            for change in diff_result.changes
+            if change.change_type == ChangeType.CREATE
+            and change.fit == "cover"
+            and change.src is not None
+            and image_source_kind(change.src) == "local"
+        }
+        local_cover_creates = {
+            object_id: cover_changes[target_id]
+            for target_id, object_id in diff_result.generated_image_ids.items()
+            if target_id in cover_changes
+        }
         for request in requests:
             image_request = request.get("createImage") or request.get("replaceImage")
             if not isinstance(image_request, dict):
@@ -581,9 +659,26 @@ class SlidesClient:
             if not isinstance(source, str):
                 continue
             if image_source_kind(source) == "local":
-                image_request["url"] = await self._resolve_asset_source(
-                    folder_path, source
-                )
+                cover_change = local_cover_creates.get(image_request.get("objectId"))
+                if cover_change is not None and cover_change.new_position is not None:
+                    try:
+                        image_request["url"] = await self._resolve_asset_source(
+                            folder_path,
+                            source,
+                            cover_aspect=(
+                                cover_change.new_position["w"]
+                                / cover_change.new_position["h"]
+                            ),
+                        )
+                    except ValueError as exc:
+                        raise ValueError(
+                            f"Image element '{cover_change.target_id}' cover fit "
+                            f"could not derive a static asset: {exc}"
+                        ) from exc
+                else:
+                    image_request["url"] = await self._resolve_asset_source(
+                        folder_path, source
+                    )
             object_id_key = (
                 "imageObjectId" if "replaceImage" in request else "objectId"
             )
@@ -638,11 +733,18 @@ class SlidesClient:
                 )
         return expected
 
-    async def _resolve_asset_source(self, folder_path: Path, source: str) -> str:
+    async def _resolve_asset_source(
+        self,
+        folder_path: Path,
+        source: str,
+        *,
+        cover_aspect: float | None = None,
+    ) -> str:
         return await resolve_asset_source(
             folder_path,
             source,
             self._asset_uploader,
+            cover_aspect=cover_aspect,
         )
 
     async def _push_per_slide(
@@ -722,9 +824,18 @@ class SlidesClient:
                 )
             except APIError as exc:
                 write_progress_ledger(folder_path, presentation_id, succeeded)
+                cover_ids = _cover_element_ids(
+                    diff_result,
+                    id_mapping,
+                    batch.requests,
+                    _failed_request_index(exc),
+                )
+                cause: Exception = (
+                    CoverFitPushError(cover_ids, exc) if cover_ids else exc
+                )
                 raise PerSlidePushError(
-                    batch.slide_index, total_slides, exc
-                ) from exc
+                    batch.slide_index, total_slides, cause
+                ) from cause
             except ConflictError as exc:
                 write_progress_ledger(folder_path, presentation_id, succeeded)
                 raise PerSlideConflictError(

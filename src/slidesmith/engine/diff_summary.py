@@ -64,6 +64,8 @@ def _format_summary_change(change: Change) -> str:
     if change.change_type == ChangeType.CREATE:
         tag = change.tag or "Element"
         details = f" ({tag}{_format_frame(change.new_position)})"
+        if tag == "Image" and change.fit == "cover":
+            details = f" ({tag} fit=cover{_format_frame(change.new_position)})"
         additions: list[str] = []
         if change.new_styles is not None:
             if change.new_styles.fill is not None:

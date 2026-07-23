@@ -154,13 +154,20 @@ prints the body + slots. Slots support `{{name|default}}`.
 local paths resolve from the deck/pull root (the `<ID>/` folder), e.g.
 `<ID>/assets/...`, not from the `slides/NN/` directory containing the SML file.
 `fit`:
-`contain` (aspect-correct, top-left anchored — recommended) or `stretch` (exact
-box, may distort). For an existing image, set a new `src` (optionally with
+`contain` (aspect-correct, top-left anchored — recommended), `stretch` (exact
+box, may distort), or `cover` (aspect-preserving center crop that fills the
+authored frame). For an existing image, set a new `src` (optionally with
 `fit`) in SML and use the normal `diff`/`push` loop; this emits
 `IMAGE_UPDATE`/`replaceImage` and a geometry pin. A `fit` change requires a
 `src`. For a clean-diff one-shot swap, use `slidesmith replace-image
-<id> <element-id> <new-src> --dry-run`. **`fit="cover"`/cropping is impossible**
-— Google's crop is API read-only; design galleries contain-first.
+<id> <element-id> <new-src> --fit cover --dry-run`. New local cover images are
+center-cropped into a deterministic cached asset before the normal Drive upload;
+new remote cover images use a create-at-frame, `CENTER_CROP` replace, and
+authored-frame geometry pin strategy. That same-batch sequence is still a
+hypothesis and requires one live validation push before release. Pull keeps
+images source-less as before and does
+not infer `cover` from crop properties because Google's volatile render URL is
+not an authored source; write `src` and `fit="cover"` explicitly when replacing.
 
 ### Large decks / safe pushes
 ```bash

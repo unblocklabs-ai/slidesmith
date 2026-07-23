@@ -258,7 +258,9 @@ def _emit_image_update_requests(
                 "replaceImage": {
                     "imageObjectId": image_google_id,
                     "url": change.src,
-                    "imageReplaceMethod": "CENTER_INSIDE",
+                    "imageReplaceMethod": (
+                        "CENTER_CROP" if change.fit == "cover" else "CENTER_INSIDE"
+                    ),
                 }
             }
         )
@@ -271,7 +273,22 @@ def _emit_image_update_requests(
             old_position["w"],
             old_position["h"],
         )
-        if change.image_pixel_width is not None and change.image_pixel_height is not None:
+        if change.fit == "cover":
+            _, pin_request = _replacement_geometry_requests(
+                image_google_id,
+                old_box,
+                pixel_width=None,
+                pixel_height=None,
+                fit="cover",
+                target=BoundingBox(
+                    change.new_position["x"],
+                    change.new_position["y"],
+                    change.new_position["w"],
+                    change.new_position["h"],
+                ),
+            )
+            requests.append(pin_request)
+        elif change.image_pixel_width is not None and change.image_pixel_height is not None:
             _, pin_request = _replacement_geometry_requests(
                 image_google_id,
                 old_box,
@@ -425,6 +442,7 @@ def _emit_create_requests(
     creates: list[Change],
     slide_ids: dict[str, str],
     reserved_object_ids: set[str],
+    generated_image_ids: dict[str, str],
 ) -> None:
     """Emit requests for newly authored elements."""
     for change in creates:
@@ -436,6 +454,8 @@ def _emit_create_requests(
                 change.target_id, reserved_object_ids
             )
             reserved_object_ids.add(new_object_id)
+            if change.tag == "Image" and change.fit == "cover":
+                generated_image_ids[change.target_id] = new_object_id
             requests.extend(
                 _create_element_requests(change, slide_google_id, new_object_id)
             )
@@ -451,6 +471,7 @@ def generate_batch_requests(
     """Generate ordered Google Slides batchUpdate requests from a diff."""
     requests: list[dict[str, Any]] = []
     diff_result.generated_slide_ids.clear()
+    diff_result.generated_image_ids.clear()
     slide_ids = dict(slide_id_mapping)
     reserved_object_ids = set(id_mapping.values()) | set(slide_ids.values())
     id_allocator = IdAllocator()
@@ -534,6 +555,7 @@ def generate_batch_requests(
         buckets[ChangeType.CREATE],
         slide_ids,
         reserved_object_ids,
+        diff_result.generated_image_ids,
     )
     return requests
 

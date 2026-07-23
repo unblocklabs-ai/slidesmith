@@ -177,3 +177,7 @@ class DiffResult:
     # partitioning must use this explicit association because authored slide
     # IDs no longer encode their local index.
     generated_slide_ids: dict[str, str] = field(default_factory=dict)
+
+    # Generated page-element IDs, needed by push-time local cover fallback
+    # resolution because the outgoing Google request cannot carry metadata.
+    generated_image_ids: dict[str, str] = field(default_factory=dict)

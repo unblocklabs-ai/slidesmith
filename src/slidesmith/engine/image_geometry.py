@@ -124,9 +124,14 @@ def get_image_source_dimensions(
 
     if not allow_remote_image_fetch:
         return None
-    if elem.fit == "stretch" and not fetch_remote_stretch:
+    if elem.fit in {"stretch", "cover"} and not fetch_remote_stretch:
         return None
-    if elem.fit == "stretch":
+    if elem.fit in {"stretch", "cover"}:
+        if elem.fit == "cover":
+            # CENTER_CROP is native to replaceImage, and does not need source
+            # pixels. Local cover assets are inspected above so the fallback
+            # can crop them at push time; remote cover sources stay untouched.
+            return None
         try:
             return _fetch_dimensions_at_call_time(elem.src)
         except Exception as exc:

@@ -291,11 +291,12 @@ def register_editing_commands(
     )
     sri.add_argument(
         "--fit",
-        choices=("stretch", "contain"),
+        choices=("stretch", "contain", "cover"),
         default="contain",
         help=(
             "Geometry after replacement: aspect-correct top-left contain "
-            "(default), or preserve the exact old box with stretch"
+            "(default), preserve the exact old box with stretch, or center-crop "
+            "to the exact old box with cover"
         ),
     )
     sri.add_argument(

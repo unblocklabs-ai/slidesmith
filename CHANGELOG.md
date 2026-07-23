@@ -14,10 +14,25 @@ agent-legible: name the command/flag and what an operator can now do.
 
 ## [Unreleased]
 
+### Added
+
+- Image `fit="cover"` authoring now center-crops to fill a frame: existing
+  replacements use `CENTER_CROP`, new local images use deterministic Pillow
+  assets through the normal cache/upload path, and new remote images use an
+  isolated create-then-`CENTER_CROP` strategy followed by an authored-frame
+  geometry pin. One live validation push for the new remote sequence, including
+  its pin, remains a maintainer TODO before release.
+
 ### Fixed
 
 - Fractional paragraph line-spacing values such as `leading-88.421` now
   round-trip through pull-generated SML and its parser.
+- Local cover derivation now applies EXIF orientation, rejects animated sources,
+  and resamples odd-dimension crops to an exact target-aspect raster. Derived
+  rasters use a versioned key and a bounded rational canvas (maximum 4096px per
+  dimension and 16,777,216 pixels). Cover persistence checks require refreshed
+  CENTER_CROP offsets, allowing at most 2.5e-4 opposing-offset asymmetry;
+  aspect-matched local derived creates remain exempt.
 - Post-push persistence verification now treats element, paragraph, and run
   text styles with identical effective per-span values as equivalent, including
   harmless run re-segmentation; authored drops and value changes still warn.

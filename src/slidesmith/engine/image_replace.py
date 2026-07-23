@@ -21,14 +21,36 @@ def _replacement_geometry_requests(
     object_id: str,
     old: BoundingBox,
     *,
-    pixel_width: int,
-    pixel_height: int,
+    pixel_width: int | None,
+    pixel_height: int | None,
     fit: str,
     target: BoundingBox | None = None,
 ) -> tuple[BoundingBox, dict[str, Any]]:
     """Compute a top-left target and undo Google's centered aspect fit."""
     if old.w <= 0 or old.h <= 0:
         raise ValueError(f"Image element {object_id!r} has non-positive geometry")
+    if fit == "cover":
+        if target is None:
+            target = old
+        scale_x = target.w / old.w
+        scale_y = target.h / old.h
+        request = {
+            "updatePageElementTransform": {
+                "objectId": object_id,
+                "transform": {
+                    "scaleX": scale_x,
+                    "scaleY": scale_y,
+                    "translateX": pt_to_emu(target.x - scale_x * old.x),
+                    "translateY": pt_to_emu(target.y - scale_y * old.y),
+                    "unit": "EMU",
+                },
+                "applyMode": "RELATIVE",
+            }
+        }
+        return target, request
+
+    if pixel_width is None or pixel_height is None:
+        raise ValueError("Replacement image dimensions are required for contain/stretch")
     if pixel_width <= 0 or pixel_height <= 0:
         raise ValueError("Replacement image has non-positive pixel dimensions")
 
@@ -71,6 +93,20 @@ def _replacement_geometry_requests(
         }
     }
     return target, request
+
+
+class CoverFitPushError(RuntimeError):
+    """A live API rejected a request in the unvalidated cover strategy."""
+
+    def __init__(self, element_ids: list[str], cause: Exception) -> None:
+        self.element_ids = tuple(element_ids)
+        self.cause = cause
+        ids = ", ".join(element_ids)
+        super().__init__(
+            "cover fit replaceImage was rejected for element "
+            f"{ids}: {cause}. The cover batch was not applied; this remote "
+            "create-then-CENTER_CROP strategy requires live API validation."
+        )
 
 
 def _find_element_with_parent_transform(
@@ -124,6 +160,8 @@ async def resolve_asset_source(
     folder_path: Path,
     source: str,
     asset_uploader: AssetUploader | None,
+    *,
+    cover_aspect: float | None = None,
 ) -> str:
     if image_source_kind(source) == "remote":
         return source
@@ -131,12 +169,20 @@ async def resolve_asset_source(
         raise RuntimeError(
             f"Local image {source!r} requires a Drive asset uploader at push time"
         )
-    return await AssetCache(folder_path).resolve(source, asset_uploader)
+    cache = AssetCache(folder_path)
+    if cover_aspect is not None:
+        return await cache.resolve_cover(
+            source,
+            cover_aspect,
+            asset_uploader,
+        )
+    return await cache.resolve(source, asset_uploader)
 
 
 __all__ = [
     "_find_element_with_parent_transform",
     "_replacement_geometry_requests",
     "_replacement_image_dimensions",
+    "CoverFitPushError",
     "resolve_asset_source",
 ]

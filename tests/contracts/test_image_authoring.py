@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import json
 import time
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -18,8 +19,14 @@ from slidesmith.engine.assets import resolve_local_image_path
 from slidesmith.engine.content_diff import Change, ChangeType, DiffResult, diff_presentation
 from slidesmith.engine.content_parser import parse_slide_content
 from slidesmith.engine.content_requests import generate_batch_requests
+from slidesmith.engine.client import _cover_element_ids, _failed_request_index
 from slidesmith.engine.diff_model import WarningSeverity
 from slidesmith.engine.element_factories import _create_image_request
+from slidesmith.engine.persistence import (
+    _persistence_warning_severity,
+    _remote_image_crop_properties,
+)
+from slidesmith.engine.transport import APIError
 from slidesmith.engine.units import pt_to_emu
 
 
@@ -217,10 +224,12 @@ def test_contain_fetch_rejects_pixel_bomb_before_pillow(
 
 
 def test_parser_accepts_image_src_and_fit_without_changing_pulled_images() -> None:
-    authored, defaulted, pulled = parse_slide_content(
+    authored, covered, defaulted, pulled = parse_slide_content(
         """<Slide>
           <Image id="contained" src="https://example.com/hero.png"
                  fit="contain" x="1" y="2" w="3" h="4"/>
+          <Image id="covered" src="https://example.com/cover.png"
+                 fit="cover" x="1" y="2" w="3" h="4"/>
           <Image id="stretched" src="http://example.com/photo.jpg"
                  x="5" y="6" w="7" h="8"/>
           <Image id="pulled" x="9" y="10" w="11" h="12"/>
@@ -236,6 +245,11 @@ def test_parser_accepts_image_src_and_fit_without_changing_pulled_images() -> No
         "stretch",
     )
     assert (pulled.src, pulled.fit) == (None, None)
+
+    assert (covered.src, covered.fit) == (
+        "https://example.com/cover.png",
+        "cover",
+    )
 
 
 @pytest.mark.parametrize(
@@ -335,11 +349,11 @@ def test_local_image_resolution_stays_inside_workspace(tmp_path: Path) -> None:
 def test_parser_rejects_unknown_image_fit_loudly() -> None:
     with pytest.raises(
         ValueError,
-        match="Invalid fit 'cover' on Image element 'hero'.*stretch.*contain",
+        match="Invalid fit 'tile' on Image element 'hero'.*stretch.*contain.*cover",
     ):
         parse_slide_content(
             '<Slide><Image id="hero" src="https://example.com/hero.png" '
-            'fit="cover" x="0" y="0" w="100" h="100"/></Slide>'
+            'fit="tile" x="0" y="0" w="100" h="100"/></Slide>'
         )
 
 
@@ -503,6 +517,291 @@ def test_existing_image_fit_only_edit_emits_replace_and_geometry_pin(
         "updatePageElementTransform",
     ]
     assert requests[1]["updatePageElementTransform"]["objectId"] == "google_hero"
+    assert requests[0]["replaceImage"]["imageReplaceMethod"] == "CENTER_INSIDE"
+
+
+def test_existing_image_cover_uses_center_crop_and_authored_frame_pin(
+    tmp_path: Path,
+) -> None:
+    _write_png(tmp_path, (900, 600))
+    pristine = parse_slide_content(
+        '<Slide><Image id="hero" x="40" y="30" w="220" h="124" /></Slide>'
+    )
+    edited = parse_slide_content(
+        '<Slide><Image id="hero" src="./source.png" fit="cover" '
+        'x="60" y="40" w="180" h="100" /></Slide>'
+    )
+
+    result = diff_presentation(
+        {"01": pristine},
+        {"01": edited},
+        {},
+        workspace_root=tmp_path,
+    )
+    requests = generate_batch_requests(
+        result,
+        {"hero": "google_hero"},
+        {"01": "slide_1"},
+    )
+
+    assert requests[0]["replaceImage"] == {
+        "imageObjectId": "google_hero",
+        "url": "./source.png",
+        "imageReplaceMethod": "CENTER_CROP",
+    }
+    pin = requests[1]["updatePageElementTransform"]
+    assert pin["objectId"] == "google_hero"
+    assert pin["transform"] == {
+        "scaleX": pytest.approx(180 / 220),
+        "scaleY": pytest.approx(100 / 124),
+        "translateX": pytest.approx(pt_to_emu(60 - (180 / 220) * 40)),
+        "translateY": pytest.approx(pt_to_emu(40 - (100 / 124) * 30)),
+        "unit": "EMU",
+    }
+
+
+def test_new_remote_cover_is_create_then_center_crop_with_same_object_id() -> None:
+    result = _diff(
+        '<Slide><Image id="hero" src="https://example.com/hero.png" '
+        'fit="cover" x="12" y="18" w="160" h="90"/></Slide>'
+    )
+
+    requests = generate_batch_requests(result, {}, {"01": "slide_1"})
+
+    assert [next(iter(request)) for request in requests] == [
+        "createImage",
+        "replaceImage",
+        "updatePageElementTransform",
+    ]
+    created_id = requests[0]["createImage"]["objectId"]
+    assert created_id == result.generated_image_ids["hero"]
+    assert requests[1]["replaceImage"] == {
+        "imageObjectId": created_id,
+        "url": "https://example.com/hero.png",
+        "imageReplaceMethod": "CENTER_CROP",
+    }
+    assert requests[2]["updatePageElementTransform"]["objectId"] == created_id
+
+
+def test_cover_persistence_allows_normalized_crop_but_not_dropped_swap() -> None:
+    intended = parse_slide_content(
+        '<Slide><Image id="hero" src="https://example.com/new.png" '
+        'fit="cover" x="10" y="20" w="200" h="100"/></Slide>'
+    )[0]
+    remote = parse_slide_content(
+        '<Slide><Image id="hero" src="https://example.com/new.png" '
+        'fit="cover" x="10" y="20" w="200" h="100"/></Slide>'
+    )[0]
+    change = Change(
+        ChangeType.IMAGE_UPDATE,
+        "hero",
+        slide_index="01",
+        src="https://example.com/new.png",
+        fit="cover",
+        old_position={"x": 10, "y": 20, "w": 200, "h": 100},
+        new_position={"x": 10, "y": 20, "w": 200, "h": 100},
+    )
+    key = ("01", "hero")
+
+    assert (
+        _persistence_warning_severity(
+            change,
+            {key: remote},
+            {key: intended},
+            newly_created=False,
+            remote_image_sources={key: "https://example.com/new.png"},
+            expected_image_sources={key: "https://example.com/new.png"},
+            remote_image_crop_properties={
+                key: {"left": 0, "right": 0, "top": 0, "bottom": 0}
+            },
+        )
+        is None
+    )
+    assert (
+        _persistence_warning_severity(
+            change,
+            {key: remote},
+            {key: intended},
+            newly_created=False,
+            remote_image_sources={key: "https://example.com/old.png"},
+            expected_image_sources={key: "https://example.com/new.png"},
+            remote_image_crop_properties={
+                key: {"left": 0, "right": 0, "top": 0, "bottom": 0}
+            },
+        )
+        is WarningSeverity.WARNING
+    )
+
+
+def test_cover_persistence_warns_on_missing_crop_unless_local_derived_create() -> None:
+    intended = parse_slide_content(
+        '<Slide><Image id="hero" src="https://example.com/new.png" '
+        'fit="cover" x="10" y="20" w="200" h="100"/></Slide>'
+    )[0]
+    remote = parse_slide_content(
+        '<Slide><Image id="hero" x="10" y="20" w="200" h="100"/></Slide>'
+    )[0]
+    key = ("01", "hero")
+    change = Change(
+        ChangeType.IMAGE_UPDATE,
+        "hero",
+        slide_index="01",
+        src="https://example.com/new.png",
+        fit="cover",
+        old_position={"x": 10, "y": 20, "w": 200, "h": 100},
+        new_position={"x": 10, "y": 20, "w": 200, "h": 100},
+    )
+
+    assert (
+        _persistence_warning_severity(
+            change,
+            {key: remote},
+            {key: intended},
+            newly_created=False,
+            remote_image_sources={key: "https://example.com/new.png"},
+            expected_image_sources={key: "https://example.com/new.png"},
+            remote_image_crop_properties={},
+        )
+        is WarningSeverity.WARNING
+    )
+
+    local_create = Change(
+        ChangeType.IMAGE_UPDATE,
+        "hero",
+        slide_index="01",
+        src="./assets/new.png",
+        fit="cover",
+        old_position={"x": 10, "y": 20, "w": 200, "h": 100},
+        new_position={"x": 10, "y": 20, "w": 200, "h": 100},
+    )
+    assert (
+        _persistence_warning_severity(
+            local_create,
+            {key: remote},
+            {key: intended},
+            newly_created=True,
+            remote_image_crop_properties={},
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    ("crop", "expected"),
+    [
+        ({"left": 0.1250002, "right": 0.1249998, "top": 0, "bottom": 0}, None),
+        # Nominal exactly-at-tolerance asymmetry (2.5e-4) must be accepted
+        # despite binary rounding noise pushing the float difference to
+        # 2.5000000000000002e-4 — the bound is inclusive.
+        ({"left": 0.12525, "right": 0.125, "top": 0, "bottom": 0}, None),
+        ({"left": 0.1259, "right": 0.1241, "top": 0, "bottom": 0}, WarningSeverity.WARNING),
+        ({"left": 0, "right": 0.25, "top": 0, "bottom": 0}, WarningSeverity.WARNING),
+    ],
+)
+def test_cover_persistence_checks_refreshed_crop_properties(
+    crop: dict[str, float], expected: WarningSeverity | None
+) -> None:
+    intended = parse_slide_content(
+        '<Slide><Image id="hero" src="https://example.com/new.png" '
+        'fit="cover" x="10" y="20" w="150" h="100"/></Slide>'
+    )[0]
+    remote = parse_slide_content(
+        '<Slide><Image id="hero" x="10" y="20" w="150" h="100"/></Slide>'
+    )[0]
+    change = Change(
+        ChangeType.IMAGE_UPDATE,
+        "hero",
+        slide_index="01",
+        src="https://example.com/new.png",
+        fit="cover",
+        old_position={"x": 10, "y": 20, "w": 150, "h": 100},
+        new_position={"x": 10, "y": 20, "w": 150, "h": 100},
+        image_pixel_width=400,
+        image_pixel_height=200,
+    )
+    key = ("01", "hero")
+
+    assert (
+        _persistence_warning_severity(
+            change,
+            {key: remote},
+            {key: intended},
+            newly_created=False,
+            remote_image_sources={key: "https://example.com/new.png"},
+            expected_image_sources={key: "https://example.com/new.png"},
+            remote_image_crop_properties={key: crop},
+        )
+        is expected
+    )
+
+
+def test_persistence_reads_refreshed_crop_properties_from_raw_refresh(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / ".pristine").mkdir()
+    (tmp_path / "id_mapping.json").write_text(
+        json.dumps({"hero": "google_hero"}), encoding="utf-8"
+    )
+    (tmp_path / ".pristine" / "base.json").write_text(
+        json.dumps(
+            {
+                "slides": [
+                    {
+                        "pageElements": [
+                            {
+                                "objectId": "google_hero",
+                                "image": {
+                                    "imageProperties": {
+                                        "cropProperties": {
+                                            "rightOffset": 0.25,
+                                        }
+                                    }
+                                },
+                            }
+                        ]
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert _remote_image_crop_properties(tmp_path) == {
+        ("01", "hero"): {"left": 0, "right": 0.25, "top": 0, "bottom": 0}
+    }
+
+
+def test_cover_error_mapping_uses_failed_request_index() -> None:
+    result = DiffResult(
+        changes=[Change(ChangeType.IMAGE_UPDATE, "hero", fit="cover")],
+        generated_image_ids={},
+    )
+    requests = [
+        {
+            "replaceImage": {
+                "imageObjectId": "google_hero",
+                "imageReplaceMethod": "CENTER_CROP",
+            }
+        },
+        {
+            "updatePageElementTransform": {
+                "objectId": "google_hero",
+            }
+        },
+        {"updateTextStyle": {"objectId": "google_title"}},
+    ]
+    text_error = APIError(
+        "API error (400): Invalid requests[2].updateTextStyle", status_code=400
+    )
+
+    assert _failed_request_index(text_error) == 2
+    assert _cover_element_ids(result, {"hero": "google_hero"}, requests, 2) == []
+    assert _cover_element_ids(result, {"hero": "google_hero"}, requests, 0) == [
+        "hero"
+    ]
+    assert _cover_element_ids(result, {"hero": "google_hero"}, requests, 1) == [
+        "hero"
+    ]
 
 
 def test_existing_image_src_and_geometry_edit_pins_to_effective_new_box(

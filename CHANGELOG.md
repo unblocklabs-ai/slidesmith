@@ -14,6 +14,19 @@ agent-legible: name the command/flag and what an operator can now do.
 
 ## [Unreleased]
 
+_Nothing yet._
+
+## [0.9.0] — 2026-07-23 — Proof receipts & planner integrity
+
+Driven by the third live dogfood round, run against released 0.8.0. Push
+gains a machine-readable proof receipt (the dogfooder's top ask), the text
+planner can no longer let Google silently clear `bold` on weight edits,
+and the last field-observed false persistence-warning classes are
+suppressed under strict guards — while a normalization candidate that
+cannot yet be proven safe deliberately keeps warning. Every suppression
+and planner change carries verbatim field payloads as regressions. Tag
+`stage-23`. 978 tests.
+
 ### Added
 
 - `slidesmith push --json` now emits a machine-readable receipt with the
@@ -395,7 +408,8 @@ Tags `stage-1` … `stage-6`. The living-deck co-editing core.
 Descends from think41/extrasuite's extraslide (MIT — see `NOTICE`), heavily
 rewritten.
 
-[Unreleased]: https://github.com/unblocklabs-ai/slidesmith/compare/stage-22-agent-native-authoring...HEAD
+[Unreleased]: https://github.com/unblocklabs-ai/slidesmith/compare/stage-23-proof-receipts...HEAD
+[0.9.0]: https://github.com/unblocklabs-ai/slidesmith/releases/tag/stage-23-proof-receipts
 [0.8.0]: https://github.com/unblocklabs-ai/slidesmith/releases/tag/stage-22-agent-native-authoring
 [0.7.0]: https://github.com/unblocklabs-ai/slidesmith/releases/tag/stage-21-plugins-and-keyring-auth
 [0.6.1]: https://github.com/unblocklabs-ai/slidesmith/releases/tag/stage-20-created-element-persistence

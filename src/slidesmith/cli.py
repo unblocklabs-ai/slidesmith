@@ -26,6 +26,7 @@ from slidesmith.cli_commands.editing import (
     cmd_apply,
     cmd_add_slide,
     cmd_fmt,
+    cmd_group,
     cmd_replace_class,
     cmd_replace_image,
     cmd_reorder,
@@ -44,6 +45,7 @@ from slidesmith.cli_commands.theme import (
     register_theme_commands,
 )
 from slidesmith.cli_commands.qa import cmd_check, register_qa_commands
+from slidesmith.cli_commands.advisor import cmd_advise, register_advisor_commands
 from slidesmith.engine.conflicts import ConflictError
 
 
@@ -51,6 +53,7 @@ __all__ = [
     "asyncio",
     "build_parser",
     "cmd_apply",
+    "cmd_advise",
     "cmd_add_slide",
     "cmd_auth_doctor",
     "cmd_auth_login",
@@ -58,6 +61,7 @@ __all__ = [
     "cmd_components",
     "cmd_diff",
     "cmd_fmt",
+    "cmd_group",
     "cmd_pull",
     "cmd_push",
     "cmd_replace_class",
@@ -97,6 +101,8 @@ def build_parser() -> argparse.ArgumentParser:
     register_theme_commands(sub, globals())
 
     register_qa_commands(sub, globals())
+
+    register_advisor_commands(sub, globals())
 
     return p
 

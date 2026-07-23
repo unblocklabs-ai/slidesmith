@@ -16,6 +16,11 @@ agent-legible: name the command/flag and what an operator can now do.
 
 ### Added
 
+- Added offline `slidesmith advise` pattern suggestions for pseudo-groups,
+  buried elements, Stack candidates, and near-overflow text, plus the
+  revision-locked `slidesmith group` command for native grouping of selected
+  top-level siblings. Pseudo-group suggestions now require repeated similar
+  clusters and expand their hints to the full selectable API object set.
 - Image `fit="cover"` authoring now center-crops to fill a frame: existing
   replacements use `CENTER_CROP`, new local images use deterministic Pillow
   assets through the normal cache/upload path, and new remote images use an

@@ -252,6 +252,47 @@ the next no-edit `diff` is zero. `--dry-run` prints the exact requests without
 authentication or API calls. A full-bleed background image should typically be
 sent to the back immediately after it is created.
 
+## Native grouping
+
+Use `group` when a selector identifies at least two top-level sibling elements
+on exactly one slide:
+
+```bash
+slidesmith group <ID> 'id=card_title OR id=card_body'
+slidesmith group <ID> 'tag=Rect AND slide=3' --dry-run
+```
+
+The command emits one Google `groupObjects` request with a fresh group object
+ID, validates that every child still exists on the same live page, locks the
+write to the fetched revision, and refreshes the local SML after success.
+Selections across slides, selections inside an existing native `Group`, fewer
+than two matches, and pending local edits are clear errors. `--dry-run` is
+local-only and prints the exact request without authentication or an API call.
+The new native group is then represented by the same pulled `Group` structure
+and IDs used by an ordinary pull, so the subsequent no-edit diff is zero.
+
+## Advisor
+
+`advise` is a pure local pattern scan for maintainability ideas, not geometry QA:
+
+```bash
+slidesmith advise <ID>
+slidesmith advise <ID> --rule pseudo-group
+slidesmith advise <ID> --json
+```
+
+V1 registers exactly four rules: `pseudo-group` looks for at least two similar
+repeated visual clusters and suggests each cluster instance; `buried-element`
+looks for an opaque-capable later sibling covering at least 90% of an earlier element;
+`stack-candidate` looks for three or more equal-size, equally spaced, common-axis
+siblings; and `near-overflow` reports measured text using 90–<100% of its content
+box. Suggestions are grouped by 1-based slide in text output. JSON is a stable
+list of objects with `rule`, `slide`, `element_ids`, `message`, and nullable
+`command_hint` keys. The advisor never calls Google, changes files, creates QA
+findings, blocks `push`, or changes the acceptance workflow. The buried-element
+probe can prove only explicit solid fills at alpha >= 0.99 and images; inherited
+or default fills are not resolved from local data and therefore do not fire.
+
 ## Semantic selection and apply
 
 Use `select` to find elements at any depth of the same parsed SML tree used by

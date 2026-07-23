@@ -12,6 +12,15 @@ except PackageNotFoundError:
     # Source checkouts without an installed distribution have no package metadata.
     __version__ = "0+unknown-dev"
 
-from slidesmith.workspace import materialize
+
+def __getattr__(name: str):
+    """Load the workspace helper only for callers that request it."""
+    if name != "materialize":
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    from slidesmith.workspace import materialize
+
+    globals()[name] = materialize
+    return materialize
+
 
 __all__ = ["materialize"]

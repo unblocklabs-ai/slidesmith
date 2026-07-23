@@ -141,6 +141,40 @@ def cmd_reorder(args: Any) -> None:
     asyncio.run(run())
 
 
+def cmd_group(args: Any) -> None:
+    from slidesmith.engine.client import SlidesClient
+
+    _cli_helper("_warn_if_stale", _warn_if_stale)(args.folder)
+    response = asyncio.run(
+        SlidesClient().group(
+            Path(args.folder),
+            args.selector,
+            dry_run=True,
+        )
+    )
+    if args.dry_run:
+        print(json.dumps(response["requests"], indent=2))
+        return
+
+    from slidesmith.engine.transport import GoogleSlidesTransport
+
+    token = _cli_helper("_token", _token)("slide.push", str(args.folder))
+
+    async def run() -> None:
+        transport = GoogleSlidesTransport(token, **_transport_options(token))
+        try:
+            response = await SlidesClient(transport).group(
+                Path(args.folder),
+                args.selector,
+            )
+            print_push_warnings(response.get("warnings", []))
+            print(f"Grouped elements matching {args.selector!r}.")
+        finally:
+            await transport.close()
+
+    asyncio.run(run())
+
+
 def cmd_replace_class(args: Any) -> None:
     from slidesmith.engine.class_replacement import replace_classes
 
@@ -332,6 +366,26 @@ def register_editing_commands(
         help="Print exact updatePageElementsZOrder requests without authentication or API calls",
     )
     sro.set_defaults(func=handlers["cmd_reorder"])
+
+    sgroup = subparsers.add_parser(
+        "group",
+        help="Group selected top-level sibling elements on one slide",
+        epilog=(
+            "The selector must resolve to at least two top-level elements on one "
+            "slide. Native group children and cross-slide selections are rejected. "
+            "--dry-run prints the exact groupObjects request without authentication "
+            "or an API call."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    sgroup.add_argument("folder", help="Presentation folder created by pull")
+    sgroup.add_argument("selector", help="Semantic selector query")
+    sgroup.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print the exact groupObjects request without authentication or API calls",
+    )
+    sgroup.set_defaults(func=handlers["cmd_group"])
 
     src = subparsers.add_parser(
         "replace-class",

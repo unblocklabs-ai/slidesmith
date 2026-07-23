@@ -53,6 +53,8 @@ slidesmith pull <deck-url-or-id> -o .   # -> <id>/slides/NN/content.sml
 slidesmith diff <id> --summary          # preview; --slide N to scope
 slidesmith push <id>                    # apply to the same deck
 slidesmith check <id> --contact-sheet   # download renders + geometry QA
+slidesmith advise <id>                  # local maintainability suggestions
+slidesmith group <id> 'id=a OR id=b'    # native grouping, revision-locked
 slidesmith --version                    # print the installed package version
 ```
 
@@ -72,6 +74,15 @@ follow-up pull renumbers folders to the actual deck order.
 
 Push diagnostics distinguish actionable `warning:` lines from lower-severity
 `notice:` lines and render warnings first.
+
+`advise` is an offline, advisory-only pattern scan over a pulled workspace. It
+reports repeated pseudo-group clusters, buried opaque-capable elements, Stack
+candidates, and text boxes with 90–<100% measured content-height utilization; use
+`--rule ID` or `--json` for agent workflows.
+It never creates QA findings or blocks a push. The `group` command turns a
+selected one-slide set of top-level siblings into a native Google group through
+the same revision-locked write and refresh path as `reorder`; `--dry-run` prints
+the exact request without authentication or an API call.
 
 `check` writes remote-deck thumbnails at `.qa/slide-NN.png` and a
 `.qa/contact-sheet.png` — **look at them**; the offline geometry lint can't see

@@ -38,5 +38,8 @@ _KEYRING_SERVICE
 _keyring
 _write_secure_json
 
+# PEP 562 package hooks are called by Python for lazy public exports.
+__getattr__
+
 # Test doubles accept arbitrary constructor/transport keyword arguments by contract.
 kwargs

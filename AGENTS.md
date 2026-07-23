@@ -37,8 +37,9 @@ slidesmith check <ID> --contact-sheet   # download renders + geometry QA
 
 `pull`, `diff`, `push`, `check` (the loop); `add-slide` (scaffold a positioned
 new slide); `select`/`apply` (semantic queries + roles, local-only); `replace-class`
-(bulk restyle); `reorder` (z-order); `replace-image`; `theme extract/apply` and
-`snippet copy/paste` (cross-deck); `fmt`; `components`; `auth doctor`. Every
+(bulk restyle); `reorder` (z-order); `group` (native grouping); `advise`
+(offline maintainability suggestions); `replace-image`; `theme extract/apply`
+and `snippet copy/paste` (cross-deck); `fmt`; `components`; `auth doctor`. Every
 command supports `--help`.
 
 ## Rules of thumb

@@ -219,6 +219,14 @@ def _extract_element_style(node: RenderNode) -> dict[str, Any]:
                 if line_spacing is not None:
                     style["autofit"]["lineSpacingReduction"] = line_spacing
 
+        # Some API fixtures and newer export paths expose the shape's text
+        # insets alongside shape properties. Preserve them in styles.json so
+        # QA can replace Google's 0.1in defaults with authored values when
+        # they are available; absent insets intentionally remain implicit.
+        text_insets = _extract_text_insets(shape_props)
+        if text_insets:
+            style["textInsets"] = text_insets
+
         # Content alignment (vertical alignment of text)
         content_alignment = shape_props.get("contentAlignment")
         if content_alignment:
@@ -474,6 +482,34 @@ def _extract_paragraph_style(para_style: dict[str, Any]) -> dict[str, Any]:
         style["spacingMode"] = para_style["spacingMode"]
 
     return style
+
+
+def _extract_text_insets(shape_props: dict[str, Any]) -> dict[str, float] | None:
+    """Normalize optional API text inset dimensions into points."""
+    candidate = shape_props.get("textInsets") or shape_props.get("insets")
+    if not isinstance(candidate, dict):
+        candidate = {
+            key: shape_props[key]
+            for key in ("left", "top", "right", "bottom")
+            if key in shape_props
+        }
+    if not candidate:
+        return None
+
+    result: dict[str, float] = {}
+    for side in ("left", "top", "right", "bottom"):
+        value = candidate.get(side, candidate.get(f"inset{side.title()}"))
+        if isinstance(value, dict):
+            magnitude = value.get("magnitude")
+            if not isinstance(magnitude, (int, float)):
+                continue
+            if str(value.get("unit", "PT")).upper() == "EMU":
+                value = emu_to_pt(magnitude)
+            else:
+                value = float(magnitude)
+        if isinstance(value, (int, float)):
+            result[side] = round(float(value), 4)
+    return result or None
 
 
 def _extract_run_style(run_style: dict[str, Any]) -> dict[str, Any]:

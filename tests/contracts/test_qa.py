@@ -246,6 +246,49 @@ def test_preflight_warns_for_genuine_contain_effective_box_overlap(
     assert any("OVERLAP" in line for line in output)
 
 
+def test_overlap_uses_paragraph_and_content_alignment_for_text_ink(
+    qa_folder: Path,
+) -> None:
+    _replace_slides(
+        qa_folder,
+        '<TextBox id="aligned" x="100" y="100" w="180" h="100" '
+        'class="content-align-bottom text-size-12">'
+        '<P class="text-align-right">Hi</P></TextBox>'
+        '<Image id="image" x="265" y="180" w="20" h="10" />',
+    )
+    styles_path = qa_folder / "styles.json"
+    styles = json.loads(styles_path.read_text(encoding="utf-8"))
+    styles["aligned"] = {
+        "contentAlignment": "TOP",
+        "text": {"paragraphs": [{"style": {"alignment": "START"}}]},
+    }
+    styles_path.write_text(json.dumps(styles, indent=2) + "\n", encoding="utf-8")
+
+    findings = [finding for finding in lint_folder(qa_folder) if finding.rule == "OVERLAP"]
+    assert [finding.element_ids for finding in findings] == [("aligned", "image")]
+
+    _replace_slides(
+        qa_folder,
+        '<TextBox id="aligned" x="100" y="100" w="180" h="100" '
+        'class="text-size-12"><P>Hi</P></TextBox>'
+        '<Image id="image" x="265" y="180" w="20" h="10" />',
+    )
+    assert "OVERLAP" not in _rules(qa_folder)
+
+
+def test_overlap_maps_rtl_end_to_physical_start(qa_folder: Path) -> None:
+    _replace_slides(
+        qa_folder,
+        '<TextBox id="rtl" x="100" y="100" w="180" h="100" '
+        'class="content-align-bottom text-size-12">'
+        '<P class="text-align-right dir-rtl">Hi</P></TextBox>'
+        '<Image id="image" x="105" y="180" w="20" h="10" />',
+    )
+
+    findings = [finding for finding in lint_folder(qa_folder) if finding.rule == "OVERLAP"]
+    assert [finding.element_ids for finding in findings] == [("rtl", "image")]
+
+
 def test_overlap_allows_exactly_fifteen_percent(qa_folder: Path) -> None:
     _replace_slides(
         qa_folder,
@@ -391,6 +434,294 @@ def test_text_overflow_allows_text_that_fits(qa_folder: Path) -> None:
     assert "TEXT_OVERFLOW" not in _rules(qa_folder)
 
 
+def test_text_measurement_calibration_corpus(tmp_path: Path) -> None:
+    """Pin the geometry estimator against a small visual-ground-truth table."""
+    data = json.loads(GOLDEN.read_text(encoding="utf-8"))
+    cases = [
+        (
+            "mixed_paragraph_card",
+            '<TextBox id="card" x="20" y="20" w="300" h="100" '
+            'class="text-size-12">'
+            '<P class="leading-100 space-below-4"><T class="text-size-24 bold">TITLE</T></P>'
+            '<P class="leading-90"><T class="text-size-10">This body copy is intentionally long enough to wrap once.</T></P>'
+            "</TextBox>",
+            {},
+            (),
+        ),
+        (
+            "genuine_overflow",
+            '<TextBox id="overflow" x="20" y="20" w="100" h="50" '
+            'class="text-size-12"><P>This sentence is deliberately long and must wrap across many lines in this narrow box.</P></TextBox>',
+            {},
+            ("TEXT_OVERFLOW",),
+        ),
+        (
+            "word_wrap_21pt_something",
+            '<TextBox id="wrap21" x="20" y="20" w="21" h="7" '
+            'class="text-size-2.5"><P>something something something</P></TextBox>',
+            {
+                "textInsets": {"left": 0, "top": 0, "right": 0, "bottom": 0}
+            },
+            ("TEXT_OVERFLOW",),
+        ),
+        (
+            "text_ink_avoids_empty_half_image",
+            '<TextBox id="copy" x="20" y="20" w="300" h="100" '
+            'class="text-size-12"><P>Hi</P></TextBox>'
+            '<Image id="image" x="200" y="20" w="100" h="120" />',
+            {},
+            (),
+        ),
+        (
+            "thin_filled_rect_crosses_ink",
+            '<TextBox id="copy" x="50" y="20" w="100" h="60" '
+            'class="text-size-12"><P>Hi</P></TextBox>'
+            '<Rect id="rule" x="55" y="30" w="30" h="2" class="fill-#222222" />',
+            {},
+            ("OVERLAP",),
+        ),
+        (
+            "thin_filled_rect_only_empty_raw_bounds",
+            '<TextBox id="copy" x="50" y="20" w="100" h="60" '
+            'class="text-size-12"><P>Hi</P></TextBox>'
+            '<Rect id="rule" x="0" y="50" w="200" h="1" class="fill-#222222" />',
+            {},
+            (),
+        ),
+        (
+            "autofit_text_pending",
+            '<TextBox id="auto" x="20" y="20" w="220" h="70">'
+            "<P>Autofit shrinks this large heading to fit.</P></TextBox>",
+            {
+                "autofit": {
+                    "type": "TEXT_AUTOFIT",
+                    "fontScale": 0.5,
+                    "lineSpacingReduction": 0.2,
+                },
+                "text": {
+                    "paragraphs": [
+                        {
+                            "style": {"lineSpacing": 100},
+                            "runs": [
+                                {
+                                    "content": "Autofit shrinks this large heading to fit.",
+                                    "style": {
+                                        "fontFamily": "Arial",
+                                        "fontSize": 40,
+                                    },
+                                }
+                            ],
+                        }
+                    ]
+                },
+            },
+            ("TEXT_OVERFLOW",),
+        ),
+        (
+            "autofit_none",
+            '<TextBox id="none" x="20" y="20" w="220" h="70">'
+            "<P>Autofit shrinks this large heading to fit.</P></TextBox>",
+            {
+                "autofit": {"type": "NONE", "fontScale": 1},
+                "text": {
+                    "paragraphs": [
+                        {
+                            "style": {"lineSpacing": 100},
+                            "runs": [
+                                {
+                                    "content": "Autofit shrinks this large heading to fit.",
+                                    "style": {
+                                        "fontFamily": "Arial",
+                                        "fontSize": 40,
+                                    },
+                                }
+                            ],
+                        }
+                    ]
+                },
+            },
+            ("TEXT_OVERFLOW",),
+        ),
+    ]
+
+    verdict_vector: list[tuple[str, ...]] = []
+    for name, body, style, expected in cases:
+        case_root = tmp_path / name
+        case_root.mkdir()
+        folder = materialize(data, case_root)
+        _replace_slides(folder, body)
+        if style:
+            styles_path = folder / "styles.json"
+            styles = json.loads(styles_path.read_text(encoding="utf-8"))
+            element_id = "auto" if name == "autofit_text_pending" else "none"
+            if name == "word_wrap_21pt_something":
+                element_id = "wrap21"
+            styles[element_id] = style
+            styles_path.write_text(
+                json.dumps(styles, indent=2) + "\n", encoding="utf-8"
+            )
+
+        verdict = tuple(sorted(finding.rule for finding in lint_folder(folder)))
+        verdict_vector.append(verdict)
+        assert verdict == expected, name
+
+    assert verdict_vector == [
+        (),
+        ("TEXT_OVERFLOW",),
+        ("TEXT_OVERFLOW",),
+        (),
+        ("OVERLAP",),
+        (),
+        ("TEXT_OVERFLOW",),
+        ("TEXT_OVERFLOW",),
+    ]
+
+
+def test_pending_text_edit_deactivates_pull_time_autofit(qa_folder: Path) -> None:
+    payload_style = {
+        "autofit": {
+            "type": "TEXT_AUTOFIT",
+            "fontScale": 0.5,
+            "lineSpacingReduction": 0.2,
+        },
+        "text": {
+            "paragraphs": [
+                {
+                    "style": {"lineSpacing": 100},
+                    "runs": [
+                        {
+                            "content": "Autofit shrinks this large heading to fit.",
+                            "style": {"fontFamily": "Arial", "fontSize": 40},
+                        }
+                    ],
+                }
+            ]
+        },
+    }
+    styles_path = qa_folder / "styles.json"
+    styles = json.loads(styles_path.read_text(encoding="utf-8"))
+    styles["e121"] = payload_style
+    styles_path.write_text(json.dumps(styles, indent=2) + "\n", encoding="utf-8")
+
+    _replace_slides(
+        qa_folder,
+        '<TextBox id="e121" x="20" y="20" w="220" h="70">'
+        '<P><T class="text-size-40">Autofit shrinks this large heading to fit.</T></P>'
+        "</TextBox>",
+    )
+    assert "TEXT_OVERFLOW" in _rules(qa_folder)
+
+
+def _write_e121_autofit_style(folder: Path) -> None:
+    styles_path = folder / "styles.json"
+    styles = json.loads(styles_path.read_text(encoding="utf-8"))
+    styles["e121"] = {
+        "autofit": {
+            "type": "TEXT_AUTOFIT",
+            "fontScale": 0.5,
+            "lineSpacingReduction": 0.2,
+        },
+        "text": {
+            "paragraphs": [
+                {
+                    "style": {"lineSpacing": 100},
+                    "runs": [
+                        {
+                            "content": "Driving GenAI Transformations",
+                            "style": {"fontFamily": "Montserrat", "fontSize": 40},
+                        }
+                    ],
+                }
+            ]
+        },
+    }
+    styles_path.write_text(json.dumps(styles, indent=2) + "\n", encoding="utf-8")
+
+
+def _write_e121_run_edit(folder: Path, run_class: str) -> None:
+    _write_e121_autofit_style(folder)
+    _replace_slides(
+        folder,
+        '<TextBox id="e121" x="20" y="20" w="220" h="70" '
+        'class="text-align-left leading-90">'
+        '<P class="font-family-montserrat text-size-43 font-weight-400">'
+        f'<T class="{run_class}">Driving GenAI Transformations</T></P>'
+        "</TextBox>",
+    )
+
+
+def test_autofit_invalidation_ignores_run_decorations_but_flags_size_edit(
+    qa_folder: Path,
+) -> None:
+    _write_e121_run_edit(qa_folder, "text-color-#ff0000")
+    color_findings = [
+        finding
+        for finding in lint_folder(qa_folder)
+        if finding.element_ids == ("e121",) and finding.rule == "TEXT_OVERFLOW"
+    ]
+    assert color_findings == []
+
+    _write_e121_run_edit(qa_folder, "text-size-40")
+    size_findings = [
+        finding
+        for finding in lint_folder(qa_folder)
+        if finding.element_ids == ("e121",) and finding.rule == "TEXT_OVERFLOW"
+    ]
+    assert size_findings
+
+
+def test_autofit_copy_invalidation_is_instance_scoped(qa_folder: Path) -> None:
+    _write_e121_autofit_style(qa_folder)
+    _replace_slides(
+        qa_folder,
+        '<TextBox id="e121" x="40.55" y="118.8" w="551.74" h="93.8" '
+        'class="text-align-left leading-90">'
+        '<P class="font-family-montserrat text-size-43 font-weight-400">'
+        "Driving GenAI Transformations</P></TextBox>"
+        '<TextBox id="e121" x="20" y="20" w="220" h="70">'
+        '<P><T class="text-size-40">Autofit shrinks this large heading to fit.</T></P>'
+        "</TextBox>",
+    )
+
+    slides = qa_engine.parse_all_slides(str(qa_folder / "slides"))
+    invalidated = qa_engine._pending_autofit_invalidations(qa_folder, slides)
+    instances = [
+        element
+        for element in qa_engine._walk(slides["01"])
+        if element.clean_id == "e121"
+    ]
+    assert [id(element) in invalidated for element in instances] == [False, True]
+    assert [
+        finding
+        for finding in lint_folder(qa_folder)
+        if finding.element_ids == ("e121",) and finding.rule == "TEXT_OVERFLOW"
+    ]
+
+
+def test_empty_paragraph_uses_inherited_size_for_overflow(qa_folder: Path) -> None:
+    _replace_slides(
+        qa_folder,
+        '<TextBox id="empty" x="20" y="20" w="220" h="60" '
+        'class="font-family-arial text-size-24"><P></P><P>Visible</P></TextBox>',
+    )
+    assert "TEXT_OVERFLOW" in {
+        finding.rule
+        for finding in lint_folder(qa_folder)
+        if finding.element_ids == ("empty",)
+    }
+
+    _replace_slides(
+        qa_folder,
+        '<TextBox id="empty" x="20" y="20" w="220" h="60" '
+        'class="font-family-arial text-size-12"><P></P><P>Visible</P></TextBox>',
+    )
+    assert "TEXT_OVERFLOW" not in {
+        finding.rule
+        for finding in lint_folder(qa_folder)
+        if finding.element_ids == ("empty",)
+    }
+
+
 def test_text_overflow_flags_large_title_shorter_than_true_line(qa_folder: Path) -> None:
     _replace_slides(
         qa_folder,
@@ -401,12 +732,25 @@ def test_text_overflow_flags_large_title_shorter_than_true_line(qa_folder: Path)
     assert "TEXT_OVERFLOW" in _rules(qa_folder)
 
 
+def test_compact_scaffold_guard_uses_inset_subtracted_content_box() -> None:
+    limit = qa_engine._text_overflow_limit(
+        21.3,
+        25.8,
+        9.3,
+        first_line_height=11.4,
+        line_count=1,
+        inset_height=14.4,
+    )
+
+    assert 25.8 > limit
+
+
 def test_text_overflow_allows_single_line_large_title_with_metric_margin(
     qa_folder: Path,
 ) -> None:
     _replace_slides(
         qa_folder,
-        '<TextBox id="title" x="40" y="40" w="350" h="52" '
+        '<TextBox id="title" x="40" y="40" w="350" h="66" '
         'class="font-family-arial text-size-40"><P>Launch night</P></TextBox>',
     )
 
@@ -431,7 +775,7 @@ def test_text_overflow_allows_marginal_unknown_display_font_title(
 ) -> None:
     _replace_slides(
         qa_folder,
-        '<TextBox id="display_title" x="40" y="40" w="200" h="52" '
+        '<TextBox id="display_title" x="40" y="40" w="200" h="66" '
         'class="font-family-display-unknown text-size-40"><P>Launch night</P></TextBox>',
     )
 

@@ -190,6 +190,13 @@ role-aware restyle.
 `check` labels findings NEW / PRE-EXISTING / RESOLVED vs your last pull. Accept
 intentional composition so it stops warning: `check <id> --accept <finding-id>`
 or add a `qa-accept-<rule>` class to the element inline (stripped before push).
+Overflow QA measures each paragraph/run inside a 7.2pt-per-side default text
+content inset, wraps at whitespace, applies authored leading and paragraph
+spacing, and consumes captured text-autofit scale/reduction only for untouched
+elements; pending text or run-size edits deactivate that captured adjustment.
+`NONE` is not treated as shrinkable. Overlap QA remains conservative for
+text-vs-text, but uses alignment-aware estimated paragraph ink for
+text-vs-non-text pairs; only `<Line>` elements remain unconditionally exempt.
 
 ## Gotchas
 - Always `diff` before `push`; the deck may have changed under you (push is

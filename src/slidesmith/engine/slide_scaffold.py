@@ -304,7 +304,15 @@ def _slide_content(
         title_x = max(0.0, min(margin_x, page_width))
         title_y = max(0.0, min(36.0 * scale_y, page_height))
         title_w = max(0.0, min(864.0 * scale_x, page_width - title_x))
-        title_h = max(0.0, min(64.0 * scale_y, page_height - title_y))
+        # Keep one default-inset content line inside the title frame even on
+        # compact pages. QA measures 7.2pt Google insets on both vertical
+        # sides, plus the estimator's 1.02 residual line-height margin.
+        title_line_height = title_font_size * 1.2 * 1.02
+        title_min_height = title_line_height + (2.0 * 7.2)
+        title_h = max(
+            0.0,
+            min(max(64.0 * scale_y, title_min_height), page_height - title_y),
+        )
         body_x = title_x
         body_y = max(0.0, min(120.0 * scale_y, page_height))
         body_w = max(0.0, min(864.0 * scale_x, page_width - body_x))

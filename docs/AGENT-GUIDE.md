@@ -1089,9 +1089,27 @@ fixes:
   the contained element is covered; use the `qa-accept-overlap` sugar class for
   intentional remaining overlap.
 - `OUT_OF_BOUNDS`: any element edge crosses the page boundary.
-- `TEXT_OVERFLOW`: approximate wrapped text height exceeds box height by more
-  than the 10% tolerance, with large short titles allowed one estimated line of
-  measurement uncertainty.
+- `TEXT_OVERFLOW`: paragraph-aware estimated text height exceeds the frame
+  height by more than the 5% decision tolerance. Measurement uses a content box
+  that subtracts Google's default 0.1in (7.2pt) inset on every side, or the
+  element's captured `textInsets` when present. Each paragraph is wrapped from
+  its own run metrics; authored `leading-*`, `space-above-*`, and
+  `space-below-*` are applied, while an omitted leading falls back to the
+  historical 1.2 multiplier. Captured `TEXT_AUTOFIT`/`SHRINK_ON_OVERFLOW`
+  `fontScale` and line-spacing reduction are applied before comparison;
+  `NONE` makes no adjustment, and captured autofit is used only for untouched
+  elements because pending text or run-size edits deactivate it. Wrapping
+  prefers whitespace and breaks an over-wide single word by characters. The
+  built-in estimator retains a 2% residual measurement margin after these
+  inputs are resolved, and large display text or compact one-line labels still
+  receive the existing bounded short-estimate uncertainty guard, based on the
+  inset-subtracted content box.
+- `OVERLAP` uses raw sibling bounds for text-vs-text, but shrinks a text
+  element to the union of its paragraph/run ink line-blocks for text-vs-non-text
+  pairs. Vertical content alignment and per-paragraph START/CENTER/END (with
+  RTL direction) are applied. `<Line>`, near-full-slide backgrounds, and
+  95%-containment cases remain exempt; thin filled rectangles are checked
+  against the estimated ink.
 
 Only an explicit pull saves the offline findings snapshot to
 `.pristine/qa-baseline.json`; a post-push pristine refresh does not change that

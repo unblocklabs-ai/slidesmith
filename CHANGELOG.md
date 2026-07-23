@@ -25,6 +25,12 @@ agent-legible: name the command/flag and what an operator can now do.
 
 ### Fixed
 
+- Geometry QA now measures paragraphs and runs independently, honors authored
+  leading/paragraph spacing and Google text insets, consumes captured text
+  autofit, and avoids false `TEXT_OVERFLOW` findings on mixed-size cards.
+- Geometry overlap QA now compares alignment-aware paragraph ink against all
+  non-text siblings, while preserving conservative text-vs-text checks and
+  existing background/containment exemptions.
 - Fractional paragraph line-spacing values such as `leading-88.421` now
   round-trip through pull-generated SML and its parser.
 - Local cover derivation now applies EXIF orientation, rejects animated sources,
@@ -42,6 +48,10 @@ agent-legible: name the command/flag and what an operator can now do.
 
 ### Changed
 
+- Geometry QA's measurement model uses a 2% residual measurement margin and a
+  5% overflow decision tolerance after paragraph-aware inputs are resolved;
+  pending text/run-size edits deactivate captured autofit, and the finding rule
+  names and stable slide-identity keys are unchanged.
 - Pull-generated visual-containment nesting is now z-order-consistent: only
   contiguous paint-order runs are nested, and SML depth-first document order
   is guaranteed to match Google's back-to-front paint order. Existing

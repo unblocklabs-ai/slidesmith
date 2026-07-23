@@ -13,6 +13,7 @@ from slidesmith.engine.assets import (
     inspect_local_image,
     resolve_local_image_path,
 )
+from slidesmith.engine.image_fetch import redact_image_url
 from slidesmith.engine.bounds import BoundingBox, Transform
 from slidesmith.engine.units import pt_to_emu
 
@@ -103,9 +104,9 @@ class CoverFitPushError(RuntimeError):
         self.cause = cause
         ids = ", ".join(element_ids)
         super().__init__(
-            "cover fit replaceImage was rejected for element "
-            f"{ids}: {cause}. The cover batch was not applied; this remote "
-            "create-then-CENTER_CROP strategy requires live API validation."
+            "cover fit CENTER_CROP was rejected for existing image element "
+            f"{ids}: {cause}. The cover batch was not applied; the existing-image "
+            "CENTER_CROP path remains live-unvalidated."
         )
 
 
@@ -162,8 +163,29 @@ async def resolve_asset_source(
     asset_uploader: AssetUploader | None,
     *,
     cover_aspect: float | None = None,
+    element_id: str | None = None,
 ) -> str:
-    if image_source_kind(source) == "remote":
+    source_kind = image_source_kind(source)
+    if source_kind == "remote" and cover_aspect is not None:
+        if asset_uploader is None:
+            raise RuntimeError(
+                f"Remote cover image {redact_image_url(source)!r} requires an "
+                "asset uploader at push time"
+            )
+        try:
+            return await AssetCache(folder_path).resolve_remote_cover(
+                source,
+                cover_aspect,
+                asset_uploader,
+                element_id=element_id,
+            )
+        except ValueError as exc:
+            label = f"Image element '{element_id}' " if element_id else "Image "
+            raise ValueError(
+                f"{label}remote cover source {redact_image_url(source)!r} "
+                f"could not be downloaded or derived: {redact_image_url(str(exc))}"
+            ) from exc
+    if source_kind == "remote":
         return source
     if asset_uploader is None:
         raise RuntimeError(
@@ -175,6 +197,7 @@ async def resolve_asset_source(
             source,
             cover_aspect,
             asset_uploader,
+            element_id=element_id,
         )
     return await cache.resolve(source, asset_uploader)
 

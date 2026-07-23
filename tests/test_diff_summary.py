@@ -73,6 +73,13 @@ def _summary_result() -> DiffResult:
     )
 
 
+def _mark_workspace(folder) -> None:
+    (folder / "presentation.json").write_text("{}", encoding="utf-8")
+    pristine = folder / ".pristine"
+    pristine.mkdir()
+    (pristine / "presentation.zip").write_bytes(b"zip")
+
+
 def test_format_diff_summary_renders_each_change_type_and_count() -> None:
     assert format_diff_summary(_summary_result(), 39) == """Slide 01
   DELETE e59, e60
@@ -167,6 +174,7 @@ def test_diff_summary_cli_uses_compact_stdout_without_legend(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    _mark_workspace(tmp_path)
     monkeypatch.setattr(
         "slidesmith.engine.client.diff_folder_with_result",
         lambda _: (_summary_result(), [{"request": {}}] * 39),
@@ -186,6 +194,7 @@ def test_empty_plain_diff_emits_json_array(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    _mark_workspace(tmp_path)
     monkeypatch.setattr("slidesmith.engine.client.diff_folder", lambda _: [])
     monkeypatch.setattr(cli, "_warn_if_stale", lambda _: None)
 
@@ -202,6 +211,7 @@ def test_empty_diff_summary_retains_human_readable_message(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    _mark_workspace(tmp_path)
     monkeypatch.setattr(
         "slidesmith.engine.client.diff_folder_with_result",
         lambda _: (DiffResult(changes=[]), []),

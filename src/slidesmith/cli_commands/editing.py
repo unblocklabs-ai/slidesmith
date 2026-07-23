@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from slidesmith.cli_commands._support import (
+    _require_workspace,
     _transport_options,
     _token,
     _warn_if_stale,
@@ -53,6 +54,7 @@ def cmd_replace_image(args: Any) -> None:
     from slidesmith.engine.client import SlidesClient
     from slidesmith.engine.transport import GoogleSlidesTransport
 
+    _require_workspace(args.folder)
     _cli_helper("_warn_if_stale", _warn_if_stale)(args.folder)
     token = _cli_helper("_token", _token)("slide.push", str(args.folder))
 
@@ -82,6 +84,7 @@ def cmd_replace_image(args: Any) -> None:
 def cmd_add_slide(args: Any) -> None:
     from slidesmith.engine.slide_scaffold import scaffold_slide
 
+    _require_workspace(args.folder)
     result = scaffold_slide(
         args.folder,
         after=args.after,
@@ -108,6 +111,7 @@ def cmd_add_slide(args: Any) -> None:
 def cmd_reorder(args: Any) -> None:
     from slidesmith.engine.client import SlidesClient
 
+    _require_workspace(args.folder)
     _cli_helper("_warn_if_stale", _warn_if_stale)(args.folder)
     response = asyncio.run(
         SlidesClient().reorder(
@@ -144,6 +148,7 @@ def cmd_reorder(args: Any) -> None:
 def cmd_group(args: Any) -> None:
     from slidesmith.engine.client import SlidesClient
 
+    _require_workspace(args.folder)
     _cli_helper("_warn_if_stale", _warn_if_stale)(args.folder)
     response = asyncio.run(
         SlidesClient().group(
@@ -178,6 +183,7 @@ def cmd_group(args: Any) -> None:
 def cmd_replace_class(args: Any) -> None:
     from slidesmith.engine.class_replacement import replace_classes
 
+    _require_workspace(args.folder)
     positional = (args.old_class, args.new_class)
     if (args.old_class is None) != (args.new_class is None):
         raise ValueError("Positional class replacement requires both OLD and NEW")
@@ -206,6 +212,7 @@ def cmd_replace_class(args: Any) -> None:
 def cmd_select(args: Any) -> None:
     from slidesmith.engine.selector import format_match, select_elements
 
+    _require_workspace(args.folder)
     matches = select_elements(args.folder, args.query)
     for match in matches:
         print(format_match(match))
@@ -215,6 +222,7 @@ def cmd_select(args: Any) -> None:
 def cmd_apply(args: Any) -> None:
     from slidesmith.engine.selector import apply_to_elements
 
+    _require_workspace(args.folder)
     result = apply_to_elements(
         args.folder,
         args.query,
@@ -241,6 +249,7 @@ def cmd_apply(args: Any) -> None:
 def cmd_fmt(args: Any) -> None:
     from slidesmith.engine.formatting import format_folder
 
+    _require_workspace(args.folder)
     result = format_folder(args.folder, check=args.check)
     changed = len(result.changed_paths)
     if args.check:

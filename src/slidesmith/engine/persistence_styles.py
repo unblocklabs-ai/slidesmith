@@ -1,4 +1,4 @@
-"""Effective text-style comparison used only by persistence verification."""
+"""Resolve effective text styles for persistence and request planning."""
 
 from __future__ import annotations
 
@@ -88,6 +88,17 @@ class EffectiveTextSpan:
     start: int
     end: int
     properties: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class EffectiveTextRange:
+    """One comparable UTF-16 range from two resolved text projections."""
+
+    paragraph_index: int
+    start: int
+    end: int
+    old_properties: dict[str, Any]
+    new_properties: dict[str, Any]
 
 
 _ACCEPTED_REMOTE_DEFAULTS = {
@@ -217,6 +228,72 @@ def effective_text_style_spans(
                 )
             )
     return spans
+
+
+def effective_text_style_ranges(
+    old: ParsedElement,
+    new: ParsedElement,
+) -> list[EffectiveTextRange] | None:
+    """Resolve two elements into comparable effective UTF-16 text ranges.
+
+    The request planner uses this alongside persistence verification.  It is
+    deliberately based on effective values rather than class ownership, so a
+    property moved between element, paragraph, and run scope produces no
+    request when the rendered value is unchanged.
+    """
+    if old.paragraphs != new.paragraphs:
+        return None
+    old_spans = effective_text_style_spans(old)
+    new_spans = effective_text_style_spans(new)
+    if old_spans is None or new_spans is None:
+        return None
+
+    paragraphs = len(old.paragraphs)
+    old_by_paragraph = _group_spans_by_paragraph(old_spans, paragraphs)
+    new_by_paragraph = _group_spans_by_paragraph(new_spans, paragraphs)
+    ranges: list[EffectiveTextRange] = []
+    for paragraph_index, text in enumerate(old.paragraphs):
+        text_length = _utf16_len(text)
+        if text_length == 0:
+            continue
+        old_positive = [
+            span
+            for span in old_by_paragraph[paragraph_index]
+            if span.start < span.end
+        ]
+        new_positive = [
+            span
+            for span in new_by_paragraph[paragraph_index]
+            if span.start < span.end
+        ]
+        boundaries = {0, text_length}
+        for span in old_positive + new_positive:
+            boundaries.update((span.start, span.end))
+        ordered = sorted(boundaries)
+        for start, end in zip(ordered, ordered[1:], strict=False):
+            if end <= start:
+                continue
+            old_properties = _properties_at(old_positive, start)
+            new_properties = _properties_at(new_positive, start)
+            ranges.append(
+                EffectiveTextRange(
+                    paragraph_index,
+                    start,
+                    end,
+                    old_properties,
+                    new_properties,
+                )
+            )
+    return ranges
+
+
+def _properties_at(
+    spans: list[EffectiveTextSpan], offset: int
+) -> dict[str, Any]:
+    for span in spans:
+        if span.start <= offset < span.end:
+            return span.properties
+    return {}
 
 
 def effective_text_styles_equivalent(
@@ -579,7 +656,9 @@ __all__ = [
     "TEXT_STYLE_API_FIELDS",
     "TEXT_STYLE_PROPERTY_KEYS",
     "api_style_property_keys",
+    "EffectiveTextRange",
     "effective_text_style_spans",
+    "effective_text_style_ranges",
     "effective_text_styles_equivalent",
     "paragraph_style_property_keys",
     "text_style_property_keys",

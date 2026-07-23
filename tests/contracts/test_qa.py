@@ -1415,7 +1415,10 @@ def test_cli_thumbnail_check_validates_metadata_before_dirty_diff(
 
     assert excinfo.value.code == 1
     error = capsys.readouterr().err
-    assert f"Missing Slidesmith workspace file: {folder / 'presentation.json'}" in error
+    assert str(folder) in error
+    assert "presentation.json" in error
+    assert ".pristine/presentation.zip" in error
+    assert "workspace directory created by slidesmith pull or slidesmith create" in error
     assert "Pristine zip not found" not in error
 
 
@@ -1574,7 +1577,7 @@ def _corrupt_first_deflate_entry(zip_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    "pristine_state", ["missing", "corrupt", "corrupt-entry"]
+    "pristine_state", ["corrupt", "corrupt-entry"]
 )
 def test_cli_thumbnail_check_skips_warning_when_pristine_diff_fails(
     clean_qa_folder: Path,
@@ -1583,9 +1586,7 @@ def test_cli_thumbnail_check_skips_warning_when_pristine_diff_fails(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     pristine_zip = clean_qa_folder / ".pristine" / "presentation.zip"
-    if pristine_state == "missing":
-        pristine_zip.unlink()
-    elif pristine_state == "corrupt-entry":
+    if pristine_state == "corrupt-entry":
         _corrupt_first_deflate_entry(pristine_zip)
     else:
         pristine_zip.write_bytes(b"not a zip archive")

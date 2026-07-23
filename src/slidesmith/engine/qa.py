@@ -49,7 +49,10 @@ OVERLAP_BACKGROUND_AREA_RATIO = 0.90
 # the former 10% tolerance was paired with a blanket 8% measurement margin and
 # was too forgiving once those uncertainties were modeled explicitly.
 TEXT_OVERFLOW_TOLERANCE = 1.05
-DEFAULT_TEXT_INSET_PT = 7.2  # Google's default 0.1in inset, in points.
+DEFAULT_TEXT_INSET_HORIZONTAL_PT = 7.2  # Google's default 0.1in inset, in points.
+# Field-calibrated from rendered thumbnails.  Only the old 7.2pt vertical
+# value is proven wrong; captured per-element inset overrides still win.
+DEFAULT_TEXT_INSET_VERTICAL_PT = 3.6
 # One estimated line is an uncertainty budget for large, short display text.
 TEXT_OVERFLOW_LARGE_FONT_SIZE_PT = 28.0
 TEXT_OVERFLOW_MAX_UNCERTAIN_LINES = 2.0
@@ -1013,13 +1016,12 @@ def _number(value: Any, default: float | None = None) -> float | None:
 
 
 def _text_insets(raw_style: dict[str, Any]) -> tuple[float, float, float, float]:
-    """Return left/top/right/bottom insets, defaulting to Google's 0.1in."""
-    default = DEFAULT_TEXT_INSET_PT
+    """Return left/top/right/bottom insets with calibrated axis defaults."""
     values = {
-        "left": default,
-        "top": default,
-        "right": default,
-        "bottom": default,
+        "left": DEFAULT_TEXT_INSET_HORIZONTAL_PT,
+        "top": DEFAULT_TEXT_INSET_VERTICAL_PT,
+        "right": DEFAULT_TEXT_INSET_HORIZONTAL_PT,
+        "bottom": DEFAULT_TEXT_INSET_VERTICAL_PT,
     }
     inset_style: dict[str, Any] = {}
     for key in ("textInsets", "text_insets", "insets"):

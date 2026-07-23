@@ -7,10 +7,13 @@ import json
 from pathlib import Path
 from typing import Any
 
+from slidesmith.cli_commands._support import _require_workspace
+
 
 def cmd_advise(args: Any) -> None:
     from slidesmith.engine.advisor import advise_folder, format_suggestions
 
+    _require_workspace(args.folder)
     suggestions = advise_folder(Path(args.folder), rule=args.rule)
     if args.json:
         print(json.dumps([suggestion.to_dict() for suggestion in suggestions], indent=2))

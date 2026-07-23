@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 from slidesmith.engine.classes import ParagraphStyle, TextStyle
@@ -17,7 +18,279 @@ from slidesmith.engine.content_diff import (
     ParagraphClassUpdate,
     _changed_style_fields,
 )
-from slidesmith.engine.content_parser import ParagraphStyles, ParsedRun
+from slidesmith.engine.content_parser import ParagraphStyles, ParsedElement, ParsedRun
+from slidesmith.engine.persistence_styles import (
+    api_style_property_keys,
+    effective_text_style_ranges,
+)
+
+
+@dataclass(frozen=True)
+class EffectiveStyleRequestPlan:
+    """Concrete text requests plus properties safe to omit from class resets."""
+
+    requests: list[dict[str, Any]]
+    handled_property_keys: frozenset[str]
+    changed_property_keys: frozenset[str]
+    new_property_keys: frozenset[str]
+
+
+def _create_effective_style_requests(
+    object_id: str,
+    old_element: ParsedElement,
+    new_element: ParsedElement,
+) -> EffectiveStyleRequestPlan | None:
+    """Plan text updates from resolved old/new element styles.
+
+    Class scope is not a request target: Google applies a field update at its
+    requested scope, so moving a value from a paragraph to an element can
+    otherwise emit an empty paragraph reset after the element update. Compare
+    effective values over fixed UTF-16 ranges and emit concrete values only
+    where the effective value changes. A property whose new value is absent is
+    reset only over that fixed range; the caller may retain the legacy ALL
+    reset only when the property is absent from every new effective range.
+    """
+    ranges = effective_text_style_ranges(old_element, new_element)
+    if ranges is None:
+        return None
+
+    handled: set[str] = set()
+    text_property_attrs = {
+        attr: f"text.{attr}" for attr in _TEXT_STYLE_FIELD_NAMES
+    }
+    paragraph_property_attrs = {
+        attr: f"paragraph.{attr}" for attr in _PARAGRAPH_STYLE_FIELD_NAMES
+    }
+
+    all_pairs = [
+        (item.old_properties, item.new_properties) for item in ranges
+    ]
+    all_property_keys = (
+        *text_property_attrs.values(),
+        *paragraph_property_attrs.values(),
+    )
+    changed_property_keys = frozenset(
+        property_key
+        for property_key in all_property_keys
+        if any(
+            old_properties.get(property_key) != new_properties.get(property_key)
+            for old_properties, new_properties in all_pairs
+        )
+    )
+    new_property_keys = frozenset(
+        property_key
+        for property_key in all_property_keys
+        if any(
+            new_properties.get(property_key) is not None
+            for _, new_properties in all_pairs
+        )
+    )
+
+    # Every resolved property has a concrete per-range outcome: unchanged,
+    # changed to a value, or changed to an absent value that needs a reset.
+    # Keeping all of them handled is what prevents a mixed removal/addition
+    # from falling back to an ALL reset.
+    handled.update(all_property_keys)
+
+    requests: list[dict[str, Any]] = []
+    for item in ranges:
+        changed_text_attrs = [
+            attr
+            for attr, property_key in text_property_attrs.items()
+            if item.old_properties.get(property_key)
+            != item.new_properties.get(property_key)
+            and item.new_properties.get(property_key) is not None
+        ]
+        if changed_text_attrs:
+            if set(changed_text_attrs) & {"font_family", "font_weight"}:
+                changed_text_attrs = list(
+                    dict.fromkeys(
+                        [
+                            *changed_text_attrs,
+                            *(
+                                attr
+                                for attr in ("font_family", "font_weight")
+                                if f"text.{attr}" in handled
+                            ),
+                        ]
+                    )
+                )
+            text_style = TextStyle(
+                **{
+                    attr: item.new_properties[f"text.{attr}"]
+                    for attr in changed_text_attrs
+                    if item.new_properties.get(f"text.{attr}") is not None
+                }
+            )
+            style, fields = _class_text_style_to_api(text_style)
+            if fields:
+                requests.append(
+                    {
+                        "updateTextStyle": {
+                            "objectId": object_id,
+                            "textRange": _fixed_text_range(
+                                old_element.paragraphs,
+                                item.paragraph_index,
+                                item.start,
+                                item.end,
+                            ),
+                            "style": style,
+                            "fields": ",".join(fields),
+                        }
+                    }
+                )
+
+        reset_text_fields = [
+            _TEXT_STYLE_FIELD_NAMES[attr]
+            for attr, property_key in text_property_attrs.items()
+            if item.old_properties.get(property_key) is not None
+            and item.new_properties.get(property_key) is None
+        ]
+        if reset_text_fields:
+            requests.append(
+                {
+                    "updateTextStyle": {
+                        "objectId": object_id,
+                        "textRange": _fixed_text_range(
+                            old_element.paragraphs,
+                            item.paragraph_index,
+                            item.start,
+                            item.end,
+                        ),
+                        "style": {},
+                        "fields": ",".join(reset_text_fields),
+                    }
+                }
+            )
+
+    for paragraph_index in range(len(old_element.paragraphs)):
+        paragraph_ranges = [
+            item for item in ranges if item.paragraph_index == paragraph_index
+        ]
+        if not paragraph_ranges:
+            continue
+        for item in paragraph_ranges:
+            changed_paragraph_attrs = [
+                attr
+                for attr, property_key in paragraph_property_attrs.items()
+                if item.old_properties.get(property_key)
+                != item.new_properties.get(property_key)
+                and item.new_properties.get(property_key) is not None
+            ]
+            if changed_paragraph_attrs:
+                paragraph_style = ParagraphStyle(
+                    **{
+                        attr: item.new_properties[f"paragraph.{attr}"]
+                        for attr in changed_paragraph_attrs
+                    }
+                )
+                style, fields = _class_paragraph_style_to_api(paragraph_style)
+            else:
+                style, fields = {}, []
+            if fields:
+                requests.append(
+                    {
+                        "updateParagraphStyle": {
+                            "objectId": object_id,
+                            "textRange": _fixed_text_range(
+                                old_element.paragraphs,
+                                paragraph_index,
+                                item.start,
+                                item.end,
+                            ),
+                            "style": style,
+                            "fields": ",".join(fields),
+                        }
+                    }
+                )
+
+            reset_paragraph_fields = [
+                _PARAGRAPH_STYLE_FIELD_NAMES[attr]
+                for attr, property_key in paragraph_property_attrs.items()
+                if item.old_properties.get(property_key) is not None
+                and item.new_properties.get(property_key) is None
+            ]
+            if reset_paragraph_fields:
+                requests.append(
+                    {
+                        "updateParagraphStyle": {
+                            "objectId": object_id,
+                            "textRange": _fixed_text_range(
+                                old_element.paragraphs,
+                                paragraph_index,
+                                item.start,
+                                item.end,
+                            ),
+                            "style": {},
+                            "fields": ",".join(reset_paragraph_fields),
+                        }
+                    }
+                )
+
+    return EffectiveStyleRequestPlan(
+        requests,
+        frozenset(handled),
+        changed_property_keys,
+        new_property_keys,
+    )
+
+
+def _fixed_text_range(
+    paragraphs: list[str], paragraph_index: int, start: int, end: int
+) -> dict[str, Any]:
+    paragraph_start = sum(
+        _utf16_len(text) + 1 for text in paragraphs[:paragraph_index]
+    )
+    return {
+        "type": "FIXED_RANGE",
+        "startIndex": paragraph_start + start,
+        "endIndex": paragraph_start + end,
+    }
+
+
+def _create_effective_scope_reset_requests(
+    object_id: str,
+    old_element: ParsedElement,
+    new_element: ParsedElement,
+    fields: list[str],
+) -> list[dict[str, Any]]:
+    """Clear removed element-scope fields without widening to ALL."""
+    ranges = effective_text_style_ranges(old_element, new_element)
+    if ranges is None:
+        return []
+    text_fields = set(_TEXT_STYLE_FIELD_NAMES.values())
+    paragraph_fields = set(_PARAGRAPH_STYLE_FIELD_NAMES.values())
+    requests: list[dict[str, Any]] = []
+    for field in fields:
+        property_keys = api_style_property_keys([field])
+        if field in text_fields:
+            operation = "updateTextStyle"
+        elif field in paragraph_fields:
+            operation = "updateParagraphStyle"
+        else:
+            continue
+        for item in ranges:
+            if not any(
+                item.old_properties.get(property_key) is not None
+                for property_key in property_keys
+            ):
+                continue
+            requests.append(
+                {
+                    operation: {
+                        "objectId": object_id,
+                        "textRange": _fixed_text_range(
+                            old_element.paragraphs,
+                            item.paragraph_index,
+                            item.start,
+                            item.end,
+                        ),
+                        "style": {},
+                        "fields": field,
+                    }
+                }
+            )
+    return requests
 
 
 def _common_prefix_chars(a: str, b: str) -> int:
@@ -84,6 +357,7 @@ def _create_text_update_requests(
     new_runs: list[list[ParsedRun]] | None = None,
     old_text: list[str] | None = None,
     old_runs: list[list[ParsedRun]] | None = None,
+    skip_text_fields: set[str] | frozenset[str] = frozenset(),
 ) -> list[dict[str, Any]]:
     """Create requests to update element text with minimal range edits.
 
@@ -100,7 +374,12 @@ def _create_text_update_requests(
     Falls back to delete-all + reinsert when pristine text is unknown.
     """
     if old_text is None:
-        return _create_full_text_replace_requests(google_id, new_text, new_runs)
+        return _create_full_text_replace_requests(
+            google_id,
+            new_text,
+            new_runs,
+            skip_text_fields=skip_text_fields,
+        )
 
     old_paras = old_text
     new_paras = new_text
@@ -169,6 +448,7 @@ def _create_text_update_requests(
             old_para_runs,
             new_para_runs,
             paragraph_range=(prefix, n - suffix),
+            skip_text_fields=skip_text_fields,
         )
     elif styled:
         # Explicit <T> runs: replace the changed paragraphs wholesale and
@@ -193,7 +473,10 @@ def _create_text_update_requests(
     if new_runs:
         requests.extend(
             _create_run_style_requests(
-                google_id, new_runs, paragraph_range=(prefix, n - suffix)
+                google_id,
+                new_runs,
+                paragraph_range=(prefix, n - suffix),
+                skip_text_fields=skip_text_fields,
             )
         )
 
@@ -204,6 +487,7 @@ def _create_full_text_replace_requests(
     google_id: str,
     new_text: list[str],
     new_runs: list[list[ParsedRun]] | None = None,
+    skip_text_fields: set[str] | frozenset[str] = frozenset(),
 ) -> list[dict[str, Any]]:
     """Replace an element's entire text (used when pristine text is unknown).
 
@@ -237,7 +521,13 @@ def _create_full_text_replace_requests(
 
         # Apply per-run text styles from <T> runs
         if new_runs:
-            requests.extend(_create_run_style_requests(google_id, new_runs))
+            requests.extend(
+                _create_run_style_requests(
+                    google_id,
+                    new_runs,
+                    skip_text_fields=skip_text_fields,
+                )
+            )
 
     return requests
 
@@ -245,6 +535,7 @@ def _create_run_style_requests(
     object_id: str,
     runs: list[list[ParsedRun]],
     paragraph_range: tuple[int, int] | None = None,
+    skip_text_fields: set[str] | frozenset[str] = frozenset(),
 ) -> list[dict[str, Any]]:
     """Create updateTextStyle requests for styled <T> runs.
 
@@ -278,7 +569,9 @@ def _create_run_style_requests(
                     },
                 )
                 if request:
-                    requests.append(request)
+                    _filter_text_style_request(request, skip_text_fields)
+                    if request["updateTextStyle"]["fields"]:
+                        requests.append(request)
             index = end_index
 
     return requests
@@ -290,6 +583,7 @@ def _create_run_style_delta_requests(
     old_runs: list[list[ParsedRun]],
     new_runs: list[list[ParsedRun]],
     paragraph_range: tuple[int, int],
+    skip_text_fields: set[str] | frozenset[str] = frozenset(),
 ) -> list[dict[str, Any]]:
     """Emit precise TextStyle changes, including resets to inherited values."""
     requests: list[dict[str, Any]] = []
@@ -331,6 +625,7 @@ def _create_run_style_delta_requests(
             fields = _changed_style_fields(
                 old_style, new_style, _TEXT_STYLE_FIELD_NAMES
             )
+            fields = [field for field in fields if field not in skip_text_fields]
             if not fields:
                 continue
             api_style, _ = _class_text_style_to_api(new_style)
@@ -356,6 +651,21 @@ def _create_run_style_delta_requests(
     return requests
 
 
+def _filter_text_style_request(
+    request: dict[str, Any],
+    skip_text_fields: set[str] | frozenset[str],
+) -> None:
+    """Remove planner-owned fields from one legacy run-style request in place."""
+    if not skip_text_fields:
+        return
+    body = request["updateTextStyle"]
+    fields = [field for field in body["fields"].split(",") if field not in skip_text_fields]
+    body["fields"] = ",".join(fields)
+    body["style"] = {
+        field: value for field, value in body["style"].items() if field in fields
+    }
+
+
 def _paragraph_text_range(
     paragraphs: list[str], paragraph_index: int
 ) -> dict[str, Any]:
@@ -375,6 +685,8 @@ def _create_paragraph_class_update_requests(
     updates: list[ParagraphClassUpdate],
     *,
     reapply_runs: bool = True,
+    skip_text_fields: set[str] | frozenset[str] = frozenset(),
+    skip_paragraph_fields: set[str] | frozenset[str] = frozenset(),
 ) -> list[dict[str, Any]]:
     """Create precise-range updates for changed ``<P class>`` defaults."""
     requests: list[dict[str, Any]] = []
@@ -390,6 +702,9 @@ def _create_paragraph_class_update_requests(
             new.paragraph_style,
             _PARAGRAPH_STYLE_FIELD_NAMES,
         )
+        paragraph_fields = [
+            field for field in paragraph_fields if field not in skip_paragraph_fields
+        ]
         if paragraph_fields:
             style, _ = _class_paragraph_style_to_api(
                 new.paragraph_style or ParagraphStyle()
@@ -414,6 +729,7 @@ def _create_paragraph_class_update_requests(
             new.text_style,
             _TEXT_STYLE_FIELD_NAMES,
         )
+        text_fields = [field for field in text_fields if field not in skip_text_fields]
         if text_fields:
             style, _ = _class_text_style_to_api(new.text_style or TextStyle())
             requests.append(

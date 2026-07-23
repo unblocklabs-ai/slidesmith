@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+from io import BytesIO
 import json
 import math
 from pathlib import Path
@@ -14,6 +15,7 @@ import pytest
 from PIL import Image, ImageOps
 
 from slidesmith import cli
+from slidesmith.engine import image_fetch
 from slidesmith.engine.assets import (
     AssetCache,
     AssetUploadError,
@@ -25,7 +27,6 @@ from slidesmith.engine.content_diff import ChangeType
 from slidesmith.engine.content_parser import parse_slide_content
 from slidesmith.engine.diff_model import WarningSeverity
 from slidesmith.engine.transport import APIError, PresentationData, Transport
-from slidesmith.engine.image_replace import CoverFitPushError
 from slidesmith.engine.units import pt_to_emu
 
 GOLDEN = (
@@ -530,30 +531,108 @@ async def test_new_local_cover_uses_derived_asset_through_normal_upload_path(
 
 
 @pytest.mark.asyncio
-async def test_new_remote_cover_rejection_names_cover_fit_and_element(
+async def test_new_remote_cover_downloads_derives_and_emits_create_only(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     transport, _, folder = await _workspace(tmp_path)
-    client = SlidesClient(transport)
+    uploader = FakeUploader()
+    client = SlidesClient(transport, uploader)
+    remote_url = "https://example.com/remote.png"
+    source = Image.new("RGB", (400, 200), "navy")
+    payload = BytesIO()
+    source.save(payload, format="PNG")
+    fetches: list[str] = []
+
+    def fetch(url: str) -> bytes:
+        fetches.append(url)
+        return payload.getvalue()
+
+    monkeypatch.setattr(image_fetch, "fetch_image_bytes", fetch)
     _append_local_image(
         folder,
-        source="https://example.com/remote.png",
+        source=remote_url,
         fit="cover",
     )
-    transport.fail_cover_replace = True
 
-    with pytest.raises(
-        CoverFitPushError,
-        match=r"cover fit replaceImage was rejected.*local_logo",
-    ):
-        await client.push(folder)
+    response = await client.push(folder)
 
     sent = transport.batch_calls[-1]["requests"]
-    assert [next(iter(request)) for request in sent] == [
-        "createImage",
-        "replaceImage",
-        "updatePageElementTransform",
-    ]
+    assert [next(iter(request)) for request in sent] == ["createImage"]
+    assert sent[0]["createImage"]["url"] == FAKE_URL
+    assert fetches == [remote_url]
+    assert uploader.calls[0][0].parent.name == ".slidesmith-cover"
+    cache = json.loads((folder / ".assets.json").read_text(encoding="utf-8"))
+    entry = cache["assets"][0]
+    assert entry["sourceUrl"] == remote_url
+    assert entry["sourceSha256"] == hashlib.sha256(payload.getvalue()).hexdigest()
+    assert response.get("warnings", []) == []
+
+
+@pytest.mark.asyncio
+async def test_new_remote_cover_download_failure_names_element_and_sends_no_batch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    transport, _, folder = await _workspace(tmp_path)
+    client = SlidesClient(transport, FakeUploader())
+    _append_local_image(
+        folder,
+        source="https://example.com/oversized.png",
+        fit="cover",
+    )
+
+    def fail(_url: str) -> bytes:
+        raise ValueError("image download exceeds the 20 MB limit")
+
+    monkeypatch.setattr(image_fetch, "fetch_image_bytes", fail)
+
+    with pytest.raises(ValueError, match=r"Image element 'local_logo'.*20 MB"):
+        await client.push(folder)
+
+    assert transport.batch_calls == []
+
+
+@pytest.mark.asyncio
+async def test_remote_cover_cache_hit_does_not_refetch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "deck"
+    remote_url = "https://example.com/cache.png"
+    payload = BytesIO()
+    Image.new("RGB", (400, 200), "navy").save(payload, format="PNG")
+    fetches: list[str] = []
+
+    def fetch(url: str) -> bytes:
+        fetches.append(url)
+        return payload.getvalue()
+
+    monkeypatch.setattr(image_fetch, "fetch_image_bytes", fetch)
+    uploader = FakeUploader()
+    cache = AssetCache(workspace)
+
+    first_url = await cache.resolve_remote_cover(remote_url, 1.0, uploader, element_id="hero")
+    second_url = await cache.resolve_remote_cover(remote_url, 1.0, uploader, element_id="hero")
+
+    assert second_url == first_url
+    assert fetches == [remote_url]
+    assert len(uploader.calls) == 1
+    entry = json.loads((workspace / ".assets.json").read_text(encoding="utf-8"))["assets"][0]
+    assert entry["sourceUrl"] == remote_url
+    key_material = (
+        "remote\0"
+        + remote_url
+        + "\0"
+        + hashlib.sha256(payload.getvalue()).hexdigest()
+        + "\0"
+        + (1.0).hex()
+        + "\0"
+        + "2"
+    )
+    assert hashlib.sha256(
+        key_material.encode("utf-8")
+    ).hexdigest() in entry["path"]
 
 
 @pytest.mark.asyncio

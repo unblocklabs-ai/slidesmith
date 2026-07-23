@@ -9,7 +9,12 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
-from slidesmith.cli_commands._support import _token, _transport_options, _warn_if_stale
+from slidesmith.cli_commands._support import (
+    _require_workspace,
+    _token,
+    _transport_options,
+    _warn_if_stale,
+)
 from slidesmith.engine.json_utils import read_json
 
 
@@ -31,6 +36,7 @@ def cmd_check(args: Any) -> None:
         raise ValueError(
             "--contact-sheet requires thumbnail downloads; remove --no-thumbnails"
         )
+    _require_workspace(folder)
     _cli_helper("_warn_if_stale", _warn_if_stale)(folder)
     if not args.no_thumbnails:
         metadata = read_json(folder / "presentation.json", missing_ok=False)

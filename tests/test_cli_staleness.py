@@ -28,12 +28,48 @@ def _workspace(tmp_path: Path, pulled_at: datetime) -> Path:
     return folder
 
 
+def _mark_workspace(folder: Path) -> None:
+    (folder / ".pristine").mkdir(exist_ok=True)
+    (folder / ".pristine" / "presentation.zip").write_bytes(b"zip")
+    if not (folder / "presentation.json").exists():
+        (folder / "presentation.json").write_text("{}", encoding="utf-8")
+
+
 def test_cli_version_prints_package_version(capsys: pytest.CaptureFixture[str]) -> None:
     with pytest.raises(SystemExit) as excinfo:
         cli.main(["--version"])
 
     assert excinfo.value.code == 0
     assert capsys.readouterr().out == f"slidesmith {version('slidesmith')}\n"
+
+
+def test_pull_dir_alias_matches_output_dir_and_is_documented(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    parser = cli.build_parser()
+    output_dir = parser.parse_args(["pull", "deck-id", "-o", "one"]).output_dir
+    dir_alias = parser.parse_args(["pull", "deck-id", "--dir", "one"]).output_dir
+    assert dir_alias == output_dir == "one"
+
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main(["pull", "--help"])
+    assert excinfo.value.code == 0
+    assert "--dir" in capsys.readouterr().out
+
+
+def test_non_workspace_error_names_path_missing_files_and_recovery_hint(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main(["diff", str(tmp_path)])
+
+    assert excinfo.value.code == 1
+    error = capsys.readouterr().err
+    assert str(tmp_path) in error
+    assert "presentation.json" in error
+    assert ".pristine/presentation.zip" in error
+    assert "workspace directory created by slidesmith pull or slidesmith create" in error
 
 
 def test_staleness_warning_fires_after_24_hours(
@@ -69,6 +105,7 @@ def test_staleness_warning_silently_ignores_corrupt_timestamp(
 ) -> None:
     folder = tmp_path / "deck"
     folder.mkdir()
+    _mark_workspace(folder)
     (folder / "presentation.json").write_text(
         json.dumps({"pulledAt": "not-a-timestamp"}), encoding="utf-8"
     )
@@ -88,6 +125,7 @@ def test_push_conflict_exits_two_and_lists_conflicting_elements(
 ) -> None:
     folder = tmp_path / "deck"
     folder.mkdir()
+    _mark_workspace(folder)
     message = (
         "push aborted: conflicting elements:\n"
         "  - title: text changed remotely\n"
@@ -122,6 +160,7 @@ def test_replace_image_conflict_exits_two(
 ) -> None:
     folder = tmp_path / "deck"
     folder.mkdir()
+    _mark_workspace(folder)
     message = "replace-image aborted: the deck changed during replacement"
 
     def raise_conflict(coroutine: Any) -> None:
@@ -179,6 +218,7 @@ def test_per_slide_progress_uses_stderr_and_stdout_is_final_result_only(
 ) -> None:
     folder = tmp_path / "deck"
     folder.mkdir()
+    _mark_workspace(folder)
 
     class FakeResource:
         def __init__(self, token: str) -> None:
@@ -221,6 +261,7 @@ def test_diff_stdout_stays_json_and_stderr_maps_object_ids(
 ) -> None:
     folder = tmp_path / "deck"
     folder.mkdir()
+    _mark_workspace(folder)
     (folder / "id_mapping.json").write_text(
         json.dumps({"e59": "g87a21", "s1": "slide_google"}),
         encoding="utf-8",

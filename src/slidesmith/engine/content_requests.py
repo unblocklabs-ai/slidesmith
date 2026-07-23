@@ -9,10 +9,12 @@ from __future__ import annotations
 import re
 import threading
 from collections.abc import Callable
+from dataclasses import replace
 from typing import Any
 
 from slidesmith.engine.class_style_requests import _create_class_style_requests
-from slidesmith.engine.content_diff import Change, ChangeType, DiffResult, ParagraphClassUpdate
+from slidesmith.engine.content_diff import Change, ChangeType, DiffResult
+from slidesmith.engine.content_parser import ElementStyles
 from slidesmith.engine.copy_requests import _create_copy_requests, _uses_duplicate_object
 from slidesmith.engine.bounds import BoundingBox
 from slidesmith.engine.element_factories import (
@@ -23,9 +25,15 @@ from slidesmith.engine.element_factories import (
 from slidesmith.engine.image_replace import _replacement_geometry_requests
 from slidesmith.engine.id_manager import is_valid_google_object_id
 from slidesmith.engine.hierarchy import has_ancestor_in_set
+from slidesmith.engine.persistence_styles import api_style_property_keys
+from slidesmith.engine.style_delta import (
+    _PARAGRAPH_STYLE_FIELD_NAMES,
+    _TEXT_STYLE_FIELD_NAMES,
+)
 from slidesmith.engine.text_requests import (
     _create_paragraph_class_update_requests,
-    _create_run_style_requests,
+    _create_effective_style_requests,
+    _create_effective_scope_reset_requests,
     _create_text_update_requests,
 )
 
@@ -226,11 +234,15 @@ def _emit_text_update_requests(
     requests: list[dict[str, Any]],
     text_updates: list[Change],
     id_mapping: dict[str, str],
+    diff_result: DiffResult,
 ) -> None:
     """Emit minimal text replacements and run-style updates."""
     for change in text_updates:
         text_google_id = id_mapping.get(change.target_id)
         if text_google_id and change.new_text is not None:
+            effective_plan = _effective_style_plan(
+                text_google_id, change, diff_result
+            )
             requests.extend(
                 _create_text_update_requests(
                     text_google_id,
@@ -238,8 +250,22 @@ def _emit_text_update_requests(
                     change.new_runs,
                     change.old_text,
                     change.old_runs,
+                    skip_text_fields=(
+                        _handled_api_fields(
+                            effective_plan.handled_property_keys,
+                            _TEXT_STYLE_FIELD_NAMES,
+                        )
+                        if effective_plan is not None
+                        else frozenset()
+                    ),
                 )
             )
+            if (
+                effective_plan is not None
+                and _effective_plan_owner(change.target_id, diff_result)
+                is ChangeType.TEXT_UPDATE
+            ):
+                requests.extend(effective_plan.requests)
 
 
 def _emit_image_update_requests(
@@ -338,49 +364,60 @@ def _emit_style_update_requests(
         if element_tag is None and pristine_element_types is not None:
             element_type = pristine_element_types.get(style_google_id)
             element_tag = "Line" if element_type == "LINE" else None
+
+        effective_plan = _effective_style_plan(
+            style_google_id, change, diff_result
+        )
+        if effective_plan is None:
+            requests.extend(
+                _create_class_style_requests(
+                    style_google_id,
+                    change.new_styles,
+                    has_text=bool(change.new_text),
+                    element_tag=element_tag,
+                    text_style_reset_fields=change.text_style_reset_fields,
+                    paragraph_style_reset_fields=change.paragraph_style_reset_fields,
+                    stroke_reset_fields=change.stroke_reset_fields,
+                    reset_content_alignment=change.reset_content_alignment,
+                )
+            )
+            continue
+
+        styles = change.new_styles
+        non_text_styles = ElementStyles(
+            fill=styles.fill,
+            stroke=styles.stroke,
+            content_alignment=styles.content_alignment,
+        )
+        edited_element = diff_result.edited_elements.get(change.target_id)
         requests.extend(
             _create_class_style_requests(
                 style_google_id,
-                change.new_styles,
-                has_text=bool(change.new_text),
+                non_text_styles,
+                has_text=bool(edited_element and edited_element.paragraphs),
                 element_tag=element_tag,
-                text_style_reset_fields=change.text_style_reset_fields,
-                paragraph_style_reset_fields=change.paragraph_style_reset_fields,
+                text_style_reset_fields=_unhandled_reset_fields(
+                    change.text_style_reset_fields,
+                    effective_plan.handled_property_keys,
+                ),
+                paragraph_style_reset_fields=_unhandled_reset_fields(
+                    change.paragraph_style_reset_fields,
+                    effective_plan.handled_property_keys,
+                ),
                 stroke_reset_fields=change.stroke_reset_fields,
                 reset_content_alignment=change.reset_content_alignment,
             )
         )
-        if not (
-            change.new_text
-            and (
-                change.new_styles.text_style is not None
-                or change.new_styles.paragraph_style is not None
-            )
-        ):
-            continue
-        if change.new_paragraph_styles:
-            paragraph_updates = [
-                ParagraphClassUpdate(index, None, styles)
-                for index, styles in enumerate(change.new_paragraph_styles)
-                if styles is not None
-            ]
-            requests.extend(
-                _create_paragraph_class_update_requests(
-                    style_google_id,
-                    change.new_text,
-                    change.new_runs or [],
-                    paragraph_updates,
-                    reapply_runs=False,
-                )
-            )
-        if change.new_styles.text_style is not None and change.new_runs:
-            requests.extend(_create_run_style_requests(style_google_id, change.new_runs))
+        requests.extend(effective_plan.requests)
+        # Effective planning already includes element, paragraph, and run
+        # text styles for this old/new element pair.
 
 
 def _emit_paragraph_style_update_requests(
     requests: list[dict[str, Any]],
     paragraph_style_updates: list[Change],
     id_mapping: dict[str, str],
+    diff_result: DiffResult,
 ) -> None:
     """Emit paragraph-default updates before explicit run overrides."""
     for change in paragraph_style_updates:
@@ -390,14 +427,199 @@ def _emit_paragraph_style_update_requests(
             and change.new_text is not None
             and change.paragraph_style_updates
         ):
+            effective_plan = _effective_style_plan(
+                style_google_id, change, diff_result
+            )
+            if effective_plan is not None and (
+                _effective_plan_owner(change.target_id, diff_result)
+                is ChangeType.STYLE_UPDATE
+            ):
+                continue
+            if effective_plan is not None and (
+                _effective_plan_owner(change.target_id, diff_result)
+                is ChangeType.PARAGRAPH_STYLE_UPDATE
+            ):
+                requests.extend(effective_plan.requests)
             requests.extend(
                 _create_paragraph_class_update_requests(
                     style_google_id,
                     change.new_text,
                     change.new_runs or [],
                     change.paragraph_style_updates,
+                    reapply_runs=effective_plan is None,
+                    skip_text_fields=(
+                        _handled_api_fields(
+                            effective_plan.handled_property_keys,
+                            _TEXT_STYLE_FIELD_NAMES,
+                        )
+                        if effective_plan is not None
+                        else frozenset()
+                    ),
+                    skip_paragraph_fields=(
+                        _handled_api_fields(
+                            effective_plan.handled_property_keys,
+                            _PARAGRAPH_STYLE_FIELD_NAMES,
+                        )
+                        if effective_plan is not None
+                        else frozenset()
+                    ),
                 )
             )
+
+
+def _effective_style_plan(
+    object_id: str,
+    change: Change,
+    diff_result: DiffResult,
+) -> Any:
+    """Resolve the parsed old/new element pair for text-style planning."""
+    pristine_elements = getattr(diff_result, "_pristine_elements", {})
+    old_element = pristine_elements.get(change.target_id)
+    new_element = diff_result.edited_elements.get(change.target_id)
+    if old_element is None or new_element is None:
+        return None
+    plan = _create_effective_style_requests(object_id, old_element, new_element)
+    if plan is None:
+        return None
+
+    # A standalone element-class drop is an authored deletion. Preserve its
+    # explicit reset contract when no paragraph/run bucket is changing the
+    # same target; a paired lower-scope edit is instead resolved by the
+    # effective planner below (the scope-move case).
+    if not any(
+        other.target_id == change.target_id
+        and other is not change
+        and other.change_type
+        in {ChangeType.PARAGRAPH_STYLE_UPDATE, ChangeType.TEXT_UPDATE}
+        for other in diff_result.changes
+    ):
+        reset_fields = [
+            *(change.text_style_reset_fields or []),
+            *(change.paragraph_style_reset_fields or []),
+        ]
+        fallback_fields = [
+            field
+            for field in reset_fields
+            if not (
+                api_style_property_keys([field]) & plan.new_property_keys
+            )
+        ]
+        retained_fields = [
+            field
+            for field in reset_fields
+            if api_style_property_keys([field]) & plan.new_property_keys
+            and not api_style_property_keys([field]) & plan.changed_property_keys
+        ]
+        fallback_keys = api_style_property_keys(fallback_fields)
+        if fallback_keys or retained_fields:
+            plan = replace(
+                plan,
+                requests=(
+                    _filter_effective_plan_requests(plan, fallback_keys)
+                    + _create_effective_scope_reset_requests(
+                        object_id,
+                        old_element,
+                        new_element,
+                        retained_fields,
+                    )
+                ),
+                handled_property_keys=plan.handled_property_keys - fallback_keys,
+            )
+    # The effective planner owns every text/paragraph property it can resolve,
+    # not only foreground color.  This keeps one property plan in force when
+    # several class scopes or properties change in the same edit.
+    return plan
+
+
+def _filter_effective_plan_requests(
+    plan: Any,
+    reset_keys: set[str],
+) -> list[dict[str, Any]]:
+    """Drop fixed-range requests for fields retained by the legacy ALL reset."""
+    if not reset_keys:
+        return plan.requests
+
+    filtered: list[dict[str, Any]] = []
+    for request in plan.requests:
+        operation = next(
+            (
+                name
+                for name in ("updateTextStyle", "updateParagraphStyle")
+                if name in request
+            ),
+            None,
+        )
+        if operation is None:
+            filtered.append(request)
+            continue
+        body = request[operation]
+        fields = body.get("fields", "").split(",")
+        remaining_fields = [
+            field
+            for field in fields
+            if not api_style_property_keys([field]) & reset_keys
+        ]
+        if not remaining_fields:
+            continue
+        if len(remaining_fields) == len(fields):
+            filtered.append(request)
+            continue
+        filtered_body = dict(body)
+        filtered_body["fields"] = ",".join(remaining_fields)
+        style = filtered_body.get("style")
+        if isinstance(style, dict):
+            filtered_body["style"] = {
+                key: value
+                for key, value in style.items()
+                if key in remaining_fields
+            }
+        filtered.append({**request, operation: filtered_body})
+    return filtered
+
+
+def _effective_plan_owner(
+    target_id: str,
+    diff_result: DiffResult,
+) -> ChangeType | None:
+    """Choose one change bucket that emits a target's effective-style plan."""
+    target_types = {
+        change.change_type
+        for change in diff_result.changes
+        if change.target_id == target_id
+    }
+    for change_type in (
+        ChangeType.STYLE_UPDATE,
+        ChangeType.PARAGRAPH_STYLE_UPDATE,
+        ChangeType.TEXT_UPDATE,
+    ):
+        if change_type in target_types:
+            return change_type
+    return None
+
+
+def _handled_api_fields(
+    handled_property_keys: frozenset[str],
+    field_names: dict[str, str],
+) -> frozenset[str]:
+    return frozenset(
+        api_field
+        for api_field in field_names.values()
+        if api_style_property_keys([api_field]) <= handled_property_keys
+    )
+
+
+def _unhandled_reset_fields(
+    fields: list[str] | None,
+    handled_property_keys: frozenset[str],
+) -> list[str] | None:
+    if not fields:
+        return None
+    remaining = [
+        field
+        for field in fields
+        if not api_style_property_keys([field]) <= handled_property_keys
+    ]
+    return remaining or None
 
 
 def _emit_copy_requests(
@@ -525,7 +747,7 @@ def generate_batch_requests(
         diff_result,
     )
     _emit_text_update_requests(
-        requests, buckets[ChangeType.TEXT_UPDATE], id_mapping
+        requests, buckets[ChangeType.TEXT_UPDATE], id_mapping, diff_result
     )
     _emit_style_update_requests(
         requests,
@@ -538,6 +760,7 @@ def generate_batch_requests(
         requests,
         buckets[ChangeType.PARAGRAPH_STYLE_UPDATE],
         id_mapping,
+        diff_result,
     )
     _emit_copy_requests(
         requests,

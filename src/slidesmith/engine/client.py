@@ -15,6 +15,7 @@ import re
 from typing import Any
 
 from slidesmith.engine.assets import (
+    AssetCache,
     AssetUploader,
     image_source_kind,
 )
@@ -477,6 +478,9 @@ class SlidesClient:
         )
 
         intended_slides = self._read_current_slides(folder_path)
+        self._mark_remote_cover_creates_as_local(
+            folder_path, intended_slides, diff_result
+        )
         intended_change_keys = {
             (change.target_id, change.change_type)
             for change in diff_result.changes
@@ -761,6 +765,44 @@ class SlidesClient:
             fetch_image_dimensions,
         )
 
+    @staticmethod
+    def _mark_remote_cover_creates_as_local(
+        folder_path: Path,
+        intended_slides: dict[str, list[Any]],
+        diff_result: DiffResult,
+    ) -> None:
+        """Model derived remote creates as local rasters for persistence QA."""
+        cache = AssetCache(folder_path)
+
+        def replace_source(elements: list[Any], target_id: str, source: str) -> bool:
+            for element in elements:
+                if getattr(element, "clean_id", None) == target_id:
+                    element.src = source
+                    return True
+                if replace_source(getattr(element, "children", []), target_id, source):
+                    return True
+            return False
+
+        for change in diff_result.changes:
+            if (
+                change.change_type != ChangeType.CREATE
+                or change.fit != "cover"
+                or not change.src
+                or image_source_kind(change.src) != "remote"
+                or change.new_position is None
+            ):
+                continue
+            source = cache.remote_cover_local_source(
+                change.src,
+                change.new_position["w"] / change.new_position["h"],
+            )
+            if source is not None:
+                replace_source(
+                    intended_slides.get(change.slide_index or "", []),
+                    change.target_id,
+                    source,
+                )
+
     async def _resolve_local_asset_requests(
         self,
         folder_path: Path,
@@ -774,9 +816,8 @@ class SlidesClient:
             if change.change_type == ChangeType.CREATE
             and change.fit == "cover"
             and change.src is not None
-            and image_source_kind(change.src) == "local"
         }
-        local_cover_creates = {
+        cover_creates = {
             object_id: cover_changes[target_id]
             for target_id, object_id in diff_result.generated_image_ids.items()
             if target_id in cover_changes
@@ -788,27 +829,27 @@ class SlidesClient:
             source = image_request.get("url")
             if not isinstance(source, str):
                 continue
-            if image_source_kind(source) == "local":
-                cover_change = local_cover_creates.get(image_request.get("objectId"))
-                if cover_change is not None and cover_change.new_position is not None:
-                    try:
-                        image_request["url"] = await self._resolve_asset_source(
-                            folder_path,
-                            source,
-                            cover_aspect=(
-                                cover_change.new_position["w"]
-                                / cover_change.new_position["h"]
-                            ),
-                        )
-                    except ValueError as exc:
-                        raise ValueError(
-                            f"Image element '{cover_change.target_id}' cover fit "
-                            f"could not derive a static asset: {exc}"
-                        ) from exc
-                else:
+            cover_change = cover_creates.get(image_request.get("objectId"))
+            if cover_change is not None and cover_change.new_position is not None:
+                try:
                     image_request["url"] = await self._resolve_asset_source(
-                        folder_path, source
+                        folder_path,
+                        source,
+                        cover_aspect=(
+                            cover_change.new_position["w"]
+                            / cover_change.new_position["h"]
+                        ),
+                        element_id=cover_change.target_id,
                     )
+                except ValueError as exc:
+                    raise ValueError(
+                        f"Image element '{cover_change.target_id}' cover fit "
+                        f"could not derive a static asset: {exc}"
+                    ) from exc
+            elif image_source_kind(source) == "local":
+                image_request["url"] = await self._resolve_asset_source(
+                    folder_path, source
+                )
             object_id_key = (
                 "imageObjectId" if "replaceImage" in request else "objectId"
             )
@@ -869,12 +910,14 @@ class SlidesClient:
         source: str,
         *,
         cover_aspect: float | None = None,
+        element_id: str | None = None,
     ) -> str:
         return await resolve_asset_source(
             folder_path,
             source,
             self._asset_uploader,
             cover_aspect=cover_aspect,
+            element_id=element_id,
         )
 
     async def _push_per_slide(

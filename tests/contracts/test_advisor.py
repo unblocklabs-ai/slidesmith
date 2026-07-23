@@ -387,14 +387,13 @@ def test_near_overflow_uses_phase_five_measurement(
         tmp_path,
         [[_text_box("near", 10, 10, width=100, height=45)]],
     )
-    # The generated SML keeps the same local text/style projection.  The
-    # fixture's dimensions put two measured lines inside the 90%-100% band.
+    # The calibrated 3.6pt vertical inset leaves this short fixture below the
+    # near-overflow band; captured inset overrides remain covered separately.
     suggestions = advise_folder(folder, rule="near-overflow")
-    assert [item.element_ids for item in suggestions] == [("near",)]
-    assert suggestions[0].command_hint is None
+    assert suggestions == []
 
 
-def test_near_overflow_exactly_full_content_height_is_a_quiet_boundary(
+def test_near_overflow_exactly_full_content_height_is_advisory_boundary(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -411,7 +410,8 @@ def test_near_overflow_exactly_full_content_height_is_a_quiet_boundary(
         )
 
     monkeypatch.setattr("slidesmith.engine.advisor._measure_text_element", exact_measurement)
-    assert advise_folder(folder, rule="near-overflow") == []
+    suggestions = advise_folder(folder, rule="near-overflow")
+    assert [suggestion.element_ids for suggestion in suggestions] == [("full",)]
 
 
 def test_clean_deck_has_no_advisor_suggestions(tmp_path: Path) -> None:
@@ -451,7 +451,11 @@ def test_advise_rejects_workspace_missing_minimum_schema(
         cli.main(["advise", str(folder)])
 
     assert excinfo.value.code == 1
-    assert f"Missing Slidesmith workspace file: {folder / 'presentation.json'}" in capsys.readouterr().err
+    error = capsys.readouterr().err
+    assert str(folder) in error
+    assert "presentation.json" in error
+    assert ".pristine/presentation.zip" in error
+    assert "workspace directory created by slidesmith pull or slidesmith create" in error
 
 
 def test_advisor_import_does_not_load_network_modules() -> None:

@@ -53,6 +53,16 @@ GOOGLE_DEFAULT_TEXT_LAYOUT_CLASSES = frozenset(
         "font-family-arial",
     }
 )
+GOOGLE_DEFAULT_ELEMENT_STYLE_CLASSES = frozenset(
+    {
+        "fill-none",
+        "stroke-none",
+        "stroke-w-0.75",
+        "content-align-top",
+        "content-align-middle",
+        "content-align-bottom",
+    }
+)
 _FONT_FAMILY_WEIGHT_PROPERTY_KEYS = frozenset(
     {"text.font_family", "text.font_weight"}
 )
@@ -323,6 +333,29 @@ def _format_changed_element_non_text_style_classes(
     return " ".join(classes) or "(none)"
 
 
+def _format_changed_element_text_style_classes(
+    change: Change,
+    element: ParsedElement,
+) -> str:
+    """Format only text and paragraph groups for persistence comparison."""
+    styles = element.styles
+    if styles is None:
+        return "(none)"
+    changed = change.new_styles
+    classes: list[str] = []
+    if (
+        changed is not None and changed.text_style is not None
+    ) or change.text_style_reset_fields:
+        if styles.text_style is not None:
+            classes.extend(styles.text_style.to_classes())
+    if (
+        changed is not None and changed.paragraph_style is not None
+    ) or change.paragraph_style_reset_fields:
+        if styles.paragraph_style is not None:
+            classes.extend(styles.paragraph_style.to_classes())
+    return " ".join(classes) or "(none)"
+
+
 def _changed_text_property_keys(change: Change) -> set[str]:
     """Return the effective text properties represented by one style change."""
     keys: set[str] = set()
@@ -448,6 +481,12 @@ def _non_text_style_matches(
     sent = _format_changed_element_non_text_style_classes(change, intended_element)
     remote = _format_changed_element_non_text_style_classes(change, remote_element)
     if sent == remote:
+        return True
+    if newly_created and _only_google_default_element_style_additions(
+        sent,
+        remote,
+        author_removed_classes,
+    ):
         return True
     return _only_google_default_class_additions(
         sent,
@@ -678,6 +717,36 @@ def _persistence_warning_severity(
             return WarningSeverity.WARNING
         sent = _format_changed_element_style_classes(change, intended_element)
         remote = _format_changed_element_style_classes(change, remote_element)
+        if newly_created:
+            sent_non_text = _format_changed_element_non_text_style_classes(
+                change, intended_element
+            )
+            remote_non_text = _format_changed_element_non_text_style_classes(
+                change, remote_element
+            )
+            sent_text = _format_changed_element_text_style_classes(
+                change, intended_element
+            )
+            remote_text = _format_changed_element_text_style_classes(
+                change, remote_element
+            )
+            text_defaults = sent_text == remote_text or _only_google_default_class_additions(
+                sent_text,
+                remote_text,
+                remote_element,
+                normalization_removed_classes,
+                allow_created_element_alignment_default=True,
+            )
+            if (
+                sent_non_text != remote_non_text
+                and _only_google_default_element_style_additions(
+                    sent_non_text,
+                    remote_non_text,
+                    normalization_removed_classes,
+                )
+                and text_defaults
+            ):
+                return None
         if not _only_google_default_class_additions(
             sent,
             remote,
@@ -840,6 +909,47 @@ def _only_google_default_class_additions(
                     or element_type == "TEXT_BOX"
                 ):
                     return False
+    return True
+
+
+def _only_google_default_element_style_additions(
+    sent: str | set[str],
+    remote: str | set[str],
+    author_removed_classes: frozenset[str] | set[str] | None = None,
+) -> bool:
+    """Accept only create-time fill/stroke/default-alignment additions.
+
+    These classes stay separate from the text-layout allowlist: an authored
+    paint or stroke class must never be normalized away by text verification.
+    """
+    sent_classes = (
+        set()
+        if sent == "(none)"
+        else set(sent.split() if isinstance(sent, str) else sent)
+    )
+    remote_classes = (
+        set()
+        if remote == "(none)"
+        else set(remote.split() if isinstance(remote, str) else remote)
+    )
+    added = remote_classes - sent_classes
+    if not added or not sent_classes <= remote_classes:
+        return False
+    if not added <= GOOGLE_DEFAULT_ELEMENT_STYLE_CLASSES:
+        return False
+    if added & (author_removed_classes or set()):
+        return False
+    authored_alignment = {
+        class_name
+        for class_name in sent_classes | (author_removed_classes or set())
+        if class_name.startswith("content-align-")
+    }
+    if added & {
+        "content-align-top",
+        "content-align-middle",
+        "content-align-bottom",
+    } and authored_alignment:
+        return False
     return True
 
 
@@ -1026,6 +1136,7 @@ def append_persistence_warning(
 
 
 __all__ = [
+    "GOOGLE_DEFAULT_ELEMENT_STYLE_CLASSES",
     "GOOGLE_DEFAULT_TEXT_LAYOUT_CLASSES",
     "LINE_NEAR_DEGENERATE_AXIS_THRESHOLD_PT",
     "PERSISTENCE_GEOMETRY_TOLERANCE_PT",
@@ -1036,6 +1147,7 @@ __all__ = [
     "_index_parsed_elements",
     "_is_normalized_persistence_change",
     "_normalized_persistence_detail",
+    "_only_google_default_element_style_additions",
     "_only_google_default_class_additions",
     "_paragraph_style_classes",
     "_runs_only_gain_google_defaults",

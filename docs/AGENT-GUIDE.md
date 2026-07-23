@@ -126,6 +126,15 @@ the new-editor default for the shape kind; pulled API evidence confirms middle
 for those geometric shape creates but not for `TextBox`, so a middle-aligned
 `TextBox` still warns. Suppression applies only when every authored class is
 still present remotely and the entire difference is additions from this set.
+For a newly created element only, the non-text normalization set additionally
+allows an absent authored `fill` or `stroke` to become `fill-none` or
+`stroke-none`, and an absent stroke weight to become `stroke-w-0.75`, provided
+the authored stroke color, dash, and state remain present and no removed class
+was restored. These paint/stroke classes are intentionally not part of the
+shared text-layout allowlist, so existing elements and authored paint removal
+still warn. Foreground-color text-style requests likewise compare resolved
+UTF-16 spans before emitting: scope-only moves are omitted, while effective
+changes use explicit fixed ranges rather than default-dependent empty resets.
 Component-expanded children and image creates use the same created-element
 normalization path. The aspect-correct effective width/height of an authored
 `Image fit="contain"` is also the intended geometry, so Google's expected
@@ -285,8 +294,9 @@ V1 registers exactly four rules: `pseudo-group` looks for at least two similar
 repeated visual clusters and suggests each cluster instance; `buried-element`
 looks for an opaque-capable later sibling covering at least 90% of an earlier element;
 `stack-candidate` looks for three or more equal-size, equally spaced, common-axis
-siblings; and `near-overflow` reports measured text using 90–<100% of its content
-box. Suggestions are grouped by 1-based slide in text output. JSON is a stable
+siblings; and `near-overflow` reports measured text using 90–105% of its content
+box, covering the QA tolerance boundary before `TEXT_OVERFLOW` begins above 105%.
+Suggestions are grouped by 1-based slide in text output. JSON is a stable
 list of objects with `rule`, `slide`, `element_ids`, `message`, and nullable
 `command_hint` keys. The advisor never calls Google, changes files, creates QA
 findings, blocks `push`, or changes the acceptance workflow. The buried-element
@@ -770,23 +780,29 @@ Do not hand-edit this cache unless repairing a known-bad Drive file or URL.
 `stretch` is the default Google Slides API behavior: the image fills the
 authored box and may be distorted. `contain` preserves the source aspect ratio.
 `cover` preserves the source aspect ratio while center-cropping to fill the
-authored frame. New local cover sources are deterministically center-cropped by
-Pillow into an AssetCache-derived file keyed by source content hash, target
-aspect ratio, and derivation version, then resampled to the largest bounded
-exact rational target-aspect canvas that fits the crop when possible before
-upload. The raster is capped at 4096px per dimension and 16,777,216 total
-pixels. EXIF orientation is applied before cover math, and animated or
-multi-frame local sources are rejected with a static-source error. New remote
-cover sources use an isolated create-at-frame followed by
-`replaceImage` with `imageReplaceMethod="CENTER_CROP"` and an authored-frame
-geometry pin; this same-batch sequence, including its pin, is a hypothesis and
-needs one live validation push before release.
-During offline `diff`, only a remote `contain` source downloads an image. At
-push time, remote `stretch` dimensions are also fetched when possible to improve
-intrinsic geometry. These fetches send no credentials, reject non-public
-destinations at every redirect hop, are pinned to the validated DNS address,
-and are limited to 25 MB and 100 million pixels before Pillow inspection. Local
-dimensions are read directly with Pillow and never pass through the HTTP fetcher.
+authored frame. New local and remote cover sources are deterministically
+center-cropped by Pillow into an AssetCache-derived PNG, then resampled to the
+largest bounded exact rational target-aspect canvas that fits the crop when
+possible before upload. Local keys use source content hash, target aspect ratio,
+and derivation version. Remote keys additionally include the canonical remote
+URL, so their shape is `sha256("remote\0URL\0content_sha256\0aspect_hex\0version")`.
+The raster is capped at 4096px per dimension and 16,777,216 total pixels. EXIF
+orientation is applied before cover math, and animated or multi-frame sources
+are rejected with a static-source error. A remote cover is downloaded during
+push-time asset resolution through the guarded image fetcher, with a 20 MB byte
+limit, and uploaded through the same Drive cache as local assets. A cache hit
+for the same URL, aspect, and derivation version reuses the derived upload
+without refetching.
+
+New-image remote covers therefore emit one plain `createImage` request using the
+derived asset; they do not emit `replaceImage` or a geometry pin. During offline
+`diff`, remote cover sources are not downloaded. At push time, remote `stretch`
+dimensions are also fetched when possible to improve intrinsic geometry. These
+fetches send no credentials, reject non-public destinations at every redirect
+hop, are pinned to the validated DNS address, and are limited to 25 MB and 100
+million pixels before Pillow inspection (20 MB for remote cover derivation).
+Local dimensions are read directly with Pillow and never pass through the HTTP
+fetcher.
 Slidesmith shrinks either
 the authored width or height, keeping the resulting frame anchored at the
 authored top-left `x`, `y` position. Authored `x` and `y` must be finite; `w` and
@@ -805,15 +821,18 @@ keeps the current source-less representation for images, including images whose
 crop offsets look centered: adding `src`/`fit` to those generated elements would
 make ordinary edit-in-place and source replacement ambiguous because the pulled
 URL is a volatile render URL rather than authored source. Therefore pull does
-not infer `fit="cover"`; author it explicitly when replacing a source. A live
-validation push for new remote cover images is intentionally deferred to the
-maintainer. After a cover replacement, persistence verification reads refreshed
-crop offsets and checks them against the centered crop with a small float
-tolerance; contain/stretch images retain their existing source and geometry
-checks.
+not infer `fit="cover"`; author it explicitly when replacing a source. New
+remote cover creates are aspect-matched local-derived creates and use the same
+persistence exemption as local derived creates. Existing-image `fit="cover"`
+replacements still use native `replaceImage` with
+`imageReplaceMethod="CENTER_CROP"` and a relative geometry pin; that existing
+image path remains the one live-unvalidated cover path. Persistence checks its
+refreshed crop offsets against the centered crop with a small float tolerance.
+Contain/stretch images retain their existing source and geometry checks.
 
-For direct HTTP(S) sources, the image must be publicly fetchable, less than 50
-MB, and less than 25 megapixels. A URL following the
+For direct HTTP(S) sources, the image must be publicly fetchable and no larger
+than 100 million pixels. Remote cover derivation additionally limits the downloaded source
+to 20 MB; other guarded metadata fetches use the 25 MB limit. A URL following the
 `https://picsum.photos/<width>/<height>` pattern, such as the example above, is
 useful for testing. Private URLs, data URLs, and URLs requiring an authorization
 header are not supported. Local files work only through the Drive upload path
@@ -1132,8 +1151,10 @@ fixes:
 - `OUT_OF_BOUNDS`: any element edge crosses the page boundary.
 - `TEXT_OVERFLOW`: paragraph-aware estimated text height exceeds the frame
   height by more than the 5% decision tolerance. Measurement uses a content box
-  that subtracts Google's default 0.1in (7.2pt) inset on every side, or the
-  element's captured `textInsets` when present. Each paragraph is wrapped from
+  that subtracts a 7.2pt horizontal and field-calibrated 3.6pt vertical inset,
+  or the element's captured `textInsets` when present. The 3.6pt value is
+  calibrated from rendered thumbnails; only the former 7.2pt vertical value is
+  proven wrong. Each paragraph is wrapped from
   its own run metrics; authored `leading-*`, `space-above-*`, and
   `space-below-*` are applied, while an omitted leading falls back to the
   historical 1.2 multiplier. Captured `TEXT_AUTOFIT`/`SHRINK_ON_OVERFLOW`

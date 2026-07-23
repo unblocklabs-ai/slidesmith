@@ -7,8 +7,6 @@ import math
 from typing import Any
 
 from slidesmith.engine.classes import Color
-from slidesmith.engine.assets import image_source_kind
-from slidesmith.engine.bounds import BoundingBox
 from slidesmith.engine.class_style_requests import (
     _create_class_line_style_request,
     _create_class_paragraph_style_request,
@@ -27,7 +25,6 @@ from slidesmith.engine.text_requests import (
     _create_run_style_requests,
     _create_text_insert_requests,
 )
-from slidesmith.engine.image_replace import _replacement_geometry_requests
 from slidesmith.engine.units import hex_to_rgb, pt_to_emu
 
 _MIN_EMU = 1
@@ -420,10 +417,9 @@ def _create_image_request(
             }
 
     if fit == "cover":
-        # createImage has no crop mode. Create the object at the authored frame
-        # first; the isolated cover strategy below follows with CENTER_CROP for
-        # remote sources. Local sources are replaced with a deterministic,
-        # aspect-matched Pillow asset at push time.
+        # createImage has no crop mode. Asset resolution replaces both local
+        # and new remote cover sources with deterministic, aspect-matched
+        # Pillow assets before this plain createImage request is pushed.
         return {
             "createImage": {
                 "objectId": object_id,
@@ -585,12 +581,6 @@ def emit_recreated_element(
                 image_pixel_height=image_pixel_height,
             )
         )
-        if image_fit == "cover" and image_url and image_source_kind(image_url) == "remote":
-            requests.extend(
-                _remote_cover_create_then_replace_strategy(
-                    object_id, image_url, position
-                )
-            )
     else:
         requests.append(
             _create_shape_request(
@@ -627,39 +617,6 @@ def emit_recreated_element(
             requests.extend(_create_run_style_requests(object_id, runs))
 
     return requests
-
-
-def _remote_cover_create_then_replace_strategy(
-    object_id: str, url: str, position: dict[str, float]
-) -> list[dict[str, Any]]:
-    """Return the isolated, unvalidated remote create -> crop -> pin sequence.
-
-    TODO: one live Google API validation push is required before releasing this
-    remote-new-image strategy, including the post-crop geometry pin. The request
-    ordering is deliberately isolated so a rejected sequence can be replaced
-    without changing ordinary image create behavior.
-    """
-    authored_frame = BoundingBox(
-        position["x"], position["y"], position["w"], position["h"]
-    )
-    _, geometry_pin = _replacement_geometry_requests(
-        object_id,
-        authored_frame,
-        pixel_width=None,
-        pixel_height=None,
-        fit="cover",
-        target=authored_frame,
-    )
-    return [
-        {
-            "replaceImage": {
-                "imageObjectId": object_id,
-                "url": url,
-                "imageReplaceMethod": "CENTER_CROP",
-            }
-        },
-        geometry_pin,
-    ]
 
 
 def _create_element_requests(

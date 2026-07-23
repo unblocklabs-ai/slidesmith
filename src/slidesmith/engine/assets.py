@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from io import BytesIO
 import json
 import math
 import secrets
@@ -16,7 +17,8 @@ from typing import Any, Literal, Protocol
 import httpx
 from PIL import Image, ImageOps, UnidentifiedImageError
 
-from slidesmith.engine.image_fetch import validate_public_image_url
+from slidesmith.engine import image_fetch
+from slidesmith.engine.image_fetch import redact_image_url, validate_public_image_url
 from slidesmith.engine.permissions import (
     DrivePermissionError,
     GoogleDrivePermissionsClient,
@@ -194,16 +196,98 @@ class AssetCache:
                 f"Could not derive cover asset from local image {source!r}: {exc}"
             ) from exc
 
+        source_bytes = local_path.read_bytes()
+        return await self._resolve_cover_image(
+            image,
+            source_bytes,
+            target_aspect,
+            uploader,
+            label=label,
+            source_url=None,
+            data=self._read(),
+        )
+
+    async def resolve_remote_cover(
+        self,
+        source: str,
+        target_aspect: float,
+        uploader: AssetUploader,
+        *,
+        element_id: str | None = None,
+    ) -> str:
+        """Download, derive, cache, and upload a remote cover source."""
+        if not math.isfinite(target_aspect) or target_aspect <= 0:
+            raise ValueError("Cover target aspect ratio must be finite and positive")
+        label = (
+            f"Image element '{element_id}'"
+            if element_id
+            else f"Remote image {redact_image_url(source)!r}"
+        )
+        data = self._read()
+        aspect_key = target_aspect.hex()
+        cached = self._cached_remote_cover(data, source, aspect_key, target_aspect)
+        if cached is not None:
+            return cached
+        try:
+            source_bytes = image_fetch.fetch_image_bytes(source)
+            if len(source_bytes) > image_fetch.MAX_REMOTE_COVER_BYTES:
+                raise ValueError(
+                    "image download exceeds the "
+                    f"{image_fetch.MAX_REMOTE_COVER_BYTES // (1024 * 1024)} MB limit"
+                )
+            with Image.open(BytesIO(source_bytes)) as opened:
+                if getattr(opened, "is_animated", False) or getattr(
+                    opened, "n_frames", 1
+                ) > 1:
+                    raise ValueError(
+                        "remote cover requires a static source; animated or "
+                        "multi-frame images are not supported"
+                    )
+                image = ImageOps.exif_transpose(opened).copy()
+        except ValueError as exc:
+            raise ValueError(
+                f"{label} could not download a valid remote cover source: "
+                f"{redact_image_url(str(exc))}"
+            ) from exc
+        except (OSError, UnidentifiedImageError) as exc:
+            raise ValueError(
+                f"Could not derive cover asset from remote image "
+                f"{redact_image_url(source)!r}: {exc}"
+            ) from exc
+        return await self._resolve_cover_image(
+            image,
+            source_bytes,
+            target_aspect,
+            uploader,
+            label=label,
+            source_url=source,
+            data=data,
+        )
+
+    async def _resolve_cover_image(
+        self,
+        image: Image.Image,
+        source_bytes: bytes,
+        target_aspect: float,
+        uploader: AssetUploader,
+        *,
+        label: str,
+        source_url: str | None,
+        data: dict[str, Any],
+    ) -> str:
         width, height = image.size
         if width <= 0 or height <= 0:
-            raise ValueError(f"Local image {source!r} has invalid pixel dimensions")
-        source_hash = hashlib.sha256(local_path.read_bytes()).hexdigest()
+            raise ValueError(f"{label} has invalid pixel dimensions")
+        source_hash = hashlib.sha256(source_bytes).hexdigest()
         aspect_key = target_aspect.hex()
-        derived_key = hashlib.sha256(
-            f"{source_hash}\0{aspect_key}\0{COVER_DERIVATION_VERSION}".encode("ascii")
-        ).hexdigest()
+        key_material = (
+            f"remote\0{source_url}\0{source_hash}\0{aspect_key}\0"
+            f"{COVER_DERIVATION_VERSION}"
+            if source_url is not None
+            else f"{source_hash}\0{aspect_key}\0{COVER_DERIVATION_VERSION}"
+        )
+        derived_key = hashlib.sha256(key_material.encode("utf-8")).hexdigest()
         derived_path = self.workspace / ".slidesmith-cover" / f"{derived_key}.png"
-        data = self._read()
 
         derived_is_valid = False
         if derived_path.is_file():
@@ -236,20 +320,84 @@ class AssetCache:
             try:
                 cropped.save(derived_path, format="PNG", optimize=False)
             except OSError as exc:
-                raise ValueError(
-                    f"Could not derive cover asset from local image {source!r}: {exc}"
-                ) from exc
+                raise ValueError(f"Could not derive cover asset for {label}: {exc}") from exc
 
-        return await self._resolve_path(
-            derived_path,
-            uploader,
-            data,
-            extra={
-                "kind": "cover",
-                "sourceSha256": source_hash,
-                "targetAspect": aspect_key,
-            },
-        )
+        extra = {
+            "kind": "cover",
+            "sourceSha256": source_hash,
+            "targetAspect": aspect_key,
+            "derivationVersion": str(COVER_DERIVATION_VERSION),
+        }
+        if source_url is not None:
+            extra["sourceUrl"] = source_url
+        return await self._resolve_path(derived_path, uploader, data, extra=extra)
+
+    def _cached_remote_cover(
+        self,
+        data: dict[str, Any],
+        source: str,
+        aspect_key: str,
+        target_aspect: float,
+    ) -> str | None:
+        for entry in data["assets"]:
+            if (
+                entry.get("kind") != "cover"
+                or entry.get("sourceUrl") != source
+                or entry.get("targetAspect") != aspect_key
+                or entry.get("derivationVersion")
+                != str(COVER_DERIVATION_VERSION)
+            ):
+                continue
+            url = entry.get("url")
+            path_value = entry.get("path")
+            if not isinstance(url, str) or not url or not isinstance(path_value, str):
+                continue
+            derived_path = self.workspace / path_value
+            if not derived_path.is_file():
+                continue
+            try:
+                with Image.open(derived_path) as derived:
+                    if _aspect_matches(derived.size, target_aspect):
+                        return url
+            except (OSError, UnidentifiedImageError):
+                continue
+        return None
+
+    def remote_cover_local_source(
+        self,
+        source: str,
+        target_aspect: float,
+    ) -> str | None:
+        """Return the cached workspace path for a derived remote cover."""
+        if not math.isfinite(target_aspect) or target_aspect <= 0:
+            return None
+        aspect_key = target_aspect.hex()
+        data = self._read()
+        for entry in data["assets"]:
+            if (
+                entry.get("kind") != "cover"
+                or entry.get("sourceUrl") != source
+                or entry.get("targetAspect") != aspect_key
+                or entry.get("derivationVersion")
+                != str(COVER_DERIVATION_VERSION)
+            ):
+                continue
+            path_value = entry.get("path")
+            if not isinstance(path_value, str) or not path_value:
+                continue
+            derived_path = (self.workspace / path_value).resolve()
+            if (
+                not derived_path.is_relative_to(self.workspace)
+                or not derived_path.is_file()
+            ):
+                continue
+            try:
+                with Image.open(derived_path) as derived:
+                    if _aspect_matches(derived.size, target_aspect):
+                        return self._path_key(derived_path)
+            except (OSError, UnidentifiedImageError):
+                continue
+        return None
 
     async def _resolve_path(
         self,

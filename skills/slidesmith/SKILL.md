@@ -78,7 +78,8 @@ Push diagnostics distinguish actionable `warning:` lines from lower-severity
 
 `advise` is an offline, advisory-only pattern scan over a pulled workspace. It
 reports repeated pseudo-group clusters, buried opaque-capable elements, Stack
-candidates, and text boxes with 90–<100% measured content-height utilization; use
+candidates, and text boxes with 90–105% measured content-height utilization
+before QA flags values above 105%; use
 `--rule ID` or `--json` for agent workflows.
 It never creates QA findings or blocks a push. The `group` command turns a
 selected one-slide set of top-level siblings into a native Google group through
@@ -189,12 +190,14 @@ authored frame). For an existing image, set a new `src` (optionally with
 `fit`) in SML and use the normal `diff`/`push` loop; this emits
 `IMAGE_UPDATE`/`replaceImage` and a geometry pin. A `fit` change requires a
 `src`. For a clean-diff one-shot swap, use `slidesmith replace-image
-<id> <element-id> <new-src> --fit cover --dry-run`. New local cover images are
-center-cropped into a deterministic cached asset before the normal Drive upload;
-new remote cover images use a create-at-frame, `CENTER_CROP` replace, and
-authored-frame geometry pin strategy. That same-batch sequence is still a
-hypothesis and requires one live validation push before release. Pull keeps
-images source-less as before and does
+<id> <element-id> <new-src> --fit cover --dry-run`. New local and remote cover
+images are center-cropped into a deterministic cached asset before the normal
+Drive upload; a new remote cover emits only a plain `createImage` using that
+derived asset. The remote cache key includes the URL, downloaded content hash,
+target aspect, and derivation version, and a cache hit does not refetch. Existing
+image cover replacements retain the native `CENTER_CROP` replace plus geometry
+pin path; that is the one live-unvalidated cover path. Pull keeps images
+source-less as before and does
 not infer `cover` from crop properties because Google's volatile render URL is
 not an authored source; write `src` and `fit="cover"` explicitly when replacing.
 
@@ -219,10 +222,12 @@ role-aware restyle.
 `check` labels findings NEW / PRE-EXISTING / RESOLVED vs your last pull. Accept
 intentional composition so it stops warning: `check <id> --accept <finding-id>`
 or add a `qa-accept-<rule>` class to the element inline (stripped before push).
-Overflow QA measures each paragraph/run inside a 7.2pt-per-side default text
-content inset, wraps at whitespace, applies authored leading and paragraph
-spacing, and consumes captured text-autofit scale/reduction only for untouched
-elements; pending text or run-size edits deactivate that captured adjustment.
+Overflow QA measures each paragraph/run inside a 7.2pt horizontal and
+field-calibrated 3.6pt vertical default text content inset, wraps at whitespace,
+applies authored leading and paragraph spacing, and consumes captured
+text-autofit scale/reduction only for untouched elements; pending text or
+run-size edits deactivate that captured adjustment. Captured per-element insets
+override both defaults.
 `NONE` is not treated as shrinkable. Overlap QA remains conservative for
 text-vs-text, but uses alignment-aware estimated paragraph ink for
 text-vs-non-text pairs; only `<Line>` elements remain unconditionally exempt.

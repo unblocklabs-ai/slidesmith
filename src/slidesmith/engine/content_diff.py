@@ -120,6 +120,13 @@ def diff_presentation(
             pristine_elements[elem_id] = elem
             pristine_slide_map[elem_id] = slide_idx
 
+    # Request planning needs the same parsed old/new element pair used here
+    # for diffing in order to resolve inherited text styles by UTF-16 span.
+    # Keep this as private result metadata so direct Change/DiffResult callers
+    # retain their existing construction contract and use the legacy planner
+    # fallback when the pair is unavailable.
+    setattr(result, "_pristine_elements", pristine_elements)
+
     # Flatten edited elements, tracking duplicates
     # Note: We can't use flatten_elements because it returns a dict which loses duplicates
     edited_elements: dict[

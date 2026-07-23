@@ -560,7 +560,7 @@ def test_existing_image_cover_uses_center_crop_and_authored_frame_pin(
     }
 
 
-def test_new_remote_cover_is_create_then_center_crop_with_same_object_id() -> None:
+def test_new_remote_cover_is_a_plain_create_until_push_asset_resolution() -> None:
     result = _diff(
         '<Slide><Image id="hero" src="https://example.com/hero.png" '
         'fit="cover" x="12" y="18" w="160" h="90"/></Slide>'
@@ -568,19 +568,10 @@ def test_new_remote_cover_is_create_then_center_crop_with_same_object_id() -> No
 
     requests = generate_batch_requests(result, {}, {"01": "slide_1"})
 
-    assert [next(iter(request)) for request in requests] == [
-        "createImage",
-        "replaceImage",
-        "updatePageElementTransform",
-    ]
+    assert [next(iter(request)) for request in requests] == ["createImage"]
     created_id = requests[0]["createImage"]["objectId"]
     assert created_id == result.generated_image_ids["hero"]
-    assert requests[1]["replaceImage"] == {
-        "imageObjectId": created_id,
-        "url": "https://example.com/hero.png",
-        "imageReplaceMethod": "CENTER_CROP",
-    }
-    assert requests[2]["updatePageElementTransform"]["objectId"] == created_id
+    assert requests[0]["createImage"]["url"] == "https://example.com/hero.png"
 
 
 def test_cover_persistence_allows_normalized_crop_but_not_dropped_swap() -> None:

@@ -30,7 +30,9 @@ OPAQUE_ALPHA_THRESHOLD = 0.99
 STACK_SIZE_TOLERANCE_PT = 2.0
 STACK_GAP_TOLERANCE_PT = 2.0
 NEAR_OVERFLOW_LOWER_RATIO = 0.90
-NEAR_OVERFLOW_UPPER_RATIO = 1.00
+# QA flags only values strictly above its 5% decision tolerance.  Include the
+# tolerance boundary here so advisor and QA cover the full 90%-to-105% band.
+NEAR_OVERFLOW_UPPER_RATIO = 1.05
 
 
 @dataclass(frozen=True)
@@ -491,7 +493,7 @@ def near_overflow_rule(context: WorkspaceContext) -> list[Suggestion]:
                 or not math.isfinite(measured_height)
                 or not NEAR_OVERFLOW_LOWER_RATIO * content_height
                 <= measured_height
-                < NEAR_OVERFLOW_UPPER_RATIO * content_height
+                <= NEAR_OVERFLOW_UPPER_RATIO * content_height
             ):
                 continue
             ratio = measured_height / content_height

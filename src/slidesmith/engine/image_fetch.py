@@ -19,6 +19,7 @@ _MAX_REDIRECTS = 5
 _REDIRECT_STATUSES = {301, 302, 303, 307, 308}
 _READ_CHUNK_BYTES = 64 * 1024
 MAX_IMAGE_BYTES = 25 * 1024 * 1024
+MAX_REMOTE_COVER_BYTES = 20 * 1024 * 1024
 MAX_IMAGE_PIXELS = 100_000_000
 _SCHEME_URL_TOKEN = re.compile(
     r"(?P<scheme>[a-z](?>[a-z0-9+.-]{0,31}))://[^\s<>\"']+",
@@ -133,6 +134,21 @@ def validate_public_image_url(url: str, *, resolve_host: bool) -> _ResolvedUrl:
 
 def fetch_image_dimensions(url: str) -> tuple[int, int]:
     """Fetch an image through validated, IP-pinned redirect hops."""
+    payload = _fetch_image_payload(url, max_bytes=MAX_IMAGE_BYTES, purpose="dimensions")
+    return _validated_image_dimensions(payload)
+
+
+def fetch_image_bytes(url: str) -> bytes:
+    """Fetch validated image bytes for remote asset derivation."""
+    return _fetch_image_payload(
+        url,
+        max_bytes=MAX_REMOTE_COVER_BYTES,
+        purpose="cover asset",
+    )
+
+
+def _fetch_image_payload(url: str, *, max_bytes: int, purpose: str) -> bytes:
+    """Fetch one bounded image payload through validated redirect hops."""
     current_url = url
     try:
         for redirect_count in range(_MAX_REDIRECTS + 1):
@@ -153,22 +169,25 @@ def fetch_image_dimensions(url: str) -> tuple[int, int]:
                     raise ValueError(
                         f"image request returned HTTP {response.status}"
                     )
-                payload = _read_bounded(response)
+                payload = _read_bounded(response, max_bytes=max_bytes)
             finally:
                 response.close()
                 connection.close()
 
-            expected_size = _preflight_dimensions(payload)
-            _require_bounded_pixels(expected_size)
-            with Image.open(BytesIO(payload)) as image:
-                if image.size != expected_size:
-                    raise ValueError("image dimensions changed during validation")
-                return image.size
+            _validated_image_dimensions(payload)
+            return payload
     except (OSError, ssl.SSLError, http.client.HTTPException, ValueError) as exc:
-        raise ValueError(
-            f"Could not fetch image dimensions from {redact_image_url(url)!r} "
-            f"for fit='contain': {redact_image_url(str(exc))}"
-        ) from exc
+        if purpose == "dimensions":
+            message = (
+                f"Could not fetch image dimensions from {redact_image_url(url)!r} "
+                f"for fit='contain': {redact_image_url(str(exc))}"
+            )
+        else:
+            message = (
+                f"Could not fetch {purpose} from {redact_image_url(url)!r}: "
+                f"{redact_image_url(str(exc))}"
+            )
+        raise ValueError(message) from exc
 
     raise AssertionError("unreachable")
 
@@ -180,7 +199,11 @@ def _require_public_address(address: ipaddress.IPv4Address | ipaddress.IPv6Addre
         )
 
 
-def _read_bounded(response: http.client.HTTPResponse) -> bytes:
+def _read_bounded(
+    response: http.client.HTTPResponse,
+    *,
+    max_bytes: int = MAX_IMAGE_BYTES,
+) -> bytes:
     content_length = response.getheader("Content-Length")
     if content_length is not None:
         try:
@@ -189,17 +212,30 @@ def _read_bounded(response: http.client.HTTPResponse) -> bytes:
             raise ValueError("image response has an invalid Content-Length") from exc
         if declared_size < 0:
             raise ValueError("image response has a negative Content-Length")
-        if declared_size > MAX_IMAGE_BYTES:
-            raise ValueError("image download exceeds the 25 MB limit")
+        if declared_size > max_bytes:
+            raise ValueError(
+                f"image download exceeds the {max_bytes // (1024 * 1024)} MB limit"
+            )
 
     chunks: list[bytes] = []
     total = 0
     while chunk := response.read(_READ_CHUNK_BYTES):
         total += len(chunk)
-        if total > MAX_IMAGE_BYTES:
-            raise ValueError("image download exceeds the 25 MB limit")
+        if total > max_bytes:
+            raise ValueError(
+                f"image download exceeds the {max_bytes // (1024 * 1024)} MB limit"
+            )
         chunks.append(chunk)
     return b"".join(chunks)
+
+
+def _validated_image_dimensions(payload: bytes) -> tuple[int, int]:
+    expected_size = _preflight_dimensions(payload)
+    _require_bounded_pixels(expected_size)
+    with Image.open(BytesIO(payload)) as image:
+        if image.size != expected_size:
+            raise ValueError("image dimensions changed during validation")
+        return image.size
 
 
 def _preflight_dimensions(payload: bytes) -> tuple[int, int]:

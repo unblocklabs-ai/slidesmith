@@ -5,10 +5,13 @@ from __future__ import annotations
 import argparse
 from typing import Any
 
+from slidesmith.cli_commands._support import _require_workspace
+
 
 def cmd_components(args: Any) -> None:
     from slidesmith.engine.components import load_components
 
+    _require_workspace(args.folder)
     library = load_components(args.folder)
     if args.show:
         definition = library.get(args.show)

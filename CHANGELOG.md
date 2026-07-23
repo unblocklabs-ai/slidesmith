@@ -24,12 +24,6 @@ agent-legible: name the command/flag and what an operator can now do.
   revision-locked `slidesmith group` command for native grouping of selected
   top-level siblings. Pseudo-group suggestions now require repeated similar
   clusters and expand their hints to the full selectable API object set.
-- Image `fit="cover"` authoring now center-crops to fill a frame: existing
-  replacements use `CENTER_CROP`, new local images use deterministic Pillow
-  assets through the normal cache/upload path, and new remote images use an
-  isolated create-then-`CENTER_CROP` strategy followed by an authored-frame
-  geometry pin. One live validation push for the new remote sequence, including
-  its pin, remains a maintainer TODO before release.
 
 ### Fixed
 
@@ -47,12 +41,33 @@ agent-legible: name the command/flag and what an operator can now do.
   dimension and 16,777,216 pixels). Cover persistence checks require refreshed
   CENTER_CROP offsets, allowing at most 2.5e-4 opposing-offset asymmetry;
   aspect-matched local derived creates remain exempt.
+- New remote `fit="cover"` images now download through the guarded 20 MB fetch
+  path, derive an aspect-matched cached Pillow asset keyed by URL and content
+  hash, and upload it before emitting a plain `createImage`; the retired
+  create/`CENTER_CROP`/geometry-pin sequence is no longer used for new images.
+- Workspace-folder CLI errors now name the attempted path, identify missing
+  `presentation.json` or `.pristine/presentation.zip`, and explain that the
+  argument must be the workspace directory created by `pull` or `create`.
 - Post-push persistence verification now treats element, paragraph, and run
   text styles with identical effective per-span values as equivalent, including
   harmless run re-segmentation; authored drops and value changes still warn.
   The intentional exception is a redundant class removal whose effective value
   remains inherited identically from another scope, which is suppressed as
   scope-ownership noise.
+- Foreground-color scope moves now compare resolved UTF-16 spans before
+  request emission: unchanged effective values produce no request, while real
+  changes use explicit fixed-range values instead of default-dependent resets.
+- Text and paragraph scope moves now use the same effective UTF-16 span planner
+  for every supported property, including font size, weight, bold, and leading;
+  only genuine effective removals emit empty field-mask resets.
+- Newly created elements now suppress only Google's fill/stroke/stroke-weight
+  normalization additions when authored paint, dash, and state otherwise
+  match; existing elements and authored removals remain warnings.
+- QA and advisor text measurement now use 7.2pt horizontal and calibrated
+  3.6pt vertical default insets; captured per-element inset overrides remain
+  authoritative.
+- Advisor near-overflow suggestions now cover the full 90%-to-105% band before
+  the QA overflow threshold, including the exact tolerance boundary.
 
 ### Changed
 
@@ -64,6 +79,8 @@ agent-legible: name the command/flag and what an operator can now do.
   contiguous paint-order runs are nested, and SML depth-first document order
   is guaranteed to match Google's back-to-front paint order. Existing
   workspaces migrate naturally on their next pull.
+- `slidesmith pull` accepts `--dir` as an alias for `-o/--output-dir`, matching
+  the existing `create --dir` spelling.
 - `slidesmith check` warns when local edits are pending before downloading
   thumbnails, making clear that the thumbnails/contact sheet show the remote
   deck and advising `slidesmith push` to sync first.

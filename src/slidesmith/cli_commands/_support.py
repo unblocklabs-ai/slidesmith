@@ -18,6 +18,38 @@ from slidesmith.engine.diff_model import PushWarning, WarningSeverity
 _BARE_TOKEN_EXPIRY_WARNING_SECONDS = 120
 
 
+def _require_workspace(folder: str | Path) -> Path:
+    """Validate a folder argument and explain how to recover from a bad path."""
+    path = Path(folder)
+    missing = [
+        relative
+        for relative in (Path("presentation.json"), Path(".pristine") / "presentation.zip")
+        if not (path / relative).is_file()
+    ]
+    if not missing:
+        return path
+    # Local-only editing helpers are also useful against deliberately small
+    # SML projections (including a standalone component library); keep those
+    # documented shapes valid while rejecting arbitrary directories/files.
+    if (
+        not (path / "presentation.json").exists()
+        and (
+            (
+                (path / "slides").is_dir()
+                and any((path / "slides").glob("*/content.sml"))
+            )
+            or (path / "components.sml").is_file()
+        )
+    ):
+        return path
+    missing_text = ", ".join(str(relative) for relative in missing)
+    raise ValueError(
+        f"Not a Slidesmith workspace: {path} (missing {missing_text}). "
+        "The folder argument must be the workspace directory created by "
+        "slidesmith pull or slidesmith create."
+    )
+
+
 def _presentation_id(url_or_id: str) -> str:
     m = re.search(r"/presentation/d/([a-zA-Z0-9_-]+)", url_or_id)
     presentation_id = m.group(1) if m else url_or_id

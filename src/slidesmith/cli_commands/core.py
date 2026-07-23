@@ -12,6 +12,7 @@ from typing import Any
 
 from slidesmith.cli_commands._support import (
     _presentation_id,
+    _require_workspace,
     _request_id_legend,
     print_push_warnings,
     _transport_options,
@@ -172,6 +173,7 @@ def cmd_create(args: Any) -> None:
 
 
 def cmd_diff(args: Any) -> None:
+    _cli_helper("_require_workspace", _require_workspace)(args.folder)
     _cli_helper("_warn_if_stale", _warn_if_stale)(args.folder)
     summary = bool(getattr(args, "summary", False))
     slide = getattr(args, "slide", None)
@@ -216,6 +218,8 @@ def cmd_push(args: Any) -> None:
 
     if args.resume and not args.per_slide:
         raise ValueError("--resume requires --per-slide")
+
+    _cli_helper("_require_workspace", _require_workspace)(args.folder)
 
     if args.preflight != "off":
         from slidesmith.engine.qa import push_preflight
@@ -299,7 +303,14 @@ def register_core_commands(
 
     sp = subparsers.add_parser("pull", help="Pull a presentation to a local SML folder")
     sp.add_argument("url", help="Presentation URL or ID")
-    sp.add_argument("-o", "--output-dir", default=None)
+    sp.add_argument(
+        "-o",
+        "--output-dir",
+        "--dir",
+        dest="output_dir",
+        default=None,
+        help="Parent directory for the ID-named workspace (--dir is an alias for --output-dir)",
+    )
     sp.add_argument("--no-raw", action="store_true", help="Skip saving raw API JSON")
     sp.set_defaults(func=handlers["cmd_pull"])
 

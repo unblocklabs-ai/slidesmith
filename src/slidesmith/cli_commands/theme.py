@@ -5,10 +5,13 @@ from __future__ import annotations
 import argparse
 from typing import Any
 
+from slidesmith.cli_commands._support import _require_workspace
+
 
 def cmd_theme_extract(args: Any) -> None:
     from slidesmith.engine.theme import extract_theme, write_theme
 
+    _require_workspace(args.folder)
     theme = extract_theme(args.folder, from_slides=args.from_slides)
     output = write_theme(theme, args.output)
     print(
@@ -21,6 +24,7 @@ def cmd_theme_extract(args: Any) -> None:
 def cmd_theme_apply(args: Any) -> None:
     from slidesmith.engine.theme import apply_theme, load_theme
 
+    _require_workspace(args.folder)
     result = apply_theme(
         args.folder,
         load_theme(args.theme),
@@ -57,6 +61,7 @@ def cmd_theme_apply(args: Any) -> None:
 def cmd_snippet_copy(args: Any) -> None:
     from slidesmith.engine.snippet import copy_snippet
 
+    _require_workspace(args.folder)
     result = copy_snippet(args.folder, args.selector, args.output)
     print(
         f"Copied {result.elements} element(s) from slide {result.slide_number} "
@@ -67,6 +72,7 @@ def cmd_snippet_copy(args: Any) -> None:
 def cmd_snippet_paste(args: Any) -> None:
     from slidesmith.engine.snippet import parse_frame, paste_snippet
 
+    _require_workspace(args.folder)
     role_maps: list[tuple[str, str]] = []
     for value in args.map:
         if ":" not in value:

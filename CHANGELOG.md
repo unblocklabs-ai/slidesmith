@@ -14,7 +14,38 @@ agent-legible: name the command/flag and what an operator can now do.
 
 ## [Unreleased]
 
-_Nothing yet._
+### Added
+
+- `slidesmith push --json` now emits a machine-readable receipt with the
+  presentation ID, revisions, request/change counts, persistence verification
+  and warnings, and elapsed time. Render and QA results are future scope for
+  the receipt.
+
+### Changed
+
+- `create --dir` now creates missing parent directories before authentication
+  or the remote create call.
+- `replace-image` help and agent documentation now make its immediate,
+  revision-locked remote mutation explicit; it is not staged by `diff`/`push`.
+
+### Fixed
+
+- Persistence verification suppresses Google's created-`RoundRect`
+  `text-align-center` default only under the guarded create/type/authoring
+  conditions, while unchanged-text `TEXT_UPDATE` checks still verify all
+  intended paragraph properties before applying text-style-only comparison.
+- Text-style planning pins a known effective `bold` value alongside both
+  `weightedFontFamily` updates and resets, including explicit `bold: false`
+  removals.
+- `push --json` preserves warning parity and emits a structured partial
+  per-slide receipt before re-raising a mid-run failure; `--force --json` reads
+  the live revision once so `revision_before` is not stale.
+
+### Notes
+
+- `bold` combined with `font-weight-400` remains fail-closed: its possible
+  normalization to `font-weight-700` is not suppressed because rendered
+  equivalence is unproven.
 
 ## [0.8.0] — 2026-07-23 — Agent-native authoring & trust
 

@@ -84,6 +84,33 @@ async def test_create_materializes_normal_workspace_and_has_zero_diff(
         assert (folder / relative).read_bytes() == (pulled / relative).read_bytes()
 
 
+async def test_create_makes_nested_output_parent_before_remote_create(
+    tmp_path: Path,
+) -> None:
+    data = _data()
+    transport = CreateTransport(data)
+    output_path = tmp_path / "scratch" / "nested"
+
+    await SlidesClient(transport).create("Nested title", output_path)
+
+    assert output_path.is_dir()
+    assert transport.created_titles == ["Nested title"]
+
+
+async def test_create_rejects_file_output_parent_before_remote_create(
+    tmp_path: Path,
+) -> None:
+    data = _data()
+    transport = CreateTransport(data)
+    output_path = tmp_path / "not-a-directory"
+    output_path.write_text("occupied", encoding="utf-8")
+
+    with pytest.raises(NotADirectoryError, match="Output parent is not a directory"):
+        await SlidesClient(transport).create("Blocked title", output_path)
+
+    assert transport.created_titles == []
+
+
 @pytest.mark.asyncio
 async def test_google_transport_create_posts_title() -> None:
     requests: list[httpx.Request] = []

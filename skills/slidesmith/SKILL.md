@@ -53,6 +53,7 @@ slidesmith pull <deck-url-or-id> -o .   # -> <id>/slides/NN/content.sml
 # ... edit the SML (see below) ...
 slidesmith diff <id> --summary          # preview; --slide N to scope
 slidesmith push <id>                    # apply to the same deck
+slidesmith push <id> --json             # emit a machine-readable proof receipt
 slidesmith check <id> --contact-sheet   # download renders + geometry QA
 slidesmith advise <id>                  # local maintainability suggestions
 slidesmith group <id> 'id=a OR id=b'    # native grouping, revision-locked
@@ -75,6 +76,10 @@ follow-up pull renumbers folders to the actual deck order.
 
 Push diagnostics distinguish actionable `warning:` lines from lower-severity
 `notice:` lines and render warnings first.
+`push --json` includes persistence results but not render or QA results; those
+receipt fields are future scope. Per-slide JSON pushes emit a partial receipt
+before re-raising a mid-run failure, and `--force --json` performs one extra
+live revision read so `revision_before` is truthful.
 
 `advise` is an offline, advisory-only pattern scan over a pulled workspace. It
 reports repeated pseudo-group clusters, buried opaque-capable elements, Stack
@@ -200,6 +205,8 @@ pin path; that is the one live-unvalidated cover path. Pull keeps images
 source-less as before and does
 not infer `cover` from crop properties because Google's volatile render URL is
 not an authored source; write `src` and `fit="cover"` explicitly when replacing.
+The `replace-image` command pushes immediately with a revision lock; it is not
+staged by `diff`/`push`.
 
 ### Large decks / safe pushes
 ```bash

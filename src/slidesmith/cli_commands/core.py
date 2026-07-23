@@ -253,15 +253,41 @@ def cmd_push(args: Any) -> None:
                 else:
                     print(message, flush=True, file=sys.stderr)
 
-            resp = await SlidesClient(transport, uploader).push(
-                Path(args.folder),
-                force=args.force,
-                per_slide=args.per_slide,
-                resume=args.resume,
-                progress=progress if args.per_slide else None,
-            )
+            push_kwargs: dict[str, Any] = {
+                "force": args.force,
+                "per_slide": args.per_slide,
+                "resume": args.resume,
+                "progress": progress if args.per_slide else None,
+            }
+            if getattr(args, "json", False):
+                push_kwargs["receipt"] = True
+            try:
+                resp = await SlidesClient(transport, uploader).push(
+                    Path(args.folder),
+                    **push_kwargs,
+                )
+            except Exception as exc:
+                # A per-slide push can have committed an earlier prefix before
+                # its later batch fails. If the engine attached a receipt,
+                # print that JSON before preserving the original exit path.
+                if getattr(args, "json", False):
+                    partial_receipt = getattr(exc, "receipt", None)
+                    if isinstance(partial_receipt, dict):
+                        partial_response = getattr(exc, "response", {})
+                        print_push_warnings(
+                            partial_response.get("warnings", [])
+                            if isinstance(partial_response, dict)
+                            else []
+                        )
+                        print(json.dumps(partial_receipt))
+                raise
             print_push_warnings(resp.get("warnings", []))
-            if message := resp.get("message"):
+            if getattr(args, "json", False):
+                receipt = resp.get("receipt")
+                if not isinstance(receipt, dict):
+                    raise RuntimeError("push receipt was not produced")
+                print(json.dumps(receipt))
+            elif message := resp.get("message"):
                 print(message)
             else:
                 print(f"Push applied {len(resp.get('replies', []))} change(s).")
@@ -388,5 +414,10 @@ def register_core_commands(
             "Offline geometry lint before push: off (default), warn and proceed, "
             "or block on findings new since the workspace baseline"
         ),
+    )
+    spu.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit one machine-readable push receipt as JSON on stdout",
     )
     spu.set_defaults(func=handlers["cmd_push"])

@@ -20,7 +20,11 @@ from slidesmith.engine.json_utils import read_json
 from slidesmith.engine.persistence_styles import (
     ALL_TEXT_PROPERTY_KEYS,
     EffectiveTextSpan,
+    PARAGRAPH_STYLE_PROPERTY_KEYS,
+    TEXT_STYLE_PROPERTY_KEYS,
+    _text_and_paragraph_classes,
     api_style_property_keys,
+    effective_text_style_ranges,
     effective_text_styles_equivalent,
     paragraph_style_property_keys,
     text_style_property_keys,
@@ -393,12 +397,31 @@ def _effective_text_styles_match(
     *,
     author_removed_classes: frozenset[str] | set[str],
     span_cache: dict[int, list[EffectiveTextSpan] | None] | None = None,
+    allow_created_roundrect_center_alignment: bool = False,
 ) -> bool:
     """Compare only the effective text properties touched by a divergence."""
     if change.change_type == ChangeType.TEXT_UPDATE:
-        property_keys: set[str] | None = None
+        paragraph_ranges = effective_text_style_ranges(
+            remote_element, intended_element
+        )
+        if paragraph_ranges is None:
+            return False
+        for range_item in paragraph_ranges:
+            for key in PARAGRAPH_STYLE_PROPERTY_KEYS:
+                if (
+                    range_item.new_properties.get(key) is not None
+                    and range_item.old_properties.get(key)
+                    != range_item.new_properties.get(key)
+                ):
+                    return False
+        property_keys: set[str] | None = set(TEXT_STYLE_PROPERTY_KEYS)
     elif change.change_type == ChangeType.PARAGRAPH_STYLE_UPDATE:
         property_keys = _changed_paragraph_property_keys(change)
+    elif allow_created_roundrect_center_alignment:
+        # This exemption is deliberately proof-based: once a created
+        # RoundRect's injected center alignment is ignored, compare every
+        # remaining effective property rather than only the changed class set.
+        property_keys = None
     else:
         property_keys = _changed_text_property_keys(change)
     if property_keys is not None and not property_keys:
@@ -408,8 +431,36 @@ def _effective_text_styles_match(
         intended_element,
         author_removed_classes=author_removed_classes,
         property_keys=property_keys,
-        include_symmetric_effective_difference=bool(author_removed_classes),
+        include_symmetric_effective_difference=(
+            bool(author_removed_classes)
+            and change.change_type != ChangeType.TEXT_UPDATE
+        ),
         span_cache=span_cache,
+        allow_created_roundrect_center_alignment=(
+            allow_created_roundrect_center_alignment
+        ),
+    )
+
+
+def _created_roundrect_center_alignment_default(
+    remote_element: ParsedElement,
+    intended_element: ParsedElement,
+    *,
+    newly_created: bool,
+    author_removed_classes: frozenset[str] | set[str],
+) -> bool:
+    """Recognize only Google's center default on a newly created RoundRect."""
+    if not newly_created:
+        return False
+    if remote_element.tag != "RoundRect" or intended_element.tag != "RoundRect":
+        return False
+    intended_classes = _text_and_paragraph_classes(intended_element)
+    remote_classes = _text_and_paragraph_classes(remote_element)
+    if "text-align-center" not in remote_classes - intended_classes:
+        return False
+    authored_classes = intended_classes | set(author_removed_classes)
+    return not any(
+        class_name.startswith("text-align-") for class_name in authored_classes
     )
 
 
@@ -717,6 +768,12 @@ def _persistence_warning_severity(
             return WarningSeverity.WARNING
         sent = _format_changed_element_style_classes(change, intended_element)
         remote = _format_changed_element_style_classes(change, remote_element)
+        roundrect_center_alignment = _created_roundrect_center_alignment_default(
+            remote_element,
+            intended_element,
+            newly_created=newly_created,
+            author_removed_classes=normalization_removed_classes,
+        )
         if newly_created:
             sent_non_text = _format_changed_element_non_text_style_classes(
                 change, intended_element
@@ -736,6 +793,9 @@ def _persistence_warning_severity(
                 remote_element,
                 normalization_removed_classes,
                 allow_created_element_alignment_default=True,
+                allow_created_roundrect_center_alignment_default=(
+                    roundrect_center_alignment
+                ),
             )
             if (
                 sent_non_text != remote_non_text
@@ -745,14 +805,36 @@ def _persistence_warning_severity(
                     normalization_removed_classes,
                 )
                 and text_defaults
+                and not roundrect_center_alignment
             ):
                 return None
+        if roundrect_center_alignment:
+            if (
+                _non_text_style_matches(
+                    change,
+                    remote_element,
+                    intended_element,
+                    newly_created=newly_created,
+                    author_removed_classes=normalization_removed_classes,
+                )
+                and _effective_text_styles_match(
+                    change,
+                    remote_element,
+                    intended_element,
+                    author_removed_classes=normalization_removed_classes,
+                    span_cache=span_cache,
+                    allow_created_roundrect_center_alignment=True,
+                )
+            ):
+                return None
+            return WarningSeverity.WARNING
         if not _only_google_default_class_additions(
             sent,
             remote,
             remote_element,
             normalization_removed_classes,
             allow_created_element_alignment_default=newly_created,
+            allow_created_roundrect_center_alignment_default=roundrect_center_alignment,
         ):
             if (
                 _non_text_style_matches(
@@ -851,6 +933,7 @@ def _only_google_default_class_additions(
     author_removed_classes: frozenset[str] | set[str] | None = None,
     *,
     allow_created_element_alignment_default: bool = False,
+    allow_created_roundrect_center_alignment_default: bool = False,
 ) -> bool:
     sent_classes = (
         set()
@@ -865,9 +948,20 @@ def _only_google_default_class_additions(
     added = remote_classes - sent_classes
     if not added or not sent_classes <= remote_classes:
         return False
-    if not added <= GOOGLE_DEFAULT_TEXT_LAYOUT_CLASSES:
-        return False
     if added & (author_removed_classes or set()):
+        return False
+    if "text-align-center" in added:
+        if not allow_created_roundrect_center_alignment_default:
+            return False
+        authored_alignment = {
+            class_name
+            for class_name in sent_classes | (author_removed_classes or set())
+            if class_name.startswith("text-align-")
+        }
+        if authored_alignment:
+            return False
+        added.remove("text-align-center")
+    if added and not added <= GOOGLE_DEFAULT_TEXT_LAYOUT_CLASSES:
         return False
     if "font-family-arial" in added and any(
         class_name.startswith("font-family-") for class_name in sent_classes

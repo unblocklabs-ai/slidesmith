@@ -57,6 +57,19 @@ def test_pull_dir_alias_matches_output_dir_and_is_documented(
     assert "--dir" in capsys.readouterr().out
 
 
+def test_replace_image_help_declares_immediate_remote_mutation(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main(["replace-image", "--help"])
+
+    assert excinfo.value.code == 0
+    help_text = capsys.readouterr().out
+    assert "pushes immediately with a revision" in help_text
+    assert "lock; it is not staged" in help_text
+    assert "not staged by diff/push" in help_text
+
+
 def test_non_workspace_error_names_path_missing_files_and_recovery_hint(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -252,6 +265,112 @@ def test_per_slide_progress_uses_stderr_and_stdout_is_final_result_only(
     captured = capsys.readouterr()
     assert captured.out == "Push applied 2 change(s).\n"
     assert captured.err == "slide 01/02 ...\rslide 01/02 ✓\n"
+
+
+def test_push_json_prints_one_machine_receipt_to_stdout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    folder = tmp_path / "deck"
+    folder.mkdir()
+    _mark_workspace(folder)
+    receipt = {
+        "presentation_id": "pid",
+        "revision_before": "rev-before",
+        "revision_after": "rev-after",
+        "requests_sent": 2,
+        "changes_applied": 2,
+        "persistence": {"verified": True, "warnings": []},
+        "duration_s": 0.001,
+    }
+
+    class FakeResource:
+        def __init__(self, _token: str) -> None:
+            pass
+
+        async def close(self) -> None:
+            pass
+
+    class FakeClient:
+        def __init__(self, _transport: Any, _uploader: Any) -> None:
+            pass
+
+        async def push(self, _folder: Path, **kwargs: Any) -> dict[str, Any]:
+            assert kwargs["receipt"] is True
+            return {"replies": [{}, {}], "receipt": receipt}
+
+    monkeypatch.setattr(cli, "_warn_if_stale", lambda _folder: None)
+    monkeypatch.setattr(cli, "_token", lambda *_args: "token")
+    monkeypatch.setattr("slidesmith.engine.client.SlidesClient", FakeClient)
+    monkeypatch.setattr(
+        "slidesmith.engine.transport.GoogleSlidesTransport", FakeResource
+    )
+    monkeypatch.setattr(
+        "slidesmith.engine.assets.GoogleDriveAssetUploader", FakeResource
+    )
+
+    cli.main(["push", str(folder), "--json"])
+
+    captured = capsys.readouterr()
+    assert json.loads(captured.out) == receipt
+    assert captured.out.count("\n") == 1
+    assert captured.err == ""
+
+
+def test_push_json_prints_partial_receipt_before_nonzero_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    folder = tmp_path / "deck"
+    folder.mkdir()
+    _mark_workspace(folder)
+    partial_receipt = {
+        "status": "partial_failure",
+        "slides": [
+            {"slide": "01", "status": "applied"},
+            {"slide": "02", "status": "failed"},
+            {"slide": "03", "status": "not-attempted"},
+        ],
+    }
+
+    class FakeResource:
+        def __init__(self, _token: str) -> None:
+            pass
+
+        async def close(self) -> None:
+            pass
+
+    class FakeClient:
+        def __init__(self, _transport: Any, _uploader: Any) -> None:
+            pass
+
+        async def push(self, _folder: Path, **kwargs: Any) -> dict[str, Any]:
+            assert kwargs["receipt"] is True
+            error = RuntimeError("slide 02 failed")
+            error.receipt = partial_receipt
+            error.response = {"warnings": []}
+            raise error
+
+    monkeypatch.setattr(cli, "_warn_if_stale", lambda _folder: None)
+    monkeypatch.setattr(cli, "_token", lambda *_args: "token")
+    monkeypatch.setattr("slidesmith.engine.client.SlidesClient", FakeClient)
+    monkeypatch.setattr(
+        "slidesmith.engine.transport.GoogleSlidesTransport", FakeResource
+    )
+    monkeypatch.setattr(
+        "slidesmith.engine.assets.GoogleDriveAssetUploader", FakeResource
+    )
+
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main(["push", str(folder), "--per-slide", "--json"])
+
+    captured = capsys.readouterr()
+    assert excinfo.value.code == 1
+    assert json.loads(captured.out) == partial_receipt
+    assert captured.out.count("\n") == 1
+    assert captured.err == "error: slide 02 failed\n"
 
 
 def test_diff_stdout_stays_json_and_stderr_maps_object_ids(

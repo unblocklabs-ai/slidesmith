@@ -304,6 +304,7 @@ def effective_text_styles_equivalent(
     property_keys: set[str] | frozenset[str] | None = None,
     include_symmetric_effective_difference: bool = False,
     span_cache: dict[int, list[EffectiveTextSpan] | None] | None = None,
+    allow_created_roundrect_center_alignment: bool = False,
 ) -> bool:
     """Compare effective text properties while ignoring scope ownership.
 
@@ -320,6 +321,8 @@ def effective_text_styles_equivalent(
 
     keys = set(ALL_TEXT_PROPERTY_KEYS if property_keys is None else property_keys)
     keys = _couple_font_family_and_weight(keys)
+    if allow_created_roundrect_center_alignment:
+        keys.discard("paragraph.alignment")
     remote_classes = _text_and_paragraph_classes(remote)
     removed = set(author_removed_classes)
     paragraphs = len(remote.paragraphs)
@@ -350,6 +353,8 @@ def effective_text_styles_equivalent(
         if include_symmetric_effective_difference:
             keys.update(_symmetric_difference_keys(pairs))
             keys = _couple_font_family_and_weight(keys)
+            if allow_created_roundrect_center_alignment:
+                keys.discard("paragraph.alignment")
         return all(
             _maps_equal_exact(remote_properties, intended_properties, keys)
             for remote_properties, intended_properties in pairs
@@ -379,6 +384,8 @@ def effective_text_styles_equivalent(
             if include_symmetric_effective_difference:
                 keys.update(_symmetric_difference_keys(pairs))
                 keys = _couple_font_family_and_weight(keys)
+                if allow_created_roundrect_center_alignment:
+                    keys.discard("paragraph.alignment")
             if not all(
                 _maps_equal_exact(remote_properties, intended_properties, keys)
                 for remote_properties, intended_properties in pairs
@@ -395,6 +402,8 @@ def effective_text_styles_equivalent(
         if include_symmetric_effective_difference:
             keys.update(_symmetric_difference_keys(pairs))
             keys = _couple_font_family_and_weight(keys)
+            if allow_created_roundrect_center_alignment:
+                keys.discard("paragraph.alignment")
         for remote_properties, intended_properties in pairs:
             if not _maps_equivalent(
                 remote_properties,
@@ -402,6 +411,9 @@ def effective_text_styles_equivalent(
                 keys,
                 remote_classes,
                 removed,
+                allow_created_roundrect_center_alignment=(
+                    allow_created_roundrect_center_alignment
+                ),
             ):
                 return False
     return True
@@ -591,10 +603,19 @@ def _maps_equivalent(
     keys: set[str],
     remote_classes: set[str],
     author_removed_classes: set[str],
+    *,
+    allow_created_roundrect_center_alignment: bool = False,
 ) -> bool:
     for key in keys:
         remote_value = remote.get(key)
         intended_value = intended.get(key)
+        if (
+            allow_created_roundrect_center_alignment
+            and key == "paragraph.alignment"
+            and remote_value is TextAlignment.CENTER
+            and "text-align-center" in remote_classes
+        ):
+            continue
         if remote_value == intended_value:
             continue
         if intended_value is not None:

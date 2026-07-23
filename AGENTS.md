@@ -46,6 +46,9 @@ command supports `--help`.
 ## Rules of thumb
 
 - **Always `diff` before `push`.** `diff` is local and never calls the API.
+- **Remote mutations:** `create`, `push`, `replace-image`, `reorder`, and
+  `group`. Everything else is local-only or read-only; local edits are staged
+  for `push`.
 - **Trust the warnings.** If Google normalizes or drops what you sent, `push`
   prints a `warning:`/`notice:` line — believe it over your local intent.
 - **Don't hand-compute coordinates** when a `Stack`/`Grid` layout container or a

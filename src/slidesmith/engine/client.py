@@ -12,6 +12,7 @@ from collections.abc import Callable
 import os
 from pathlib import Path
 import re
+import time
 from typing import Any
 
 from slidesmith.engine.assets import (
@@ -77,6 +78,33 @@ from slidesmith.engine.z_order import (
 )
 
 
+class _RevisionCaptureTransport:
+    """Capture the revision fetched by the existing guarded write path."""
+
+    def __init__(self, transport: Transport, state: dict[str, Any]) -> None:
+        self._transport = transport
+        self._state = state
+
+    async def get_presentation(self, presentation_id: str) -> PresentationData:
+        presentation = await self._transport.get_presentation(presentation_id)
+        if not self._state.get("revision_captured"):
+            self._state["revision_before"] = presentation.revision_id
+            self._state["revision_captured"] = True
+        return presentation
+
+    async def batch_update(
+        self,
+        presentation_id: str,
+        requests: list[dict[str, Any]],
+        required_revision_id: str | None = None,
+    ) -> dict[str, Any]:
+        return await self._transport.batch_update(
+            presentation_id,
+            requests,
+            required_revision_id=required_revision_id,
+        )
+
+
 async def execute_guarded_batch(
     *,
     transport: Transport,
@@ -86,10 +114,14 @@ async def execute_guarded_batch(
     id_mapping: dict[str, str],
     guard_conflicts: bool,
     lock_revision: bool,
+    revision_capture: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Compatibility bridge for the shared guarded batch executor."""
+    guarded_transport: Transport | _RevisionCaptureTransport = transport
+    if revision_capture is not None:
+        guarded_transport = _RevisionCaptureTransport(transport, revision_capture)
     return await _push_executor.execute_guarded_batch(
-        transport=transport,
+        transport=guarded_transport,
         presentation_id=presentation_id,
         requests=requests,
         base_raw=base_raw,
@@ -127,15 +159,29 @@ async def finalize_push(
 
 
 def validate_create_output_parent(output_path: str | Path) -> Path:
-    """Validate the existing, writable parent used by ``create``.
+    """Create and validate the writable parent used by ``create``.
 
     This check is intentionally local and must run before authentication or a
     transport request.  The presentation ID is assigned remotely, so the
     ID-specific child collision is checked again after creation.
     """
     parent = Path(output_path)
-    if not parent.exists():
-        raise FileNotFoundError(f"Output parent does not exist: {parent}")
+    try:
+        parent.mkdir(parents=True, exist_ok=True)
+    except FileExistsError as exc:
+        raise NotADirectoryError(
+            f"Output parent is not a directory: {parent}"
+        ) from exc
+    except NotADirectoryError as exc:
+        raise NotADirectoryError(
+            f"Output parent is not a directory: {parent}"
+        ) from exc
+    except PermissionError as exc:
+        raise PermissionError(
+            f"Cannot create output parent: {parent}: {exc}"
+        ) from exc
+    except OSError as exc:
+        raise OSError(f"Cannot create output parent: {parent}: {exc}") from exc
     if not parent.is_dir():
         raise NotADirectoryError(f"Output parent is not a directory: {parent}")
     mode = parent.stat().st_mode
@@ -147,6 +193,122 @@ def validate_create_output_parent(output_path: str | Path) -> Path:
             "Pass its parent directory with --dir, or choose a different path."
         )
     return parent
+
+
+def _revision_value(value: Any) -> str | None:
+    return value if isinstance(value, str) and value else None
+
+
+async def _capture_receipt_revision(
+    transport: Transport,
+    presentation_id: str,
+    receipt_state: dict[str, Any],
+) -> None:
+    """Fetch a live revision for a force receipt without changing write mode."""
+    live = await transport.get_presentation(presentation_id)
+    receipt_state["revision_before"] = live.revision_id
+    receipt_state["revision_captured"] = True
+
+
+def _response_target_revision(response: dict[str, Any]) -> str | None:
+    write_control = response.get("writeControl")
+    if not isinstance(write_control, dict):
+        return None
+    return _revision_value(write_control.get("targetRevisionId"))
+
+
+def _receipt_warning(
+    warning: PushWarning,
+    changes: list[Any],
+    *,
+    default_kind: str = "persistence",
+) -> dict[str, Any]:
+    """Serialize a warning without changing the human warning API."""
+    matching_changes = [
+        change
+        for change in changes
+        if re.search(
+            rf"(?<![A-Za-z0-9_-]){re.escape(change.target_id)}(?![A-Za-z0-9_-])",
+            warning.message,
+        )
+    ]
+    change = matching_changes[0] if len(matching_changes) == 1 else None
+    slide = None
+    if change is not None and change.slide_index is not None:
+        try:
+            slide = int(change.slide_index)
+        except (TypeError, ValueError):
+            slide = None
+    kind = change.change_type.value if change is not None else default_kind
+    return {
+        "element_id": change.target_id if change is not None else None,
+        "slide": slide,
+        "kind": kind,
+        "severity": warning.severity.value,
+        "message": warning.message,
+    }
+
+
+def _push_receipt(
+    *,
+    presentation_id: str,
+    revision_before: str | None,
+    revision_after: str | None,
+    requests_sent: int,
+    response: dict[str, Any],
+    persistence_verified: bool,
+    persistence_warnings: list[PushWarning],
+    changes: list[Any],
+    started_at: float,
+    slide_statuses: dict[str, dict[str, Any]] | None = None,
+    error: str | None = None,
+) -> dict[str, Any]:
+    all_warnings = list(response.get("warnings", []))
+    non_persistence_warnings = list(all_warnings)
+    for persistence_warning in persistence_warnings:
+        try:
+            non_persistence_warnings.remove(persistence_warning)
+        except ValueError:
+            pass
+    receipt = {
+        "presentation_id": presentation_id,
+        "revision_before": revision_before,
+        "revision_after": revision_after,
+        "requests_sent": requests_sent,
+        "changes_applied": len(response.get("replies", [])),
+        "warnings": [
+            _receipt_warning(warning, changes, default_kind="push")
+            for warning in non_persistence_warnings
+        ],
+        "persistence": {
+            "verified": persistence_verified,
+            "warnings": [
+                _receipt_warning(warning, changes)
+                for warning in persistence_warnings
+            ],
+        },
+        "duration_s": round(max(0.0, time.perf_counter() - started_at), 6),
+    }
+    if slide_statuses is not None:
+        serialized_persistence = receipt["persistence"]["warnings"]
+        receipt["slides"] = []
+        for slide_index, status in slide_statuses.items():
+            slide_receipt = {"slide": slide_index, **status}
+            if status.get("status") == "applied" and persistence_verified:
+                slide_number = int(slide_index) if slide_index.isdigit() else None
+                slide_receipt["persistence"] = {
+                    "verified": True,
+                    "warnings": [
+                        warning
+                        for warning in serialized_persistence
+                        if warning["slide"] == slide_number
+                    ],
+                }
+            receipt["slides"].append(slide_receipt)
+    if error is not None:
+        receipt["status"] = "partial_failure"
+        receipt["error"] = error
+    return receipt
 
 
 def _presentation_url(presentation_id: str) -> str:
@@ -417,6 +579,7 @@ class SlidesClient:
         per_slide: bool = False,
         resume: bool = False,
         progress: Callable[[str, str], None] | None = None,
+        receipt: bool = False,
     ) -> dict[str, Any]:
         """Apply content changes to the presentation, guarded against
         concurrent human edits (contract C5).
@@ -442,6 +605,7 @@ class SlidesClient:
             ConflictError: A touched object changed remotely, or the deck was
                 revised between our fetch and our write.
         """
+        started_at = time.perf_counter()
         folder_path = Path(folder_path)
 
         if resume and not per_slide:
@@ -452,6 +616,7 @@ class SlidesClient:
         presentation_id = metadata.get("presentationId")
         if not presentation_id:
             raise ValueError("Presentation ID not found in presentation.json")
+        revision_before = _revision_value(metadata.get("revisionId"))
 
         diff_result, requests = self.diff_with_result(
             folder_path,
@@ -459,10 +624,55 @@ class SlidesClient:
             fetch_remote_stretch_dimensions=True,
         )
 
+        receipt_state: dict[str, Any] | None = (
+            {
+                "verified": False,
+                "warnings": [],
+                "requests_sent": 0 if per_slide else len(requests),
+                "revision_before": revision_before,
+                "revision_captured": False,
+            }
+            if receipt
+            else None
+        )
+        transport: Transport | None = None
+        if force and receipt_state is not None:
+            # --force deliberately skips the guarded executor's GET. A JSON
+            # receipt still needs a truthful live revision, so pay for one
+            # explicit read in this combination only.
+            transport = self._require_transport()
+            await transport.refresh_if_expiring()
+            await _capture_receipt_revision(
+                transport, presentation_id, receipt_state
+            )
+
         if not requests:
             if per_slide:
                 clear_progress_ledger(folder_path)
-            return {"replies": [], "message": "No changes detected."}
+            response = {"replies": [], "message": "No changes detected."}
+            if receipt:
+                response["receipt"] = _push_receipt(
+                    presentation_id=presentation_id,
+                    revision_before=(
+                        receipt_state.get("revision_before")
+                        if receipt_state is not None
+                        and receipt_state.get("revision_captured")
+                        else revision_before
+                    ),
+                    revision_after=(
+                        receipt_state.get("revision_before")
+                        if receipt_state is not None
+                        and receipt_state.get("revision_captured")
+                        else revision_before
+                    ),
+                    requests_sent=0,
+                    response=response,
+                    persistence_verified=False,
+                    persistence_warnings=[],
+                    changes=[],
+                    started_at=started_at,
+                )
+            return response
 
         # Diff remains local and leaves authored local paths in preview JSON.
         # Resolve only the outgoing request URLs at push time.
@@ -490,22 +700,89 @@ class SlidesClient:
             for change in diff_result.changes
             if change.change_type in {ChangeType.CREATE, ChangeType.COPY}
         }
-        transport = self._require_transport()
+        if transport is None:
+            transport = self._require_transport()
 
         if per_slide:
-            return await self._push_per_slide(
-                folder_path=folder_path,
-                presentation_id=presentation_id,
-                diff_result=diff_result,
-                requests=requests,
-                intended_slides=intended_slides,
-                intended_change_keys=intended_change_keys,
-                create_copy_targets=create_copy_targets,
-                expected_image_sources=expected_image_sources,
-                force=force,
-                resume=resume,
-                progress=progress,
-            )
+            try:
+                response = await self._push_per_slide(
+                    folder_path=folder_path,
+                    presentation_id=presentation_id,
+                    diff_result=diff_result,
+                    requests=requests,
+                    intended_slides=intended_slides,
+                    intended_change_keys=intended_change_keys,
+                    create_copy_targets=create_copy_targets,
+                    expected_image_sources=expected_image_sources,
+                    force=force,
+                    resume=resume,
+                    progress=progress,
+                    receipt_state=receipt_state,
+                )
+            except (PerSlidePushError, PerSlideConflictError) as exc:
+                if receipt_state is not None:
+                    partial_response = receipt_state.get(
+                        "response", {"replies": []}
+                    )
+                    if force:
+                        partial_response.setdefault("warnings", []).append(
+                            PushWarning(
+                                WarningSeverity.WARNING,
+                                (
+                                    "push --force --per-slide: conflict guard "
+                                    "bypassed; per-slide revision locks remain "
+                                    "enabled, but concurrent human edits already "
+                                    "present on touched properties will be "
+                                    "overwritten"
+                                ),
+                            )
+                        )
+                    partial_receipt = _push_receipt(
+                        presentation_id=presentation_id,
+                        revision_before=(
+                            receipt_state.get("revision_before")
+                            if receipt_state.get("revision_captured")
+                            else revision_before
+                        ),
+                        revision_after=None,
+                        requests_sent=int(receipt_state["requests_sent"]),
+                        response=partial_response,
+                        persistence_verified=bool(receipt_state["verified"]),
+                        persistence_warnings=list(receipt_state["warnings"]),
+                        changes=diff_result.changes,
+                        started_at=started_at,
+                        slide_statuses=receipt_state.get("slide_statuses"),
+                        error=str(exc),
+                    )
+                    setattr(exc, "receipt", partial_receipt)
+                    setattr(exc, "response", partial_response)
+                raise
+            if receipt_state is not None:
+                response["receipt"] = _push_receipt(
+                    presentation_id=presentation_id,
+                    revision_before=(
+                        receipt_state.get("revision_before")
+                        if receipt_state.get("revision_captured")
+                        else revision_before
+                    ),
+                    revision_after=(
+                        _response_target_revision(response)
+                        or _revision_value(
+                            read_json(
+                                folder_path / PRESENTATION_FILE,
+                                missing_ok=True,
+                            ).get("revisionId")
+                        )
+                    ),
+                    requests_sent=int(receipt_state["requests_sent"]),
+                    response=response,
+                    persistence_verified=bool(receipt_state["verified"]),
+                    persistence_warnings=list(receipt_state["warnings"]),
+                    changes=diff_result.changes,
+                    started_at=started_at,
+                    slide_statuses=receipt_state.get("slide_statuses"),
+                )
+            return response
 
         force_warning: PushWarning | None = None
         if force:
@@ -530,6 +807,7 @@ class SlidesClient:
                 id_mapping=id_mapping,
                 guard_conflicts=not force,
                 lock_revision=not force,
+                revision_capture=receipt_state,
             )
         except APIError as exc:
             cover_ids = _cover_element_ids(
@@ -538,7 +816,24 @@ class SlidesClient:
             if cover_ids:
                 raise CoverFitPushError(cover_ids, exc) from exc
             raise
-        return await finalize_push(
+        def verify_persistence(finalized_response: dict[str, Any]) -> None:
+            warning_count = len(finalized_response.get("warnings", []))
+            self._append_persistence_warning(
+                folder_path,
+                intended_slides,
+                intended_change_keys,
+                create_copy_targets,
+                finalized_response,
+                author_changes=diff_result.changes,
+                expected_image_sources=expected_image_sources,
+            )
+            if receipt_state is not None:
+                receipt_state["verified"] = True
+                receipt_state["warnings"] = list(
+                    finalized_response.get("warnings", [])
+                )[warning_count:]
+
+        response = await finalize_push(
             transport=transport,
             folder_path=folder_path,
             presentation_id=presentation_id,
@@ -546,19 +841,34 @@ class SlidesClient:
             diff_warnings=diff_result.warnings,
             base_warning=base_warning,
             force_warning=force_warning,
-            verify_persistence=lambda finalized_response: (
-                self._append_persistence_warning(
-                    folder_path,
-                    intended_slides,
-                    intended_change_keys,
-                    create_copy_targets,
-                    finalized_response,
-                    author_changes=diff_result.changes,
-                    expected_image_sources=expected_image_sources,
-                )
-            ),
+            verify_persistence=verify_persistence,
             clear_progress=False,
         )
+        if receipt_state is not None:
+                response["receipt"] = _push_receipt(
+                    presentation_id=presentation_id,
+                    revision_before=(
+                        receipt_state.get("revision_before")
+                        if receipt_state.get("revision_captured")
+                        else revision_before
+                    ),
+                revision_after=(
+                    _response_target_revision(response)
+                    or _revision_value(
+                        read_json(
+                            folder_path / PRESENTATION_FILE,
+                            missing_ok=True,
+                        ).get("revisionId")
+                    )
+                ),
+                requests_sent=int(receipt_state["requests_sent"]),
+                response=response,
+                persistence_verified=bool(receipt_state["verified"]),
+                persistence_warnings=list(receipt_state["warnings"]),
+                changes=diff_result.changes,
+                started_at=started_at,
+            )
+        return response
 
     async def replace_image(
         self,
@@ -934,6 +1244,7 @@ class SlidesClient:
         force: bool,
         resume: bool,
         progress: Callable[[str, str], None] | None,
+        receipt_state: dict[str, Any] | None,
     ) -> dict[str, Any]:
         """Apply the generated deck diff as ordered, resumable slide batches."""
         metadata = read_json(folder_path / PRESENTATION_FILE, missing_ok=True)
@@ -960,6 +1271,13 @@ class SlidesClient:
             write_progress_ledger(folder_path, presentation_id, succeeded)
         skipping_prefix = resume
         response: dict[str, Any] = {"replies": []}
+        slide_statuses = {
+            batch.slide_index: {"status": "not-attempted"}
+            for batch in batches
+        }
+        if receipt_state is not None:
+            receipt_state["response"] = response
+            receipt_state["slide_statuses"] = slide_statuses
         transport = self._require_transport()
 
         warning: PushWarning | None = None
@@ -972,6 +1290,12 @@ class SlidesClient:
                 and recorded.get(batch.slide_index) == batch.content_hash
             ):
                 succeeded[batch.slide_index] = batch.content_hash
+                slide_statuses[batch.slide_index] = {
+                    "status": "applied",
+                    "requests_sent": 0,
+                    "changes_applied": 0,
+                    "resumed": True,
+                }
                 write_progress_ledger(folder_path, presentation_id, succeeded)
                 _report_progress(
                     progress,
@@ -983,6 +1307,8 @@ class SlidesClient:
                 continue
             skipping_prefix = False
             _report_progress(progress, "start", batch, total_slides)
+            if receipt_state is not None:
+                receipt_state["requests_sent"] += len(batch.requests)
 
             try:
                 await transport.refresh_if_expiring()
@@ -994,6 +1320,7 @@ class SlidesClient:
                     id_mapping=id_mapping,
                     guard_conflicts=not force,
                     lock_revision=True,
+                    revision_capture=receipt_state,
                 )
             except APIError as exc:
                 write_progress_ledger(folder_path, presentation_id, succeeded)
@@ -1006,21 +1333,47 @@ class SlidesClient:
                 cause: Exception = (
                     CoverFitPushError(cover_ids, exc) if cover_ids else exc
                 )
-                raise PerSlidePushError(
+                failure = PerSlidePushError(
                     batch.slide_index, total_slides, cause
-                ) from cause
+                )
+                slide_statuses[batch.slide_index] = {
+                    "status": "failed",
+                    "error": str(failure),
+                }
+                if receipt_state is not None:
+                    receipt_state["error"] = str(failure)
+                raise failure from cause
             except ConflictError as exc:
                 write_progress_ledger(folder_path, presentation_id, succeeded)
-                raise PerSlideConflictError(
+                failure = PerSlideConflictError(
                     batch.slide_index, total_slides, exc
-                ) from exc
+                )
+                slide_statuses[batch.slide_index] = {
+                    "status": "failed",
+                    "error": str(failure),
+                }
+                if receipt_state is not None:
+                    receipt_state["error"] = str(failure)
+                raise failure from exc
             except Exception as exc:
                 write_progress_ledger(folder_path, presentation_id, succeeded)
-                raise PerSlidePushError(
+                failure = PerSlidePushError(
                     batch.slide_index, total_slides, exc
-                ) from exc
+                )
+                slide_statuses[batch.slide_index] = {
+                    "status": "failed",
+                    "error": str(failure),
+                }
+                if receipt_state is not None:
+                    receipt_state["error"] = str(failure)
+                raise failure from exc
 
             response["replies"].extend(batch_response.get("replies", []))
+            slide_statuses[batch.slide_index] = {
+                "status": "applied",
+                "requests_sent": len(batch.requests),
+                "changes_applied": len(batch_response.get("replies", [])),
+            }
             if batch_response.get("warnings"):
                 response.setdefault("warnings", []).extend(
                     batch_response["warnings"]
@@ -1038,6 +1391,23 @@ class SlidesClient:
                 "already present on touched properties will be overwritten",
             )
 
+        def verify_persistence(finalized_response: dict[str, Any]) -> None:
+            warning_count = len(finalized_response.get("warnings", []))
+            self._append_persistence_warning(
+                folder_path,
+                intended_slides,
+                intended_change_keys,
+                create_copy_targets,
+                finalized_response,
+                author_changes=diff_result.changes,
+                expected_image_sources=expected_image_sources,
+            )
+            if receipt_state is not None:
+                receipt_state["verified"] = True
+                receipt_state["warnings"] = list(
+                    finalized_response.get("warnings", [])
+                )[warning_count:]
+
         return await finalize_push(
             transport=transport,
             folder_path=folder_path,
@@ -1046,17 +1416,7 @@ class SlidesClient:
             diff_warnings=diff_result.warnings,
             base_warning=warning,
             force_warning=force_warning,
-            verify_persistence=lambda finalized_response: (
-                self._append_persistence_warning(
-                    folder_path,
-                    intended_slides,
-                    intended_change_keys,
-                    create_copy_targets,
-                    finalized_response,
-                    author_changes=diff_result.changes,
-                    expected_image_sources=expected_image_sources,
-                )
-            ),
+            verify_persistence=verify_persistence,
             clear_progress=True,
         )
 

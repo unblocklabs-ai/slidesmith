@@ -101,28 +101,75 @@ def _create_effective_style_requests(
             != item.new_properties.get(property_key)
             and item.new_properties.get(property_key) is not None
         ]
-        if changed_text_attrs:
-            if set(changed_text_attrs) & {"font_family", "font_weight"}:
-                changed_text_attrs = list(
-                    dict.fromkeys(
-                        [
-                            *changed_text_attrs,
-                            *(
-                                attr
-                                for attr in ("font_family", "font_weight")
-                                if f"text.{attr}" in handled
-                            ),
-                        ]
-                    )
+        reset_text_fields = [
+            _TEXT_STYLE_FIELD_NAMES[attr]
+            for attr, property_key in text_property_attrs.items()
+            if item.old_properties.get(property_key) is not None
+            and item.new_properties.get(property_key) is None
+        ]
+        weighted_font_reset = "weightedFontFamily" in reset_text_fields
+        font_family_weight_update = weighted_font_reset or bool(
+            set(changed_text_attrs) & {"font_family", "font_weight"}
+        )
+        old_bold = item.old_properties.get("text.bold")
+        new_bold = item.new_properties.get("text.bold")
+        bold_is_known = old_bold is not None or new_bold is not None
+        bold_reset_pinned = (
+            font_family_weight_update and bold_is_known
+        )
+        bold_is_genuinely_removed = old_bold is True and new_bold is None
+        if font_family_weight_update and bold_is_known:
+            # Both value updates and weightedFontFamily resets can clear bold
+            # on the same range. Pin the known effective value in the same
+            # request; emit false only when a true bold value is removed.
+            if "bold" not in changed_text_attrs:
+                changed_text_attrs.append("bold")
+        if font_family_weight_update:
+            changed_text_attrs = list(
+                dict.fromkeys(
+                    [
+                        *changed_text_attrs,
+                        *(
+                            attr
+                            for attr in ("font_family", "font_weight")
+                            if f"text.{attr}" in handled
+                        ),
+                    ]
                 )
+            )
+        if changed_text_attrs or weighted_font_reset:
             text_style = TextStyle(
                 **{
-                    attr: item.new_properties[f"text.{attr}"]
+                    attr: (
+                        False
+                        if attr == "bold"
+                        and item.new_properties.get("text.bold") is None
+                        and bold_is_genuinely_removed
+                        else old_bold
+                        if attr == "bold"
+                        and item.new_properties.get("text.bold") is None
+                        else item.new_properties[f"text.{attr}"]
+                    )
                     for attr in changed_text_attrs
                     if item.new_properties.get(f"text.{attr}") is not None
+                    or (attr == "bold" and bold_reset_pinned)
                 }
             )
             style, fields = _class_text_style_to_api(text_style)
+            if weighted_font_reset:
+                # An empty weightedFontFamily reset is still a weighted-font
+                # emission. Keep a known bold value in its mask so Google does
+                # not clear bold while applying the reset.
+                if "weightedFontFamily" not in fields:
+                    fields.append("weightedFontFamily")
+                if bold_reset_pinned:
+                    style["bold"] = (
+                        False
+                        if bold_is_genuinely_removed
+                        else (new_bold if new_bold is not None else old_bold)
+                    )
+                    if "bold" not in fields:
+                        fields.append("bold")
             if fields:
                 requests.append(
                     {
@@ -141,10 +188,10 @@ def _create_effective_style_requests(
                 )
 
         reset_text_fields = [
-            _TEXT_STYLE_FIELD_NAMES[attr]
-            for attr, property_key in text_property_attrs.items()
-            if item.old_properties.get(property_key) is not None
-            and item.new_properties.get(property_key) is None
+            field
+            for field in reset_text_fields
+            if not (field == "weightedFontFamily" and weighted_font_reset)
+            and not (field == "bold" and bold_reset_pinned)
         ]
         if reset_text_fields:
             requests.append(

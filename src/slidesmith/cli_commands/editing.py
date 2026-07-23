@@ -323,7 +323,14 @@ def register_editing_commands(
 
     sri = subparsers.add_parser(
         "replace-image",
-        help="Replace an existing image from a local file or public URL",
+        help=(
+            "Replace an existing image from a local file or public URL; pushes "
+            "immediately with a revision lock and is not staged by diff/push"
+        ),
+        description=(
+            "Replace an existing image. This command pushes immediately with a "
+            "revision lock; it is not staged by diff/push."
+        ),
     )
     sri.add_argument("folder", help="Presentation folder created by pull")
     sri.add_argument("element_id", metavar="ELEMENT_ID", help="Clean SML image ID")

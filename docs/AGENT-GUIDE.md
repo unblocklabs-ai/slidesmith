@@ -52,6 +52,16 @@ uses a revision lock for the write, and refreshes the local projection after a
 successful batch. Use `push --force` only when the user explicitly accepts
 overwriting concurrent edits to touched properties.
 
+`slidesmith push <ID> --json` emits one machine-readable receipt on stdout with
+the presentation ID, before/after revisions, request/change counts, persistence
+verification and structured warnings, and duration. Render and QA results are
+future scope for this receipt. With `--per-slide`, a mid-run failure still
+emits a partial receipt before the command re-raises: each attempted slide is
+marked `applied` or `failed`, later slides are `not-attempted`, and the failure
+is included in `error`. With `--force --json`, Slidesmith performs one extra
+live revision GET so `revision_before` is truthful; the write remains
+unlocked.
+
 Plain `push` is atomic across the deck because it sends one `batchUpdate`. For
 a large push where resumability matters more than deck-wide atomicity, use:
 
@@ -121,7 +131,12 @@ default-class set is `font-weight-400`, `font-weight-700`, `font-family-arial`,
 `spacing-never-collapse`, and `spacing-collapse-lists`, plus shape-specific
 content alignment: `content-align-top` only for `TextBox`, and
 `content-align-middle` only for non-`TextBox` Google shape types such as `Rect`,
-`RoundRect`, and `Ellipse`. Google documents that an unspecified alignment uses
+`RoundRect`, and `Ellipse`. For a newly created `RoundRect` only, an injected
+`text-align-center` at either element or paragraph/run scope is also suppressed
+only when there is no authored or removed `text-align-*` class and every other
+effective text and non-text property matches; existing RoundRects, authored
+alignment changes, and any other divergence still warn. Google documents that
+an unspecified alignment uses
 the new-editor default for the shape kind; pulled API evidence confirms middle
 for those geometric shape creates but not for `TextBox`, so a middle-aligned
 `TextBox` still warns. Suppression applies only when every authored class is
@@ -143,6 +158,8 @@ failure. Differences at or above 0.02 pt and any meaningful text, geometry, or
 style drop still warn. An authored class removal whose effective value remains
 identically inherited from another scope is intentionally excluded as redundant
 scope-ownership noise; removals that change the effective value still warn.
+Google does not faithfully persist `bold` combined with `font-weight-400`, so
+that combination may produce a persistence warning.
 
 Visual work is iterative: edit, `diff`, run the offline check, `push`, then run
 plain `check` and inspect the new thumbnails. Repeat that push-then-check loop
@@ -859,6 +876,9 @@ slidesmith replace-image <ID> hero_image ./assets/new-hero.png --fit stretch
 slidesmith replace-image <ID> hero_image ./assets/new-hero.png --fit cover --dry-run
 slidesmith replace-image <ID> hero_image ./assets/new-hero.png --dry-run
 ```
+
+The `replace-image` command pushes immediately with a revision lock; it is not
+staged by `diff`/`push`.
 
 The command validates the clean SML ID against the freshly fetched deck and
 fails if the target is not an image. The default `--fit contain` reads the new

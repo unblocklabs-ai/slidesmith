@@ -602,6 +602,33 @@ async def test_mid_deck_revision_conflict_records_successful_prefix_and_stops(
     assert [entry["slideIndex"] for entry in ledger["succeeded"]] == ["01"]
 
 
+async def test_per_slide_json_failure_attaches_partial_receipt(
+    resumable_workspace: tuple[ResumableStubTransport, SlidesClient, Path],
+) -> None:
+    transport, client, folder = resumable_workspace
+    transport.fail_on_call = 2
+
+    with pytest.raises(PerSlidePushError) as excinfo:
+        await client.push(folder, per_slide=True, receipt=True)
+
+    receipt = getattr(excinfo.value, "receipt")
+    assert receipt["status"] == "partial_failure"
+    assert receipt["error"] == "slide 02/04 failed: API error (503): temporary failure"
+    assert receipt["revision_after"] is None
+    assert receipt["persistence"] == {"verified": False, "warnings": []}
+    assert [
+        (slide["slide"], slide["status"])
+        for slide in receipt["slides"]
+    ] == [
+        ("01", "applied"),
+        ("02", "failed"),
+        ("03", "not-attempted"),
+        ("04", "not-attempted"),
+    ]
+    assert receipt["slides"][0]["changes_applied"] == 1
+    assert receipt["slides"][1]["error"].endswith("temporary failure")
+
+
 async def test_resume_skips_matching_hash_and_continues_at_failed_slide(
     resumable_workspace: tuple[ResumableStubTransport, SlidesClient, Path],
 ) -> None:

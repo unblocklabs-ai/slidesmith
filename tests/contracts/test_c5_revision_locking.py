@@ -562,6 +562,81 @@ async def test_push_warns_when_an_intended_change_does_not_persist(
     ]
 
 
+async def test_push_receipt_zero_warning_schema(ws: Workspace) -> None:
+    recolor_e121_locally(ws.folder, "#00ff00")
+    ws.stub.data["revisionId"] = "rev-before-live"
+
+    response = await ws.client.push(ws.folder, receipt=True)
+    receipt = response["receipt"]
+
+    assert list(receipt) == [
+        "presentation_id",
+        "revision_before",
+        "revision_after",
+        "requests_sent",
+        "changes_applied",
+        "warnings",
+        "persistence",
+        "duration_s",
+    ]
+    assert receipt["presentation_id"] == ws.stub.data["presentationId"]
+    assert receipt["revision_before"] == "rev-before-live"
+    assert receipt["revision_after"] == "rev-after-push-1"
+    assert receipt["requests_sent"] == receipt["changes_applied"]
+    assert receipt["warnings"] == []
+    assert receipt["persistence"] == {"verified": True, "warnings": []}
+    assert isinstance(receipt["duration_s"], float)
+
+
+async def test_force_json_receipt_fetches_live_revision_and_carries_warning(
+    ws: Workspace,
+) -> None:
+    recolor_e121_locally(ws.folder, "#00ff00")
+    ws.stub.data["revisionId"] = "rev-live-force"
+
+    response = await ws.client.push(ws.folder, force=True, receipt=True)
+    receipt = response["receipt"]
+
+    assert receipt["revision_before"] == "rev-live-force"
+    assert receipt["warnings"] == [
+        {
+            "element_id": None,
+            "slide": None,
+            "kind": "push",
+            "severity": "warning",
+            "message": (
+                "push --force: conflict guard and revision lock bypassed; "
+                "concurrent human edits to the touched properties will be "
+                "overwritten"
+            ),
+        }
+    ]
+    assert response["warnings"][0].message == receipt["warnings"][0]["message"]
+
+
+async def test_push_receipt_with_persistence_warning_is_structured(
+    ws: Workspace,
+) -> None:
+    recolor_e121_locally(ws.folder, "#00ff00")
+    ws.stub.drop_shape_property_updates = True
+
+    response = await ws.client.push(ws.folder, receipt=True)
+    warning = response["receipt"]["persistence"]["warnings"][0]
+
+    assert set(warning) == {
+        "element_id",
+        "slide",
+        "kind",
+        "severity",
+        "message",
+    }
+    assert warning["element_id"] == "e121"
+    assert warning["slide"] == 1
+    assert warning["kind"] == "style_update"
+    assert warning["severity"] == "warning"
+    assert "did not persist remotely" in warning["message"]
+
+
 async def test_push_persistence_warning_shows_sent_and_remote_text(
     ws: Workspace,
 ) -> None:

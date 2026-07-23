@@ -15,6 +15,14 @@ from slidesmith.engine.content_parser import (
 from slidesmith.engine.diff_model import PushWarning, WarningSeverity
 from slidesmith.engine.image_fetch import redact_image_url
 from slidesmith.engine.json_utils import read_json
+from slidesmith.engine.persistence_styles import (
+    ALL_TEXT_PROPERTY_KEYS,
+    EffectiveTextSpan,
+    api_style_property_keys,
+    effective_text_styles_equivalent,
+    paragraph_style_property_keys,
+    text_style_property_keys,
+)
 from slidesmith.engine.shape_types import TAG_TO_TYPE, VALID_GOOGLE_TYPES
 
 
@@ -38,6 +46,9 @@ GOOGLE_DEFAULT_TEXT_LAYOUT_CLASSES = frozenset(
         "font-weight-700",
         "font-family-arial",
     }
+)
+_FONT_FAMILY_WEIGHT_PROPERTY_KEYS = frozenset(
+    {"text.font_family", "text.font_weight"}
 )
 
 
@@ -172,6 +183,168 @@ def _format_changed_element_style_classes(
     return " ".join(classes) or "(none)"
 
 
+def _format_changed_element_non_text_style_classes(
+    change: Change,
+    element: ParsedElement,
+) -> str:
+    """Format only non-text groups for the persistence style comparison."""
+    styles = element.styles
+    if styles is None:
+        return "(none)"
+    changed = change.new_styles
+    classes: list[str] = []
+    if changed is not None and changed.fill is not None and styles.fill is not None:
+        fill_class = styles.fill.to_class()
+        if fill_class:
+            classes.append(fill_class)
+    if (
+        changed is not None and changed.stroke is not None
+    ) or change.stroke_reset_fields:
+        if styles.stroke is not None:
+            classes.extend(styles.stroke.to_classes())
+    if (
+        (changed is not None and changed.content_alignment is not None)
+        or change.reset_content_alignment
+    ) and styles.content_alignment is not None:
+        classes.append(styles.content_alignment.to_class())
+    return " ".join(classes) or "(none)"
+
+
+def _changed_text_property_keys(change: Change) -> set[str]:
+    """Return the effective text properties represented by one style change."""
+    keys: set[str] = set()
+    styles = change.new_styles
+    if styles is not None:
+        keys.update(text_style_property_keys(styles.text_style))
+        keys.update(paragraph_style_property_keys(styles.paragraph_style))
+    keys.update(api_style_property_keys(change.text_style_reset_fields))
+    keys.update(api_style_property_keys(change.paragraph_style_reset_fields))
+    keys &= ALL_TEXT_PROPERTY_KEYS
+    if keys & _FONT_FAMILY_WEIGHT_PROPERTY_KEYS:
+        keys.update(_FONT_FAMILY_WEIGHT_PROPERTY_KEYS)
+    return keys
+
+
+def _changed_paragraph_property_keys(change: Change) -> set[str]:
+    """Return properties touched by all paragraph updates in a change."""
+    keys: set[str] = set()
+    for update in change.paragraph_style_updates or []:
+        for styles in (update.old_styles, update.new_styles):
+            if styles is None:
+                continue
+            keys.update(text_style_property_keys(styles.text_style))
+            keys.update(paragraph_style_property_keys(styles.paragraph_style))
+    keys &= ALL_TEXT_PROPERTY_KEYS
+    if keys & _FONT_FAMILY_WEIGHT_PROPERTY_KEYS:
+        keys.update(_FONT_FAMILY_WEIGHT_PROPERTY_KEYS)
+    return keys
+
+
+def _effective_text_styles_match(
+    change: Change,
+    remote_element: ParsedElement,
+    intended_element: ParsedElement,
+    *,
+    author_removed_classes: frozenset[str] | set[str],
+    span_cache: dict[int, list[EffectiveTextSpan] | None] | None = None,
+) -> bool:
+    """Compare only the effective text properties touched by a divergence."""
+    if change.change_type == ChangeType.TEXT_UPDATE:
+        property_keys: set[str] | None = None
+    elif change.change_type == ChangeType.PARAGRAPH_STYLE_UPDATE:
+        property_keys = _changed_paragraph_property_keys(change)
+    else:
+        property_keys = _changed_text_property_keys(change)
+    if property_keys is not None and not property_keys:
+        return False
+    return effective_text_styles_equivalent(
+        remote_element,
+        intended_element,
+        author_removed_classes=author_removed_classes,
+        property_keys=property_keys,
+        include_symmetric_effective_difference=bool(author_removed_classes),
+        span_cache=span_cache,
+    )
+
+
+def _auto_text_coverage(
+    element: ParsedElement,
+) -> tuple[tuple[int, int, int, str], ...] | None:
+    """Return normalized auto-text types over UTF-16 paragraph intervals."""
+    if element.runs:
+        if len(element.runs) != len(element.paragraphs):
+            return None
+        runs_by_paragraph = element.runs
+    else:
+        runs_by_paragraph = [[ParsedRun(text=text)] for text in element.paragraphs]
+
+    coverage: list[tuple[int, int, int, str]] = []
+    for paragraph_index, text in enumerate(element.paragraphs):
+        offset = 0
+        for run in runs_by_paragraph[paragraph_index]:
+            end = offset + _utf16_len(run.text)
+            if end > _utf16_len(text):
+                return None
+            if run.auto_text_type is not None:
+                coverage.append((paragraph_index, offset, end, run.auto_text_type))
+            offset = end
+        if offset != _utf16_len(text):
+            return None
+
+    normalized: list[tuple[int, int, int, str]] = []
+    for item in coverage:
+        if (
+            normalized
+            and normalized[-1][0] == item[0]
+            and normalized[-1][3] == item[3]
+            and normalized[-1][2] == item[1]
+        ):
+            previous = normalized[-1]
+            normalized[-1] = (previous[0], previous[1], item[2], item[3])
+        else:
+            normalized.append(item)
+    return tuple(normalized)
+
+
+def _auto_text_coverage_matches(
+    remote: ParsedElement,
+    intended: ParsedElement,
+) -> bool:
+    remote_coverage = _auto_text_coverage(remote)
+    intended_coverage = _auto_text_coverage(intended)
+    return (
+        remote_coverage is not None
+        and intended_coverage is not None
+        and remote_coverage == intended_coverage
+    )
+
+
+def _utf16_len(text: str) -> int:
+    return sum(2 if ord(character) > 0xFFFF else 1 for character in text)
+
+
+def _non_text_style_matches(
+    change: Change,
+    remote_element: ParsedElement,
+    intended_element: ParsedElement,
+    *,
+    newly_created: bool,
+    author_removed_classes: frozenset[str] | set[str],
+) -> bool:
+    """Keep the old exact/default comparison for non-text style groups."""
+    sent = _format_changed_element_non_text_style_classes(change, intended_element)
+    remote = _format_changed_element_non_text_style_classes(change, remote_element)
+    if sent == remote:
+        return True
+    return _only_google_default_class_additions(
+        sent,
+        remote,
+        remote_element,
+        author_removed_classes,
+        allow_created_element_alignment_default=newly_created,
+    )
+
+
 def _normalized_persistence_detail(
     change: Change,
     remote_elements: dict[tuple[str, str], ParsedElement],
@@ -279,6 +452,8 @@ def _persistence_warning_severity(
     *,
     newly_created: bool,
     author_removed_classes: frozenset[str] | set[str] | None = None,
+    related_author_removed_classes: frozenset[str] | set[str] | None = None,
+    span_cache: dict[int, list[EffectiveTextSpan] | None] | None = None,
     remote_image_sources: dict[tuple[str, str], str] | None = None,
     expected_image_sources: dict[tuple[str, str], str] | None = None,
 ) -> WarningSeverity | None:
@@ -287,6 +462,9 @@ def _persistence_warning_severity(
         change.author_removed_classes
         if author_removed_classes is None
         else author_removed_classes
+    )
+    normalization_removed_classes = set(removed_classes or set()) | set(
+        related_author_removed_classes or set()
     )
 
     if change.change_type == ChangeType.MOVE:
@@ -346,34 +524,94 @@ def _persistence_warning_severity(
             sent,
             remote,
             remote_element,
-            removed_classes,
+            normalization_removed_classes,
             allow_created_element_alignment_default=newly_created,
         ):
+            if (
+                _non_text_style_matches(
+                    change,
+                    remote_element,
+                    intended_element,
+                    newly_created=newly_created,
+                    author_removed_classes=normalization_removed_classes,
+                )
+                and _effective_text_styles_match(
+                    change,
+                    remote_element,
+                    intended_element,
+                    author_removed_classes=normalization_removed_classes,
+                    span_cache=span_cache,
+                )
+            ):
+                return None
             return WarningSeverity.WARNING
         return None if newly_created else WarningSeverity.NOTICE
 
     if change.change_type == ChangeType.PARAGRAPH_STYLE_UPDATE:
+        all_defaults = True
         for update in change.paragraph_style_updates or []:
             sent = _paragraph_style_classes(update.new_styles)
             remote = _paragraph_style_classes(update.old_styles)
             if not _only_google_default_class_additions(
-                sent, remote, author_removed_classes=removed_classes
+                sent,
+                remote,
+                author_removed_classes=normalization_removed_classes,
             ):
-                return WarningSeverity.WARNING
+                all_defaults = False
+        if all_defaults and change.paragraph_style_updates:
+            return None if newly_created else WarningSeverity.NOTICE
+        key = (change.slide_index or "", change.target_id)
+        remote_element = remote_elements.get(key)
+        intended_element = intended_elements.get(key)
+        if (
+            remote_element is not None
+            and intended_element is not None
+            and _effective_text_styles_match(
+                change,
+                remote_element,
+                intended_element,
+                author_removed_classes=normalization_removed_classes,
+                span_cache=span_cache,
+            )
+        ):
+            return None
         if not change.paragraph_style_updates:
             return WarningSeverity.WARNING
-        return None if newly_created else WarningSeverity.NOTICE
+        return WarningSeverity.WARNING
 
     if change.change_type == ChangeType.TEXT_UPDATE:
+        key = (change.slide_index or "", change.target_id)
+        remote_element = remote_elements.get(key)
+        intended_element = intended_elements.get(key)
+        auto_text_coverage_matches = (
+            remote_element is not None
+            and intended_element is not None
+            and _auto_text_coverage_matches(remote_element, intended_element)
+        )
         if (
             change.new_text == change.old_text
+            and auto_text_coverage_matches
             and _runs_only_gain_google_defaults(
                 change.new_runs,
                 change.old_runs,
-                author_removed_classes=removed_classes,
+                author_removed_classes=normalization_removed_classes,
             )
         ):
             return None if newly_created else WarningSeverity.NOTICE
+        if (
+            change.new_text == change.old_text
+            and auto_text_coverage_matches
+            and remote_element is not None
+            and intended_element is not None
+            and _effective_text_styles_match(
+                change,
+                remote_element,
+                intended_element,
+                author_removed_classes=normalization_removed_classes,
+                span_cache=span_cache,
+            )
+        ):
+            return None
         return WarningSeverity.WARNING
 
     return WarningSeverity.WARNING
@@ -531,9 +769,11 @@ def append_persistence_warning(
     remote_elements = _index_parsed_elements(refreshed_slides)
     intended_elements = _index_parsed_elements(intended_slides)
     remote_image_sources = _remote_image_source_urls(folder_path)
+    span_cache: dict[int, list[EffectiveTextSpan] | None] = {}
     author_removed_by_key: dict[
         tuple[str, str, ChangeType], frozenset[str]
     ] = {}
+    author_removed_by_target: dict[tuple[str, str], set[str]] = {}
     for authored_change in author_changes or []:
         if authored_change.author_removed_classes:
             author_removed_by_key[
@@ -543,6 +783,10 @@ def append_persistence_warning(
                     authored_change.change_type,
                 )
             ] = authored_change.author_removed_classes
+            author_removed_by_target.setdefault(
+                (authored_change.slide_index or "", authored_change.target_id),
+                set(),
+            ).update(authored_change.author_removed_classes)
     classified = [
         (
             change,
@@ -558,6 +802,11 @@ def append_persistence_warning(
                     (change.slide_index or "", change.target_id, change.change_type),
                     frozenset(),
                 ),
+                related_author_removed_classes=author_removed_by_target.get(
+                    (change.slide_index or "", change.target_id),
+                    set(),
+                ),
+                span_cache=span_cache,
                 remote_image_sources=remote_image_sources,
                 expected_image_sources=expected_image_sources,
             ),

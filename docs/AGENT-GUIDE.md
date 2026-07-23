@@ -109,9 +109,11 @@ restored. A notice means Google added a recognized default to an existing
 edited element. Treat the refreshed SML as authoritative and choose a
 supported alternative when a warning appears.
 
-Persistence verification intentionally suppresses two always-normalized cases:
-geometry differences smaller than 0.02 pt on every changed box field, and only
-Google-added default classes on newly created elements; on existing edited
+Persistence verification intentionally suppresses geometry differences smaller
+than 0.02 pt on every changed box field, effective text-style ownership changes
+between element, paragraph, and run scopes when the resolved per-span values
+remain equal, harmless run re-segmentation with the same effective spans, and
+only Google-added default classes on newly created elements; on existing edited
 elements, those same class additions are emitted as `NOTICE`. The exact shared
 default-class set is `font-weight-400`, `font-weight-700`, `font-family-arial`,
 `text-align-left`, `leading-100`,
@@ -129,7 +131,9 @@ normalization path. The aspect-correct effective width/height of an authored
 `Image fit="contain"` is also the intended geometry, so Google's expected
 authored-frame-to-contained-frame correction does not warn as a persistence
 failure. Differences at or above 0.02 pt and any meaningful text, geometry, or
-style drop still warn.
+style drop still warn. An authored class removal whose effective value remains
+identically inherited from another scope is intentionally excluded as redundant
+scope-ownership noise; removals that change the effective value still warn.
 
 Visual work is iterative: edit, `diff`, run the offline check, `push`, then run
 plain `check` and inspect the new thumbnails. Repeat that push-then-check loop

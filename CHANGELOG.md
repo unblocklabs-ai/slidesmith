@@ -18,6 +18,12 @@ agent-legible: name the command/flag and what an operator can now do.
 
 - Fractional paragraph line-spacing values such as `leading-88.421` now
   round-trip through pull-generated SML and its parser.
+- Post-push persistence verification now treats element, paragraph, and run
+  text styles with identical effective per-span values as equivalent, including
+  harmless run re-segmentation; authored drops and value changes still warn.
+  The intentional exception is a redundant class removal whose effective value
+  remains inherited identically from another scope, which is suppressed as
+  scope-ownership noise.
 
 ### Changed
 

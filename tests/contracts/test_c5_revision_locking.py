@@ -1200,6 +1200,415 @@ def test_persistence_warning_keeps_changed_authored_alignment_on_create(
     assert "remote now 'content-align-middle'" in message
 
 
+def test_persistence_warning_fails_closed_for_empty_element_style_drop(
+    tmp_path: Path,
+) -> None:
+    intended = parse_slide_content(
+        '<Slide id="s1"><TextBox id="box" x="10" y="20" w="100" h="30" '
+        'class="text-size-12" /></Slide>'
+    )
+    remote = parse_slide_content(
+        '<Slide id="s1"><TextBox id="box" x="10" y="20" w="100" h="30" '
+        '/></Slide>'
+    )
+    response = append_persistence_warning_for_test(
+        tmp_path,
+        intended,
+        remote,
+        [],
+        intended_change_keys={("box", ChangeType.STYLE_UPDATE)},
+    )
+
+    assert response["warnings"][0].severity is WarningSeverity.WARNING
+
+
+def test_persistence_warning_fails_closed_for_empty_paragraph_style_drop(
+    tmp_path: Path,
+) -> None:
+    intended = parse_slide_content(
+        '<Slide id="s1"><TextBox id="box" x="10" y="20" w="100" h="30">'
+        '<P class="text-size-12" /></TextBox></Slide>'
+    )
+    remote = parse_slide_content(
+        '<Slide id="s1"><TextBox id="box" x="10" y="20" w="100" h="30">'
+        "<P /></TextBox></Slide>"
+    )
+    response = append_persistence_warning_for_test(
+        tmp_path,
+        intended,
+        remote,
+        [],
+        intended_change_keys={("box", ChangeType.PARAGRAPH_STYLE_UPDATE)},
+    )
+
+    assert response["warnings"][0].severity is WarningSeverity.WARNING
+
+
+def test_persistence_warning_keeps_no_real_change_empty_element_quiet(
+    tmp_path: Path,
+) -> None:
+    empty = parse_slide_content(
+        '<Slide id="s1"><TextBox id="box" x="10" y="20" w="100" h="30" '
+        '/></Slide>'
+    )
+    response = append_persistence_warning_for_test(
+        tmp_path,
+        empty,
+        empty,
+        [],
+        intended_change_keys={("box", ChangeType.STYLE_UPDATE)},
+    )
+
+    assert "warnings" not in response
+
+
+def test_persistence_warning_compares_coupled_roboto_family_when_weight_survives(
+    tmp_path: Path,
+) -> None:
+    pristine = parse_slide_content(
+        '<Slide id="s1"><TextBox id="box" x="10" y="20" w="100" h="30" '
+        'class="font-family-roboto font-weight-700"><P>Authored</P>'
+        "</TextBox></Slide>"
+    )
+    intended = parse_slide_content(
+        '<Slide id="s1"><TextBox id="box" x="10" y="20" w="100" h="30" '
+        'class="font-weight-700"><P>Authored</P></TextBox></Slide>'
+    )
+    author_change = diff_presentation(
+        {"01": pristine}, {"01": intended}, {}
+    ).changes[0]
+    response = append_persistence_warning_for_test(
+        tmp_path,
+        intended,
+        pristine,
+        [author_change],
+        intended_change_keys={("box", ChangeType.STYLE_UPDATE)},
+    )
+
+    assert response["warnings"][0].severity is WarningSeverity.WARNING
+    assert "font-family-roboto" in response["warnings"][0].message
+
+
+def test_persistence_warning_warns_when_auto_text_is_dropped(
+    tmp_path: Path,
+) -> None:
+    intended = parse_slide_content(
+        '<Slide id="s1"><TextBox id="box" x="10" y="20" w="100" h="30">'
+        '<P><T class="text-size-12" auto-text="SLIDE_NUMBER">1</T></P>'
+        "</TextBox></Slide>"
+    )
+    remote = parse_slide_content(
+        '<Slide id="s1"><TextBox id="box" x="10" y="20" w="100" h="30">'
+        '<P><T class="text-size-12">1</T></P></TextBox></Slide>'
+    )
+    response = append_persistence_warning_for_test(
+        tmp_path,
+        intended,
+        remote,
+        [],
+        intended_change_keys={("box", ChangeType.TEXT_UPDATE)},
+    )
+
+    assert response["warnings"][0].severity is WarningSeverity.WARNING
+
+
+def test_persistence_warning_keeps_auto_text_across_run_resegmentation_quiet(
+    tmp_path: Path,
+) -> None:
+    intended = parse_slide_content(
+        '<Slide id="s1"><TextBox id="box" x="10" y="20" w="100" h="30">'
+        '<P><T class="text-size-12" auto-text="SLIDE_NUMBER">12</T></P>'
+        "</TextBox></Slide>"
+    )
+    remote = parse_slide_content(
+        '<Slide id="s1"><TextBox id="box" x="10" y="20" w="100" h="30">'
+        '<P><T class="text-size-12" auto-text="SLIDE_NUMBER">1</T>'
+        '<T class="text-size-12" auto-text="SLIDE_NUMBER">2</T></P>'
+        "</TextBox></Slide>"
+    )
+    response = append_persistence_warning_for_test(
+        tmp_path,
+        intended,
+        remote,
+        [],
+        intended_change_keys={("box", ChangeType.TEXT_UPDATE)},
+    )
+
+    assert "warnings" not in response
+
+
+def test_shadowed_noop_removal_is_suppressed_by_design(tmp_path: Path) -> None:
+    pristine = parse_slide_content(
+        '<Slide id="s1"><TextBox id="box" x="10" y="20" w="100" h="30" '
+        'class="font-weight-700"><P class="font-weight-700">Authored</P>'
+        "</TextBox></Slide>"
+    )
+    intended = parse_slide_content(
+        '<Slide id="s1"><TextBox id="box" x="10" y="20" w="100" h="30" '
+        'class="font-weight-700"><P>Authored</P></TextBox></Slide>'
+    )
+    author_change = diff_presentation(
+        {"01": pristine}, {"01": intended}, {}
+    ).changes[0]
+
+    # The removed paragraph class is redundant: the identical element-scope
+    # value still supplies the effective weight, so warning would be scope-
+    # ownership noise. This suppression is intentional by design.
+    response = append_persistence_warning_for_test(
+        tmp_path,
+        intended,
+        pristine,
+        [author_change],
+        intended_change_keys={("box", ChangeType.PARAGRAPH_STYLE_UPDATE)},
+    )
+
+    assert "warnings" not in response
+
+
+@pytest.mark.parametrize(
+    ("intended_class", "intended_body", "remote_class", "remote_body"),
+    [
+        (
+            None,
+            '<P><T class="text-size-12">Authored</T></P>',
+            None,
+            '<P class="text-size-12">Authored</P>',
+        ),
+        (
+            None,
+            '<P><T class="text-size-12">Authored</T></P>',
+            "text-size-12",
+            "<P>Authored</P>",
+        ),
+        (
+            "text-size-12",
+            "<P>Authored</P>",
+            None,
+            '<P class="text-size-12">Authored</P>',
+        ),
+    ],
+)
+def test_persistence_warning_treats_run_scope_promotion_as_equivalent(
+    tmp_path: Path,
+    intended_class: str | None,
+    intended_body: str,
+    remote_class: str | None,
+    remote_body: str,
+) -> None:
+    intended_class_attr = (
+        f' class="{intended_class}"' if intended_class else ""
+    )
+    remote_class_attr = f' class="{remote_class}"' if remote_class else ""
+    intended = parse_slide_content(
+        '<Slide id="s1"><TextBox id="box" x="10" y="20" w="100" h="30"'
+        f"{intended_class_attr}>"
+        f"{intended_body}</TextBox></Slide>"
+    )
+    remote = parse_slide_content(
+        '<Slide id="s1"><TextBox id="box" x="10" y="20" w="100" h="30"'
+        f"{remote_class_attr}>"
+        f"{remote_body}</TextBox></Slide>"
+    )
+    response = append_persistence_warning_for_test(
+        tmp_path,
+        intended,
+        remote,
+        [],
+        intended_change_keys={
+            ("box", ChangeType.TEXT_UPDATE),
+            ("box", ChangeType.PARAGRAPH_STYLE_UPDATE),
+            ("box", ChangeType.STYLE_UPDATE),
+        },
+    )
+
+    assert not response.get("warnings")
+
+
+def test_persistence_warning_treats_element_scope_demotion_as_equivalent(
+    tmp_path: Path,
+) -> None:
+    intended = parse_slide_content(
+        '<Slide id="s1"><TextBox id="box" x="10" y="20" w="100" h="30" '
+        'class="text-size-12"><P>Authored</P></TextBox></Slide>'
+    )
+    remote = parse_slide_content(
+        '<Slide id="s1"><TextBox id="box" x="10" y="20" w="100" h="30">'
+        '<P><T class="text-size-12">Authored</T></P></TextBox></Slide>'
+    )
+    response = append_persistence_warning_for_test(
+        tmp_path,
+        intended,
+        remote,
+        [],
+        intended_change_keys={
+            ("box", ChangeType.TEXT_UPDATE),
+            ("box", ChangeType.PARAGRAPH_STYLE_UPDATE),
+            ("box", ChangeType.STYLE_UPDATE),
+        },
+    )
+
+    assert not response.get("warnings")
+
+
+def test_persistence_warning_treats_identically_styled_run_split_as_equivalent(
+    tmp_path: Path,
+) -> None:
+    intended = parse_slide_content(
+        '<Slide id="s1"><TextBox id="box" x="10" y="20" w="100" h="30">'
+        '<P><T class="text-size-12">Authored text</T></P></TextBox></Slide>'
+    )
+    remote = parse_slide_content(
+        '<Slide id="s1"><TextBox id="box" x="10" y="20" w="100" h="30">'
+        '<P><T class="text-size-12">Auth</T><T class="text-size-12">ored '
+        'text</T></P></TextBox></Slide>'
+    )
+    response = append_persistence_warning_for_test(
+        tmp_path,
+        intended,
+        remote,
+        [],
+        intended_change_keys={("box", ChangeType.TEXT_UPDATE)},
+    )
+
+    assert not response.get("warnings")
+
+
+@pytest.mark.parametrize(
+    ("intended_class", "remote_class"),
+    [
+        ("text-size-12", "text-size-14"),
+        ("text-color-#ff0000", "text-color-#0000ff"),
+        ("font-weight-700", "font-weight-400"),
+        ("font-family-roboto", "font-family-arial"),
+    ],
+)
+def test_persistence_warning_keeps_real_cross_scope_value_changes(
+    tmp_path: Path,
+    intended_class: str,
+    remote_class: str,
+) -> None:
+    intended = parse_slide_content(
+        '<Slide id="s1"><TextBox id="box" x="10" y="20" w="100" h="30">'
+        f'<P><T class="{intended_class}">Authored</T></P></TextBox></Slide>'
+    )
+    remote = parse_slide_content(
+        '<Slide id="s1"><TextBox id="box" x="10" y="20" w="100" h="30">'
+        f'<P class="{remote_class}">Authored</P></TextBox></Slide>'
+    )
+    response = append_persistence_warning_for_test(
+        tmp_path,
+        intended,
+        remote,
+        [],
+        intended_change_keys={
+            ("box", ChangeType.TEXT_UPDATE),
+            ("box", ChangeType.PARAGRAPH_STYLE_UPDATE),
+        },
+    )
+
+    assert response["warnings"]
+    assert response["warnings"][0].severity is WarningSeverity.WARNING
+    assert "box" in response["warnings"][0].message
+
+
+def test_persistence_warning_keeps_dropped_cross_scope_property(
+    tmp_path: Path,
+) -> None:
+    intended = parse_slide_content(
+        '<Slide id="s1"><TextBox id="box" x="10" y="20" w="100" h="30">'
+        '<P><T class="text-color-#ff0000">Authored</T></P></TextBox></Slide>'
+    )
+    remote = parse_slide_content(
+        '<Slide id="s1"><TextBox id="box" x="10" y="20" w="100" h="30">'
+        "<P>Authored</P></TextBox></Slide>"
+    )
+    response = append_persistence_warning_for_test(
+        tmp_path,
+        intended,
+        remote,
+        [],
+        intended_change_keys={("box", ChangeType.TEXT_UPDATE)},
+    )
+
+    assert response["warnings"]
+    assert response["warnings"][0].severity is WarningSeverity.WARNING
+    assert "text-color-#ff0000" in response["warnings"][0].message
+
+
+def test_persistence_warning_keeps_authored_default_removal_after_scope_move(
+    tmp_path: Path,
+) -> None:
+    pristine = parse_slide_content(
+        '<Slide id="s1"><TextBox id="box" x="10" y="20" w="100" h="30" '
+        'class="font-weight-700"><P>Authored</P></TextBox></Slide>'
+    )
+    intended = parse_slide_content(
+        '<Slide id="s1"><TextBox id="box" x="10" y="20" w="100" h="30">'
+        "<P>Authored</P></TextBox></Slide>"
+    )
+    remote = parse_slide_content(
+        '<Slide id="s1"><TextBox id="box" x="10" y="20" w="100" h="30">'
+        '<P class="font-weight-700">Authored</P></TextBox></Slide>'
+    )
+    author_change = diff_presentation(
+        {"01": pristine}, {"01": intended}, {}
+    ).changes[0]
+    response = append_persistence_warning_for_test(
+        tmp_path,
+        intended,
+        remote,
+        [author_change],
+        intended_change_keys={
+            ("box", ChangeType.PARAGRAPH_STYLE_UPDATE),
+            ("box", ChangeType.STYLE_UPDATE),
+        },
+    )
+
+    assert response["warnings"]
+    assert response["warnings"][0].severity is WarningSeverity.WARNING
+
+
+def test_persistence_warning_mixed_cross_scope_normalization_keeps_real_drop(
+    tmp_path: Path,
+) -> None:
+    intended = parse_slide_content(
+        '<Slide id="s1">'
+        '<TextBox id="harmless" x="10" y="20" w="100" h="30" '
+        'class="text-size-12"><P>Same</P></TextBox>'
+        '<TextBox id="genuine" x="10" y="60" w="100" h="30">'
+        '<P><T class="text-color-#ff0000">Dropped</T></P></TextBox>'
+        "</Slide>"
+    )
+    remote = parse_slide_content(
+        '<Slide id="s1">'
+        '<TextBox id="harmless" x="10" y="20" w="100" h="30">'
+        '<P class="text-size-12">Same</P></TextBox>'
+        '<TextBox id="genuine" x="10" y="60" w="100" h="30">'
+        "<P>Dropped</P></TextBox>"
+        "</Slide>"
+    )
+    response = append_persistence_warning_for_test(
+        tmp_path,
+        intended,
+        remote,
+        [],
+        intended_change_keys={
+            (target, change_type)
+            for target in ("harmless", "genuine")
+            for change_type in (
+                ChangeType.TEXT_UPDATE,
+                ChangeType.PARAGRAPH_STYLE_UPDATE,
+                ChangeType.STYLE_UPDATE,
+            )
+        },
+    )
+
+    assert len(response["warnings"]) == 1
+    assert response["warnings"][0].severity is WarningSeverity.WARNING
+    assert "genuine" in response["warnings"][0].message
+    assert "harmless" not in response["warnings"][0].message
+
+
 def test_created_image_keeps_sub_point_zero_two_geometry_suppression(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

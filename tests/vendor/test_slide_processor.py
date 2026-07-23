@@ -15,6 +15,57 @@ from slidesmith.engine.slide_processor import process_presentation
 from slidesmith.engine.style_extractor import extract_styles
 
 
+def _synthetic_element(
+    object_id: str,
+    x: float,
+    y: float,
+    width: float,
+    height: float,
+    *,
+    element_type: str = "RECTANGLE",
+) -> dict[str, object]:
+    """Make a point-valued synthetic page element for render-tree tests."""
+    return {
+        "objectId": object_id,
+        "size": {
+            "width": {"magnitude": width, "unit": "PT"},
+            "height": {"magnitude": height, "unit": "PT"},
+        },
+        "transform": {
+            "scaleX": 1,
+            "scaleY": 1,
+            "translateX": x,
+            "translateY": y,
+            "unit": "PT",
+        },
+        "shape": {"shapeType": element_type},
+    }
+
+
+def _paint_order(elements: list[dict[str, object]]) -> list[str]:
+    """Expand native groups into the order of their paintable descendants."""
+    order: list[str] = []
+    for element in elements:
+        group = element.get("elementGroup")
+        if isinstance(group, dict):
+            order.extend(_paint_order(group.get("children", [])))
+        else:
+            order.append(str(element["objectId"]))
+    return order
+
+
+def flatten_depth_first(nodes: list[RenderNode]) -> list[str]:
+    """Flatten visual nodes while treating native groups as paint slots."""
+    order: list[str] = []
+    for node in nodes:
+        if "elementGroup" in node.element:
+            order.extend(flatten_depth_first(node.children))
+        else:
+            order.append(str(node.element["objectId"]))
+            order.extend(flatten_depth_first(node.children))
+    return order
+
+
 class TestBoundingBox:
     """Tests for BoundingBox class."""
 
@@ -86,6 +137,102 @@ class TestIDManager:
 
 class TestRenderTree:
     """Tests for render tree construction."""
+
+    @pytest.mark.parametrize(
+        ("elements", "expected_children"),
+        [
+            (
+                [
+                    _synthetic_element("outer", 0, 0, 500, 300),
+                    _synthetic_element("middle", 50, 50, 300, 200),
+                    _synthetic_element("inner", 80, 80, 100, 60),
+                ],
+                {"outer": ["middle"], "middle": ["inner"]},
+            ),
+            (
+                [
+                    _synthetic_element("background", 0, 0, 600, 400),
+                    _synthetic_element("card_a", 40, 40, 120, 70),
+                    _synthetic_element("title_a", 50, 50, 100, 20),
+                    _synthetic_element("card_b", 240, 40, 120, 70),
+                    _synthetic_element("title_b", 250, 50, 100, 20),
+                ],
+                {
+                    "background": ["card_a", "card_b"],
+                    "card_a": ["title_a"],
+                    "card_b": ["title_b"],
+                },
+            ),
+            (
+                [
+                    _synthetic_element("backdrop", 0, 0, 600, 400),
+                    _synthetic_element("loose_before", 20, 20, 80, 50),
+                    {
+                        "objectId": "native_group",
+                        "transform": {
+                            "scaleX": 1,
+                            "scaleY": 1,
+                            "translateX": 0,
+                            "translateY": 0,
+                            "unit": "PT",
+                        },
+                        "elementGroup": {
+                            "children": [
+                                _synthetic_element("group_back", 140, 40, 80, 50),
+                                _synthetic_element("group_front", 160, 60, 80, 50),
+                            ]
+                        },
+                    },
+                    _synthetic_element("loose_after", 260, 20, 80, 50),
+                ],
+                {
+                    "backdrop": ["loose_before", "native_group", "loose_after"],
+                    "native_group": ["group_back", "group_front"],
+                },
+            ),
+        ],
+    )
+    def test_depth_first_order_matches_paint_order(
+        self,
+        elements: list[dict[str, object]],
+        expected_children: dict[str, list[str]],
+    ) -> None:
+        roots = build_render_tree(elements)
+
+        assert flatten_depth_first(roots) == _paint_order(elements)
+
+        def child_ids(node: RenderNode) -> list[str]:
+            return [str(child.element["objectId"]) for child in node.children]
+
+        def assert_expected(node: RenderNode) -> None:
+            if str(node.element["objectId"]) in expected_children:
+                assert child_ids(node) == expected_children[str(node.element["objectId"])]
+            for child in node.children:
+                assert_expected(child)
+
+        for root in roots:
+            assert_expected(root)
+
+    def test_agenda_cards_over_image_do_not_reopen_image_subtree(self) -> None:
+        """Interleaved loose elements keep card z-order visible after the image."""
+        elements = [
+            _synthetic_element("agenda_image", 0, 0, 600, 400, element_type="IMAGE"),
+            _synthetic_element("unrelated_decoration", 650, 20, 80, 40),
+            _synthetic_element("agenda_card_1", 40, 60, 140, 80),
+            _synthetic_element("agenda_card_2", 240, 60, 140, 80),
+        ]
+
+        roots = build_render_tree(elements)
+
+        assert [str(root.element["objectId"]) for root in roots] == [
+            "agenda_image",
+            "unrelated_decoration",
+            "agenda_card_1",
+            "agenda_card_2",
+        ]
+        assert all(root.parent is None for root in roots)
+        assert roots[0].children == []
+        assert flatten_depth_first(roots) == _paint_order(elements)
 
     def test_simple_element(self):
         elements = [

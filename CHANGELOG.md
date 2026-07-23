@@ -27,6 +27,10 @@ agent-legible: name the command/flag and what an operator can now do.
 
 ### Changed
 
+- Pull-generated visual-containment nesting is now z-order-consistent: only
+  contiguous paint-order runs are nested, and SML depth-first document order
+  is guaranteed to match Google's back-to-front paint order. Existing
+  workspaces migrate naturally on their next pull.
 - `slidesmith check` warns when local edits are pending before downloading
   thumbnails, making clear that the thumbnails/contact sheet show the remote
   deck and advising `slidesmith push` to sync first.

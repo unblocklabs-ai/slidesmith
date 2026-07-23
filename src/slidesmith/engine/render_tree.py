@@ -1,7 +1,9 @@
 """Render tree construction.
 
-Converts flat element list from Google Slides API into visual containment hierarchy.
-Elements that are visually contained within others become children in the tree.
+Converts Google's flat, back-to-front element list into a visual containment
+hierarchy without changing its paint order. Elements that are visually
+contained within others may become children in the tree when the containing
+subtree is contiguous in document order.
 """
 
 from __future__ import annotations
@@ -96,36 +98,49 @@ def build_render_tree(
     # First, flatten any API groups and create nodes
     nodes = _create_nodes(elements, id_manager)
 
-    # Sort by area descending (largest first = potential parents first)
-    nodes.sort(key=lambda n: -n.bounds.area)
-
-    # Build containment tree
+    # Walk in Google's back-to-front order. The stack is the path to the most
+    # recently painted node. A parent can accept the next node only when it
+    # contains that node and the previous paint slot was the end of the
+    # parent's current subtree. Popping a candidate closes its subtree
+    # permanently, so a later overlapping element cannot reopen it and move
+    # across an unrelated sibling in the generated document.
     roots: list[RenderNode] = []
+    container_stack: list[RenderNode] = []
+    subtree_end: dict[int, int] = {
+        id(node): node.source_order for node in nodes
+    }
 
     for node in nodes:
-        # Find smallest container that contains this element
-        best_parent: RenderNode | None = None
-        best_area = float("inf")
+        while container_stack:
+            candidate = container_stack[-1]
+            is_contiguous = subtree_end[id(candidate)] == node.source_order - 1
+            is_containing = (
+                candidate.bounds.area > node.bounds.area
+                and candidate.bounds.contains(node.bounds, 0.7)
+            )
+            # A loose element must never be inferred as a child of a real API
+            # group. The group's native children are already attached below
+            # it, and the group itself remains one paint-order slot here.
+            is_native_group = "elementGroup" in candidate.element
+            if is_contiguous and is_containing and not is_native_group:
+                break
+            container_stack.pop()
 
-        for potential_parent in nodes:
-            if potential_parent is node:
-                continue
-            if potential_parent.bounds.area <= node.bounds.area:
-                continue
-            if (
-                potential_parent.bounds.contains(node.bounds, 0.7)
-                and potential_parent.bounds.area < best_area
-            ):
-                best_parent = potential_parent
-                best_area = potential_parent.bounds.area
+        if container_stack:
+            parent = container_stack[-1]
+            parent.children.append(node)
+            node.parent = parent
 
-        if best_parent:
-            best_parent.children.append(node)
-            node.parent = best_parent
+            # Every ancestor's subtree now ends at this paint slot. This is
+            # what lets a larger candidate remain available around a nested
+            # sequence while rejecting it after an interleaved sibling.
+            for ancestor in container_stack:
+                subtree_end[id(ancestor)] = node.source_order
         else:
             roots.append(node)
 
-    roots.sort(key=lambda n: n.source_order)
+        container_stack.append(node)
+
     _sort_children(roots)
 
     return roots

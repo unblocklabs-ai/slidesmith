@@ -208,6 +208,16 @@ Google Slides API: keep the pulled group ID when editing it, or copy a pulled
 group instead. Request generation fails with `Group elements cannot be created via the API; keep or copy pulled groups instead`. Unknown tags fail loudly, so
 do not guess tag names.
 
+Pull may also infer visual containment between ordinary page elements using the
+70% bounds heuristic. That inference is allowed only for a contiguous run in
+Google's back-to-front page-element order: every element between a containing
+element and its inferred descendant must already be in that container's
+subtree. The resulting SML tree therefore has the same depth-first document
+order as the paint order. If an unrelated element interrupts the run, the
+later element remains a sibling or attaches to the highest ancestor whose
+subtree is still contiguous. Native `Group` elements keep their API children
+and never acquire loose inferred children.
+
 XML rules still apply: escape `&`, `<`, and `>` in text; quote attributes; keep
 `T` inside `P`; and do not put layout containers inside `P` or `T`.
 
@@ -218,6 +228,13 @@ a pull (including the authoritative refresh after a live command), SML sibling
 order is regenerated from Google's back-to-front render order: the first
 element is behind later elements. That file order is a pulled projection, not
 the z-order authoring model; use `reorder` to change stacking:
+
+The same guarantee applies across inferred nesting: depth-first SML traversal
+is exactly Google's back-to-front paint order. A visual container can hold a
+child only while the container's paint-order interval is contiguous; the
+container is closed when an unrelated element appears. A native `Group` stays
+one native slot around its own children, so loose elements cannot be mistaken
+for group children and the group's position remains readable around them.
 
 ```bash
 slidesmith reorder <ID> 'id=hero_image' --op send-to-back

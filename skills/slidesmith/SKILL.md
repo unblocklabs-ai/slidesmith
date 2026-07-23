@@ -195,8 +195,13 @@ or add a `qa-accept-<rule>` class to the element inline (stripped before push).
   generated `eNN` IDs.
 - `fmt` before committing hand-edited SML so whitespace changes don't inflate the
   diff.
-- Bounds-containment nesting: an element fully covering another may become its
-  parent in the SML on re-pull. Deleting a wrapper needs care (keep the child).
+- Bounds-containment nesting: a visually containing ordinary element may become
+  an SML parent on re-pull only when that subtree is contiguous in Google's
+  back-to-front paint order. The SML tree's depth-first document order is
+  therefore guaranteed to match paint order; interleaved elements remain
+  siblings (or attach to the highest still-contiguous ancestor). Native Google
+  `Group` structure is preserved. Deleting an inferred wrapper needs care
+  (keep the child).
 
 See `recipes.md` for copy-paste task recipes and `docs/AGENT-GUIDE.md` (in the
 repo) for the exhaustive reference.

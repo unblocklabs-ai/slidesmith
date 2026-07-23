@@ -272,7 +272,7 @@ def test_empty_keyring_falls_back_to_file_and_repairs_keyring(
     assert SessionToken.from_dict(json.loads(repaired)) == token
 
 
-def test_service_account_requests_only_the_presentations_scope(
+def test_service_account_requests_presentations_and_drive_file_scopes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     captured: dict[str, Any] = {}
@@ -322,7 +322,8 @@ def test_service_account_requests_only_the_presentations_scope(
     manager._get_service_account_credential()
 
     assert captured["scopes"] == [
-        "https://www.googleapis.com/auth/presentations"
+        "https://www.googleapis.com/auth/presentations",
+        "https://www.googleapis.com/auth/drive.file",
     ]
 
 

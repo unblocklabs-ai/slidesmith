@@ -795,12 +795,14 @@ async def test_drive_permission_failure_deletes_uploaded_file_and_stays_typed(
 ) -> None:
     image_path = _write_png(tmp_path)
     requests: list[tuple[str, str]] = []
+    permission_requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append((request.method, request.url.path))
         if request.url.path == "/upload/drive/v3/files":
             return httpx.Response(200, json={"id": "created-file"})
         if request.url.path == "/drive/v3/files/created-file/permissions":
+            permission_requests.append(request)
             return httpx.Response(403, text="permission denied")
         if (
             request.method == "DELETE"
@@ -823,6 +825,11 @@ async def test_drive_permission_failure_deletes_uploaded_file_and_stays_typed(
         ("POST", "/drive/v3/files/created-file/permissions"),
         ("DELETE", "/drive/v3/files/created-file"),
     ]
+    assert dict(permission_requests[0].url.params) == {"fields": "id"}
+    assert json.loads(permission_requests[0].content) == {
+        "type": "anyone",
+        "role": "reader",
+    }
 
 
 @pytest.mark.asyncio

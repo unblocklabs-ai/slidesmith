@@ -1201,6 +1201,35 @@ the approximation blindly.
 
 An agent should report which findings were intentionally accepted and why.
 
+## Create and share
+
+Start a self-contained deck workflow with:
+
+```bash
+slidesmith create --title "Launch plan" --dir .
+slidesmith create --title "Launch plan" \
+  --share writer@example.com,reviewer@example.com --role commenter
+```
+
+The command POSTs the title to Google Slides, materializes the returned
+presentation through the normal pull workspace projection, and prints the ID,
+URL, and local workspace path. The workspace is pristine immediately after
+creation, so `slidesmith diff <workspace>` reports no changes. `--role` accepts
+`writer`, `commenter`, or `reader` and defaults to `writer`; sharing sends
+`sendNotificationEmail=false`. Each recipient is reported independently. A
+partial failure exits successfully, while an all-recipient failure exits
+nonzero; in either case the created deck and local workspace remain available.
+
+There is no standalone `share` command in this phase. Google `drive.file`
+authorizes reliable sharing of decks Slidesmith created, but sharing an
+arbitrary existing deck is unreliable without a Drive Picker grant, so sharing
+is deliberately limited to `create`. Browser OAuth and service accounts
+request both `presentations` and `drive.file`. Existing OAuth sessions may
+need `slidesmith auth login` to consent to the updated scope set. A bare
+`GOG_ACCESS_TOKEN` can create a deck while lacking `drive.file`; a 403 during
+sharing is reported as a share failure with the missing-scope remediation, and
+the deck is not removed.
+
 ## Authentication troubleshooting
 
 Run:

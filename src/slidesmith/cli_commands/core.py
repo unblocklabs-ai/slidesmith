@@ -1,4 +1,4 @@
-"""Core CLI commands: auth, pull, diff, and push."""
+"""Core CLI commands: auth, create, pull, diff, and push."""
 
 from __future__ import annotations
 
@@ -19,6 +19,29 @@ from slidesmith.cli_commands._support import (
     _warn_if_stale,
 )
 from slidesmith.engine.json_utils import read_json
+
+
+def _share_emails(value: str | None) -> list[str]:
+    """Parse one comma-separated --share value into non-empty email addresses."""
+    if value is None:
+        return []
+    emails = [part.strip() for part in value.split(",")]
+    if not emails or any(not email for email in emails):
+        raise ValueError("--share expects one or more comma-separated email addresses")
+    return emails
+
+
+def _presentation_url(presentation_id: str) -> str:
+    return f"https://docs.google.com/presentation/d/{presentation_id}/edit"
+
+
+def _remote_deck_context(presentation_id: str, output_path: Path) -> str:
+    return (
+        f"Presentation ID: {presentation_id}\n"
+        f"URL: {_presentation_url(presentation_id)}\n"
+        "The remote deck exists and can be pulled normally with: "
+        f"slidesmith pull {presentation_id} -o {output_path}"
+    )
 
 
 def _cli_helper(name: str, fallback: Any) -> Any:
@@ -42,6 +65,107 @@ def cmd_pull(args: Any) -> None:
             n = sum(1 for f in files if f.name == "content.sml")
             print(f"Pulled {n} slide(s) to {out / pid}/")
         finally:
+            await transport.close()
+
+    asyncio.run(run())
+
+
+def cmd_create(args: Any) -> None:
+    from slidesmith.engine.client import SlidesClient, validate_create_output_parent
+    from slidesmith.engine.permissions import (
+        DrivePermissionError,
+        GoogleDrivePermissionsClient,
+    )
+    from slidesmith.engine.transport import GoogleSlidesTransport
+
+    emails = _share_emails(args.share)
+    parent = validate_create_output_parent(args.dir)
+
+    # Reuse the existing write-capable command type so gateway auth works for
+    # every mode that already supports push; Google scopes are the same for the
+    # subsequent Slides and Drive requests.
+    token = _cli_helper("_token", _token)("slide.push", str(parent))
+
+    async def run() -> None:
+        transport = GoogleSlidesTransport(token, **_transport_options(token))
+        permission_client: GoogleDrivePermissionsClient | None = None
+        try:
+            def report_created(created: Any) -> None:
+                workspace = parent / created.presentation_id
+                # Flush immediately: the announcement is the only record of
+                # the remote deck if a later step crashes the process.
+                print(
+                    f"Created presentation: {created.presentation_id}",
+                    flush=True,
+                )
+                print(
+                    f"URL: {_presentation_url(created.presentation_id)}",
+                    flush=True,
+                )
+                print(f"Workspace: {workspace}", flush=True)
+
+            created = await SlidesClient(transport).create(
+                args.title,
+                parent,
+                on_created=report_created,
+            )
+
+            if not emails:
+                return
+
+            try:
+                permission_client = GoogleDrivePermissionsClient(
+                    client=transport._client
+                )
+            except Exception as exc:
+                raise RuntimeError(
+                    f"{_remote_deck_context(created.presentation_id, parent)}\n"
+                    f"Sharing setup failed: {exc}"
+                ) from exc
+            succeeded: list[str] = []
+            failed: list[tuple[str, str]] = []
+            for email in emails:
+                try:
+                    await permission_client.create_permission(
+                        created.presentation_id,
+                        permission_type="user",
+                        role=args.role,
+                        email_address=email,
+                        send_notification_email=False,
+                    )
+                except DrivePermissionError as exc:
+                    message = str(exc)
+                    if exc.status_code == 403:
+                        message = (
+                            f"{message}; token may be missing the "
+                            "https://www.googleapis.com/auth/drive.file scope"
+                        )
+                    failed.append((email, message))
+                except Exception as exc:  # report one failed recipient and continue
+                    failed.append((email, str(exc)))
+                else:
+                    succeeded.append(email)
+
+            if succeeded:
+                print(f"Shared with: {', '.join(succeeded)} (role={args.role})")
+            if failed:
+                print("Share failures:")
+                for email, message in failed:
+                    print(f"  {email}: {message}")
+                print(
+                    "The deck was created and materialized; sharing failed for "
+                    f"{len(failed)} recipient(s)."
+                )
+                print(
+                    f"{_remote_deck_context(created.presentation_id, parent)}\n"
+                    f"Sharing failed for {len(failed)} recipient(s).",
+                    file=sys.stderr,
+                )
+                if not succeeded:
+                    raise SystemExit(1)
+        finally:
+            if permission_client is not None:
+                await permission_client.close()
             await transport.close()
 
     asyncio.run(run())
@@ -178,6 +302,30 @@ def register_core_commands(
     sp.add_argument("-o", "--output-dir", default=None)
     sp.add_argument("--no-raw", action="store_true", help="Skip saving raw API JSON")
     sp.set_defaults(func=handlers["cmd_pull"])
+
+    sc = subparsers.add_parser(
+        "create",
+        help="Create a presentation and materialize its local SML workspace",
+    )
+    sc.add_argument("--title", required=True, help="Title for the new presentation")
+    sc.add_argument(
+        "--share",
+        default=None,
+        metavar="EMAIL[,EMAIL...]",
+        help="Share the app-created deck with one or more comma-separated emails",
+    )
+    sc.add_argument(
+        "--role",
+        choices=("writer", "commenter", "reader"),
+        default="writer",
+        help="Drive role for --share recipients (default: writer)",
+    )
+    sc.add_argument(
+        "--dir",
+        default=".",
+        help="Parent directory for the ID-named local workspace (default: .)",
+    )
+    sc.set_defaults(func=handlers["cmd_create"])
 
     sd = subparsers.add_parser("diff", help="Preview batchUpdate requests (local only, no API calls)")
     sd.add_argument("folder", help="Presentation folder created by pull")

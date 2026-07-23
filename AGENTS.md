@@ -26,6 +26,7 @@ image or a throwaway `.pptx`.
 ## The core loop
 
 ```bash
+slidesmith create --title "New deck"  # -> <ID>/slides/NN/content.sml
 slidesmith pull "<deck-url-or-id>"      # -> <ID>/slides/NN/content.sml
 # edit the SML (see the skill/guide for the class + selector vocabulary)
 slidesmith diff <ID> --summary          # preview the batchUpdate — no API call
@@ -35,7 +36,7 @@ slidesmith check <ID> --contact-sheet   # download renders + geometry QA
 
 ## Commands you'll actually invoke
 
-`pull`, `diff`, `push`, `check` (the loop); `add-slide` (scaffold a positioned
+`create`, `pull`, `diff`, `push`, `check` (the loop); `add-slide` (scaffold a positioned
 new slide); `select`/`apply` (semantic queries + roles, local-only); `replace-class`
 (bulk restyle); `reorder` (z-order); `group` (native grouping); `advise`
 (offline maintainability suggestions); `replace-image`; `theme extract/apply`

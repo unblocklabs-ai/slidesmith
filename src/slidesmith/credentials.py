@@ -608,6 +608,7 @@ class CredentialsManager(BrowserFlowMixin):
             str(self._sa_path),
             scopes=[
                 "https://www.googleapis.com/auth/presentations",
+                "https://www.googleapis.com/auth/drive.file",
             ],
         )
         credentials.refresh(Request())

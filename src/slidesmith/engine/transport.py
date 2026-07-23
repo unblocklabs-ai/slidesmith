@@ -87,6 +87,15 @@ class Transport(ABC):
         """
         ...
 
+    async def create_presentation(self, title: str) -> PresentationData:
+        """Create a presentation and return its complete API representation.
+
+        This is intentionally a concrete compatibility method: transports that
+        only support the existing pull/push workflow do not need to implement
+        creation until they opt into the create command.
+        """
+        raise NotImplementedError("This transport does not support presentation creation")
+
     @abstractmethod
     async def batch_update(
         self,
@@ -175,6 +184,37 @@ class GoogleSlidesTransport(Transport):
             presentation_id=response.get("presentationId", presentation_id),
             data=response,
         )
+
+    async def create_presentation(self, title: str) -> PresentationData:
+        """Create a Google Slides presentation with the supplied title."""
+        if not isinstance(title, str) or not title.strip():
+            raise ValueError("Presentation title must not be empty")
+
+        refresh_attempted = False
+        while True:
+            observed_authorization = self._client.headers.get("Authorization")
+            try:
+                response = await self._client.post(API_BASE, json={"title": title})
+                response.raise_for_status()
+                result = response.json()
+                if not isinstance(result, dict):
+                    raise TransportError(
+                        "Presentation creation response was not a JSON object"
+                    )
+                presentation_id = result.get("presentationId")
+                if not isinstance(presentation_id, str) or not presentation_id:
+                    raise TransportError(
+                        "Presentation creation response did not include a presentationId"
+                    )
+                return PresentationData(presentation_id=presentation_id, data=result)
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 401 and not refresh_attempted:
+                    refresh_attempted = True
+                    if await self._refresh_after_401(observed_authorization):
+                        continue
+                raise self._handle_http_error(e) from e
+            except httpx.RequestError as e:
+                raise TransportError(f"Network error: {e}") from e
 
     async def get_page_thumbnail(
         self,

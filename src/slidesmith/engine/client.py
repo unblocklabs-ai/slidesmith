@@ -9,6 +9,7 @@ Provides the `pull`, `diff`, and `push` methods for the presentation workflow:
 from __future__ import annotations
 
 from collections.abc import Callable
+import os
 from pathlib import Path
 import re
 from typing import Any
@@ -33,7 +34,7 @@ from slidesmith.engine.push_progress import (
     load_progress_ledger,
     write_progress_ledger,
 )
-from slidesmith.engine.transport import APIError, Transport
+from slidesmith.engine.transport import APIError, PresentationData, Transport
 from slidesmith.engine import push_executor as _push_executor
 from slidesmith.engine.image_replace import (
     CoverFitPushError,
@@ -122,6 +123,53 @@ async def finalize_push(
         clear_progress=clear_progress,
         refresh=refresh_after_success,
     )
+
+
+def validate_create_output_parent(output_path: str | Path) -> Path:
+    """Validate the existing, writable parent used by ``create``.
+
+    This check is intentionally local and must run before authentication or a
+    transport request.  The presentation ID is assigned remotely, so the
+    ID-specific child collision is checked again after creation.
+    """
+    parent = Path(output_path)
+    if not parent.exists():
+        raise FileNotFoundError(f"Output parent does not exist: {parent}")
+    if not parent.is_dir():
+        raise NotADirectoryError(f"Output parent is not a directory: {parent}")
+    mode = parent.stat().st_mode
+    if not mode & 0o222 or not os.access(parent, os.W_OK | os.X_OK):
+        raise PermissionError(f"Output parent is not writable: {parent}")
+    if (parent / PRESENTATION_FILE).exists():
+        raise FileExistsError(
+            f"Workspace already exists: {parent}. "
+            "Pass its parent directory with --dir, or choose a different path."
+        )
+    return parent
+
+
+def _presentation_url(presentation_id: str) -> str:
+    return f"https://docs.google.com/presentation/d/{presentation_id}/edit"
+
+
+class PresentationCreateError(RuntimeError):
+    """A remote deck exists but its local workspace could not be materialized."""
+
+    def __init__(
+        self,
+        presentation_id: str,
+        output_path: Path,
+        cause: Exception,
+    ) -> None:
+        self.presentation_id = presentation_id
+        self.presentation_url = _presentation_url(presentation_id)
+        super().__init__(
+            f"Local workspace creation failed: {cause}\n"
+            f"Presentation ID: {presentation_id}\n"
+            f"URL: {self.presentation_url}\n"
+            "The remote deck exists and can be pulled normally with: "
+            f"slidesmith pull {presentation_id} -o {output_path}"
+        )
 
 
 def _cover_element_ids(
@@ -246,6 +294,41 @@ class SlidesClient:
             save_raw=save_raw,
             record_qa_baseline=True,
         )
+
+    async def create(
+        self,
+        title: str,
+        output_path: str | Path,
+        *,
+        save_raw: bool = True,
+        on_created: Callable[[PresentationData], None] | None = None,
+    ) -> PresentationData:
+        """Create a deck and materialize it through the normal pull projection."""
+        output_path = validate_create_output_parent(output_path)
+        presentation_data = await self._require_transport().create_presentation(title)
+        try:
+            if on_created is not None:
+                on_created(presentation_data)
+            presentation_dir = output_path / presentation_data.presentation_id
+            if presentation_dir.exists():
+                raise FileExistsError(
+                    f"Workspace already exists: {presentation_dir}. "
+                    "Choose a different --dir or remove the existing workspace."
+                )
+            materialize_workspace(
+                presentation_data.data,
+                presentation_dir,
+                revision_id=presentation_data.revision_id,
+                save_raw=save_raw,
+                record_qa_baseline=True,
+            )
+        except Exception as exc:
+            raise PresentationCreateError(
+                presentation_data.presentation_id,
+                output_path,
+                exc,
+            ) from exc
+        return presentation_data
 
     def diff(
         self,

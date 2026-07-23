@@ -16,6 +16,7 @@ from slidesmith.cli_commands._support import (
 from slidesmith.cli_commands.core import (
     cmd_auth_doctor,
     cmd_auth_login,
+    cmd_create,
     cmd_diff,
     cmd_pull,
     cmd_push,
@@ -59,6 +60,7 @@ __all__ = [
     "cmd_auth_login",
     "cmd_check",
     "cmd_components",
+    "cmd_create",
     "cmd_diff",
     "cmd_fmt",
     "cmd_group",

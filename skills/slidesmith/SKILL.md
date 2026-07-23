@@ -48,6 +48,7 @@ like any collaborator's. A human can have the deck open while you push.
 
 ```bash
 slidesmith auth doctor                  # once, if credentials might be off
+slidesmith create --title "Quarterly plan" --share owner@example.com
 slidesmith pull <deck-url-or-id> -o .   # -> <id>/slides/NN/content.sml
 # ... edit the SML (see below) ...
 slidesmith diff <id> --summary          # preview; --slide N to scope
@@ -90,6 +91,23 @@ visual intent, only overlaps/overflow. If local edits are pending, `check`
 warns that these images do not include them; run `slidesmith push` first.
 
 ## Core capabilities
+
+### Create and share a deck
+
+```bash
+slidesmith create --title "Launch plan" --dir .
+slidesmith create --title "Launch plan" \
+  --share writer@example.com,reviewer@example.com --role commenter
+```
+
+`create` creates the deck, materializes the returned presentation through the
+same workspace path as `pull`, and prints the presentation ID, URL, and local
+workspace. `--share` is intentionally available only during creation: under
+the `drive.file` scope, Slidesmith can reliably share decks it created, but
+not arbitrary existing decks without a Drive Picker grant. Sharing defaults
+to `writer`, sends no notification email, and reports each success/failure;
+the deck and workspace remain available when sharing is partially or wholly
+unsuccessful.
 
 ### Add a slide
 

@@ -17,6 +17,10 @@ import httpx
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 from slidesmith.engine.image_fetch import validate_public_image_url
+from slidesmith.engine.permissions import (
+    DrivePermissionError,
+    GoogleDrivePermissionsClient,
+)
 
 ASSET_CACHE_FILE = ".assets.json"
 DRIVE_API_BASE = "https://www.googleapis.com/drive/v3"
@@ -410,6 +414,7 @@ class GoogleDriveAssetUploader:
                 "Accept": "application/json",
             },
         )
+        self._permissions = GoogleDrivePermissionsClient(client=self._client)
 
     async def upload(self, path: Path, *, mime_type: str) -> UploadedAsset:
         boundary = f"slidesmith-{secrets.token_hex(16)}"
@@ -437,13 +442,17 @@ class GoogleDriveAssetUploader:
             raise AssetUploadError("Google Drive upload response did not include a file ID")
 
         try:
-            await self._request(
-                "POST",
-                f"{DRIVE_API_BASE}/files/{urllib.parse.quote(file_id)}/permissions",
-                params={"fields": "id"},
-                json={"type": "anyone", "role": "reader"},
+            # Keep the shared client aligned with the uploader's injectable
+            # HTTP seam used by hermetic tests and callers.
+            self._permissions._client = self._client
+            await self._permissions.create_permission(
+                file_id,
+                permission_type="anyone",
+                role="reader",
             )
-        except AssetUploadError as permission_error:
+        except (AssetUploadError, DrivePermissionError) as permission_error:
+            if isinstance(permission_error, DrivePermissionError):
+                permission_error = AssetUploadError(str(permission_error))
             try:
                 await self._request(
                     "DELETE",
@@ -455,7 +464,7 @@ class GoogleDriveAssetUploader:
                     f"{permission_error}; cleanup of uploaded Drive file "
                     f"{file_id!r} also failed: {cleanup_error}"
                 ) from permission_error
-            raise
+            raise permission_error
         metadata_response = await self._request(
             "GET",
             f"{DRIVE_API_BASE}/files/{urllib.parse.quote(file_id)}",

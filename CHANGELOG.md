@@ -16,6 +16,9 @@ agent-legible: name the command/flag and what an operator can now do.
 
 ### Added
 
+- Added `slidesmith create --title ... [--share ...]` to create a Google Slides
+  deck, materialize its pristine local workspace, and optionally share the
+  app-created deck with comma-separated recipients.
 - Added offline `slidesmith advise` pattern suggestions for pseudo-groups,
   buried elements, Stack candidates, and near-overflow text, plus the
   revision-locked `slidesmith group` command for native grouping of selected

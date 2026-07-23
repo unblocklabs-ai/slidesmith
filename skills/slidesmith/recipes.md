@@ -13,6 +13,19 @@ slidesmith pull "$ID" -o .        # creates ./<id>/
 D=./<id>                          # the pulled folder
 ```
 
+## 0a. Start a new deck without gog
+```bash
+slidesmith create --title "Launch plan" --dir . \
+  --share teammate@example.com --role writer
+ID=<printed-presentation-id>
+D=./$ID
+slidesmith diff "$D" --summary
+```
+`create` prints the deck URL and materializes a pristine local workspace. The
+optional `--share` list is comma-separated and applies only to the newly
+created deck; there is deliberately no standalone share command because
+`drive.file` does not reliably authorize sharing arbitrary existing decks.
+
 ## 1. Deck-wide restyle by role (the ID-scripting killer)
 Tag once, restyle forever.
 ```bash

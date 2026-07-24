@@ -440,7 +440,8 @@ Tags `stage-1` … `stage-6`. The living-deck co-editing core.
 Descends from think41/extrasuite's extraslide (MIT — see `NOTICE`), heavily
 rewritten.
 
-[Unreleased]: https://github.com/unblocklabs-ai/slidesmith/compare/stage-23-proof-receipts...HEAD
+[Unreleased]: https://github.com/unblocklabs-ai/slidesmith/compare/stage-24-sequence-aware-planning...HEAD
+[0.9.1]: https://github.com/unblocklabs-ai/slidesmith/releases/tag/stage-24-sequence-aware-planning
 [0.9.0]: https://github.com/unblocklabs-ai/slidesmith/releases/tag/stage-23-proof-receipts
 [0.8.0]: https://github.com/unblocklabs-ai/slidesmith/releases/tag/stage-22-agent-native-authoring
 [0.7.0]: https://github.com/unblocklabs-ai/slidesmith/releases/tag/stage-21-plugins-and-keyring-auth

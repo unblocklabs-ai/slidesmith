@@ -13,7 +13,12 @@ from dataclasses import replace
 from typing import Any
 
 from slidesmith.engine.class_style_requests import _create_class_style_requests
-from slidesmith.engine.content_diff import Change, ChangeType, DiffResult
+from slidesmith.engine.content_diff import (
+    Change,
+    ChangeType,
+    DiffResult,
+    _utf16_len,
+)
 from slidesmith.engine.content_parser import ElementStyles
 from slidesmith.engine.copy_requests import _create_copy_requests, _uses_duplicate_object
 from slidesmith.engine.bounds import BoundingBox
@@ -25,7 +30,10 @@ from slidesmith.engine.element_factories import (
 from slidesmith.engine.image_replace import _replacement_geometry_requests
 from slidesmith.engine.id_manager import is_valid_google_object_id
 from slidesmith.engine.hierarchy import has_ancestor_in_set
-from slidesmith.engine.persistence_styles import api_style_property_keys
+from slidesmith.engine.persistence_styles import (
+    api_style_property_keys,
+    effective_text_style_spans,
+)
 from slidesmith.engine.style_delta import (
     _PARAGRAPH_STYLE_FIELD_NAMES,
     _TEXT_STYLE_FIELD_NAMES,
@@ -622,6 +630,163 @@ def _unhandled_reset_fields(
     return remaining or None
 
 
+def _has_cross_scope_text_property_change(
+    target_id: str,
+    diff_result: DiffResult,
+) -> bool:
+    """Return whether a text target also changes authored text properties."""
+    for change in diff_result.changes:
+        if change.target_id != target_id:
+            continue
+        if change.change_type is ChangeType.PARAGRAPH_STYLE_UPDATE:
+            return True
+        if change.change_type is not ChangeType.STYLE_UPDATE:
+            continue
+        styles = change.new_styles
+        if (
+            styles is not None
+            and (styles.text_style is not None or styles.paragraph_style is not None)
+        ):
+            return True
+        if change.text_style_reset_fields or change.paragraph_style_reset_fields:
+            return True
+    return False
+
+
+def _reject_unsafe_mixed_scope_text_edits(diff_result: DiffResult) -> None:
+    """Reject the old broad-range fallback when text and scope edits mix."""
+    pristine_elements = getattr(diff_result, "_pristine_elements", {})
+    text_targets = {
+        change.target_id
+        for change in diff_result.changes
+        if change.change_type is ChangeType.TEXT_UPDATE
+    }
+    for target_id in sorted(text_targets):
+        if not _has_cross_scope_text_property_change(target_id, diff_result):
+            continue
+        old_element = pristine_elements.get(target_id)
+        new_element = diff_result.edited_elements.get(target_id)
+        if old_element is None or new_element is None:
+            raise ValueError(
+                "Cannot safely plan text and cross-scope text styling for "
+                f"'{target_id}': pristine and edited text-style snapshots are "
+                "required; re-pull the deck before pushing."
+            )
+        if _create_effective_style_requests(
+            target_id, old_element, new_element
+        ) is None:
+            raise ValueError(
+                "Cannot safely plan text and cross-scope text styling for "
+                f"'{target_id}': the edit cannot be mapped into fixed UTF-16 "
+                "ranges. No requests were emitted; simplify the edit or "
+                "re-pull the deck and retry."
+            )
+
+
+def _range_contains(
+    broad: dict[str, Any], narrow: dict[str, Any]
+) -> bool:
+    if broad.get("type") == "ALL":
+        return True
+    if broad.get("type") != "FIXED_RANGE" or narrow.get("type") != "FIXED_RANGE":
+        return False
+    return (
+        broad.get("startIndex", 0) <= narrow.get("startIndex", 0)
+        and broad.get("endIndex", 0) >= narrow.get("endIndex", 0)
+    )
+
+
+def _intended_range_has_property(
+    element: Any,
+    property_key: str,
+    text_range: dict[str, Any],
+) -> bool:
+    if text_range.get("type") != "FIXED_RANGE":
+        return False
+    spans = effective_text_style_spans(element)
+    if spans is None:
+        return False
+    paragraph_starts: list[int] = []
+    offset = 0
+    for paragraph in element.paragraphs:
+        paragraph_starts.append(offset)
+        offset += _utf16_len(paragraph) + 1
+    start = text_range.get("startIndex", 0)
+    end = text_range.get("endIndex", 0)
+    for span in spans:
+        if span.start >= span.end:
+            continue
+        span_start = paragraph_starts[span.paragraph_index] + span.start
+        span_end = paragraph_starts[span.paragraph_index] + span.end
+        if span_start < end and span_end > start:
+            if span.properties.get(property_key) is not None:
+                return True
+    return False
+
+
+def _assert_safe_text_request_order(
+    requests: list[dict[str, Any]],
+    diff_result: DiffResult,
+    id_mapping: dict[str, str],
+) -> None:
+    """Reject a broad update followed by an unsafe fixed-range reset."""
+    elements = {
+        id_mapping.get(target_id, target_id): element
+        for target_id, element in diff_result.edited_elements.items()
+    }
+    for later_index, later_request in enumerate(requests):
+        later_operation = next(
+            (
+                operation
+                for operation in ("updateTextStyle", "updateParagraphStyle")
+                if operation in later_request
+            ),
+            None,
+        )
+        if later_operation is None:
+            continue
+        later_body = later_request[later_operation]
+        later_range = later_body.get("textRange", {})
+        if later_range.get("type") != "FIXED_RANGE" or later_body.get("style") != {}:
+            continue
+        element = elements.get(later_body.get("objectId"))
+        if element is None:
+            continue
+        reset_keys = api_style_property_keys(
+            [field for field in later_body.get("fields", "").split(",") if field]
+        )
+        for earlier_request in requests[:later_index]:
+            earlier_operation = next(
+                (
+                    operation
+                    for operation in ("updateTextStyle", "updateParagraphStyle")
+                    if operation in earlier_request
+                ),
+                None,
+            )
+            if earlier_operation != later_operation:
+                continue
+            earlier_body = earlier_request[earlier_operation]
+            if earlier_body.get("objectId") != later_body.get("objectId"):
+                continue
+            earlier_range = earlier_body.get("textRange", {})
+            if not _range_contains(earlier_range, later_range):
+                continue
+            earlier_keys = api_style_property_keys(
+                [field for field in earlier_body.get("fields", "").split(",") if field]
+            )
+            for property_key in reset_keys & earlier_keys:
+                if _intended_range_has_property(
+                    element, property_key, later_range
+                ):
+                    raise ValueError(
+                        "Unsafe text request plan: an empty fixed-range reset "
+                        f"for '{property_key}' follows a broader update for "
+                        f"'{later_body.get('objectId')}' while the intended "
+                        "effective property is non-null."
+                    )
+
+
 def _emit_copy_requests(
     requests: list[dict[str, Any]],
     copies: list[Change],
@@ -691,6 +856,7 @@ def generate_batch_requests(
     pristine_element_parents: dict[str, str | None] | None = None,
 ) -> list[dict[str, Any]]:
     """Generate ordered Google Slides batchUpdate requests from a diff."""
+    _reject_unsafe_mixed_scope_text_edits(diff_result)
     requests: list[dict[str, Any]] = []
     diff_result.generated_slide_ids.clear()
     diff_result.generated_image_ids.clear()
@@ -780,6 +946,7 @@ def generate_batch_requests(
         reserved_object_ids,
         diff_result.generated_image_ids,
     )
+    _assert_safe_text_request_order(requests, diff_result, id_mapping)
     return requests
 
 

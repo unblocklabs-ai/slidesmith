@@ -749,7 +749,9 @@ def test_c3_single_word_edit_preserves_explicit_run_style(
     assert '"ALL"' not in blob, "range edits must never touch the whole text"
 
     # Paragraph 2's style now lives on <P>, so only the changed word is edited;
-    # the paragraph default and paragraph 1 stay untouched.
+    # the paragraph default and paragraph 1 stay untouched. Because the delete
+    # and insert are adjacent, the inserted word also receives explicit fixed
+    # text-style values and a reset for the inherited bold property.
     assert "GCCs in India" not in blob
     assert requests[0] == {
         "deleteText": {
@@ -768,7 +770,47 @@ def test_c3_single_word_edit_preserves_explicit_run_style(
             "text": "Platform",
         }
     }
-    assert len(requests) == 2
+    assert requests[2:] == [
+        {
+            "updateTextStyle": {
+                "objectId": google_id,
+                "textRange": {
+                    "type": "FIXED_RANGE",
+                    "startIndex": 19,
+                    "endIndex": 27,
+                },
+                "style": {
+                    "fontSize": {"magnitude": 6.0, "unit": "PT"},
+                    "weightedFontFamily": {
+                        "weight": 400,
+                        "fontFamily": "Roboto",
+                    },
+                    "foregroundColor": {
+                        "opaqueColor": {
+                            "rgbColor": {
+                                "red": 0.3254901960784314,
+                                "green": 0.33725490196078434,
+                                "blue": 0.35294117647058826,
+                            }
+                        }
+                    },
+                },
+                "fields": "fontSize,weightedFontFamily,foregroundColor",
+            }
+        },
+        {
+            "updateTextStyle": {
+                "objectId": google_id,
+                "textRange": {
+                    "type": "FIXED_RANGE",
+                    "startIndex": 19,
+                    "endIndex": 27,
+                },
+                "style": {},
+                "fields": "bold",
+            }
+        },
+    ]
 
 
 def test_c3_non_bmp_text_indices_count_utf16_units() -> None:

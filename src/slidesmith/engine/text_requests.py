@@ -20,8 +20,12 @@ from slidesmith.engine.content_diff import (
 )
 from slidesmith.engine.content_parser import ParagraphStyles, ParsedElement, ParsedRun
 from slidesmith.engine.persistence_styles import (
+    PARAGRAPH_STYLE_PROPERTY_KEYS,
+    TEXT_STYLE_PROPERTY_KEYS,
     api_style_property_keys,
     effective_text_style_ranges,
+    effective_text_style_spans,
+    text_edit_plan,
 )
 
 
@@ -33,6 +37,205 @@ class EffectiveStyleRequestPlan:
     handled_property_keys: frozenset[str]
     changed_property_keys: frozenset[str]
     new_property_keys: frozenset[str]
+
+
+@dataclass(frozen=True)
+class _InsertedTextRange:
+    paragraph_index: int
+    start: int
+    end: int
+    global_start: int
+    global_end: int
+
+
+def _inserted_text_ranges(
+    paragraphs: list[str], edit: Any
+) -> list[_InsertedTextRange]:
+    """Return contiguous inserted character ranges in new UTF-16 space."""
+    ranges: list[_InsertedTextRange] = []
+    global_index = 0
+    for paragraph_index, paragraph in enumerate(paragraphs):
+        run_start: int | None = None
+        run_global_start: int | None = None
+        local_offset = 0
+        for offset, character in enumerate(paragraph):
+            inserted = edit.new_to_old[global_index + offset] is None
+            width = _utf16_len(character)
+            if inserted and run_start is None:
+                run_start = local_offset
+                run_global_start = global_index + offset
+            if not inserted and run_start is not None:
+                ranges.append(
+                    _InsertedTextRange(
+                        paragraph_index,
+                        run_start,
+                        local_offset,
+                        run_global_start,
+                        global_index + offset,
+                    )
+                )
+                run_start = None
+                run_global_start = None
+            local_offset += width
+        if run_start is not None:
+            ranges.append(
+                _InsertedTextRange(
+                    paragraph_index,
+                    run_start,
+                    local_offset,
+                    run_global_start,
+                    global_index + len(paragraph),
+                )
+            )
+        global_index += len(paragraph) + 1
+    return ranges
+
+
+def _inserted_range_for_item(
+    item: Any, inserted_ranges: list[_InsertedTextRange]
+) -> _InsertedTextRange | None:
+    for inserted in inserted_ranges:
+        if (
+            item.paragraph_index == inserted.paragraph_index
+            and inserted.start <= item.start
+            and item.end <= inserted.end
+        ):
+            return inserted
+    return None
+
+
+def _deleted_codepoint_range(edit: Any) -> tuple[int, int] | None:
+    if edit.old_mid == edit.new_mid or not edit.old_mid:
+        return None
+    if edit.styled_replacement:
+        return edit.old_mid_start, edit.old_mid_start + len(edit.old_mid)
+    deleted = (
+        edit.old_mid_start + edit.common_prefix,
+        edit.old_mid_start + len(edit.old_mid) - edit.common_suffix,
+    )
+    return deleted if deleted[0] < deleted[1] else None
+
+
+def _range_item_at(
+    ranges: list[Any], paragraph_index: int, offset: int
+) -> Any | None:
+    return next(
+        (
+            item
+            for item in ranges
+            if item.paragraph_index == paragraph_index
+            and item.start <= offset < item.end
+        ),
+        None,
+    )
+
+
+def _text_properties(properties: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: properties.get(key)
+        for key in TEXT_STYLE_PROPERTY_KEYS
+        if properties.get(key) is not None
+    }
+
+
+def _safe_inserted_range(
+    inserted: _InsertedTextRange,
+    paragraphs: list[str],
+    edit: Any,
+    ranges: list[Any],
+) -> bool:
+    """Apply the sole permitted Google text-inheritance proof."""
+    if (
+        inserted.start == 0
+        or edit.created_paragraph_indices
+        or "\n" in edit.new_mid
+    ):
+        return False
+    previous_global = inserted.global_start - 1
+    if previous_global < 0 or edit.new_to_old[previous_global] is None:
+        return False
+
+    # ``global_start`` is a code-point index while the local range is UTF-16.
+    previous_local_codepoint = (
+        inserted.global_start
+        - sum(len(value) + 1 for value in paragraphs[: inserted.paragraph_index])
+        - 1
+    )
+    previous_local_offset = _utf16_len(
+        paragraphs[inserted.paragraph_index][:previous_local_codepoint]
+    )
+    previous_item = _range_item_at(
+        ranges, inserted.paragraph_index, previous_local_offset
+    )
+    if previous_item is None:
+        return False
+
+    inserted_items = [
+        item
+        for item in ranges
+        if item.paragraph_index == inserted.paragraph_index
+        and item.start >= inserted.start
+        and item.end <= inserted.end
+    ]
+    if not inserted_items:
+        return False
+    previous_style = _text_properties(previous_item.old_properties)
+    if _text_properties(previous_item.new_properties) != previous_style:
+        return False
+    if any(
+        _text_properties(item.new_properties) != previous_style
+        for item in inserted_items
+    ):
+        return False
+
+    next_local_offset = inserted.end
+    next_item = _range_item_at(
+        ranges, inserted.paragraph_index, next_local_offset
+    )
+    paragraph_code_points = len(paragraphs[inserted.paragraph_index])
+    next_codepoint = previous_local_codepoint + 1 + (
+        inserted.global_end - inserted.global_start - 1
+    ) + 1
+    if next_codepoint < paragraph_code_points and next_item is not None:
+        if _text_properties(next_item.old_properties) != _text_properties(
+            next_item.new_properties
+        ):
+            return False
+
+    deleted = _deleted_codepoint_range(edit)
+    if deleted is not None:
+        insertion_old_index = edit.new_to_old[previous_global] + 1
+        if deleted[0] <= insertion_old_index <= deleted[1]:
+            return False
+    return True
+
+
+def _properties_by_paragraph(
+    spans: list[Any], paragraph_count: int, keys: frozenset[str]
+) -> list[dict[str, Any]]:
+    grouped: list[list[Any]] = [[] for _ in range(paragraph_count)]
+    for span in spans:
+        if 0 <= span.paragraph_index < paragraph_count:
+            grouped[span.paragraph_index].append(span)
+    result: list[dict[str, Any]] = []
+    for paragraph_spans in grouped:
+        properties = next(
+            (
+                span.properties
+                for span in paragraph_spans
+                if span.start == span.end == 0
+            ),
+            next(
+                (
+                    span.properties
+                    for span in paragraph_spans
+                    if span.start < span.end
+                ),
+                {},
+            ),
+        )
+        result.append({key: properties[key] for key in keys if key in properties})
+    return result
 
 
 def _create_effective_style_requests(
@@ -53,6 +256,24 @@ def _create_effective_style_requests(
     ranges = effective_text_style_ranges(old_element, new_element)
     if ranges is None:
         return None
+    edit = text_edit_plan(
+        old_element.paragraphs,
+        new_element.paragraphs,
+        old_element.runs or None,
+        new_element.runs or None,
+    )
+    old_spans = effective_text_style_spans(old_element)
+    new_spans = effective_text_style_spans(new_element)
+    if old_spans is None or new_spans is None:
+        return None
+    inserted_ranges = _inserted_text_ranges(new_element.paragraphs, edit)
+    safe_inserted_ranges = {
+        inserted
+        for inserted in inserted_ranges
+        if _safe_inserted_range(
+            inserted, new_element.paragraphs, edit, ranges
+        )
+    }
 
     handled: set[str] = set()
     text_property_attrs = {
@@ -62,27 +283,69 @@ def _create_effective_style_requests(
         attr: f"paragraph.{attr}" for attr in _PARAGRAPH_STYLE_FIELD_NAMES
     }
 
-    all_pairs = [
-        (item.old_properties, item.new_properties) for item in ranges
-    ]
     all_property_keys = (
         *text_property_attrs.values(),
         *paragraph_property_attrs.values(),
     )
-    changed_property_keys = frozenset(
+
+    def inserted_range_for(item: Any) -> _InsertedTextRange | None:
+        return _inserted_range_for_item(item, inserted_ranges)
+
+    def item_is_safe(item: Any) -> bool:
+        inserted = inserted_range_for(item)
+        return inserted is not None and inserted in safe_inserted_ranges
+
+    def comparable_old_properties(item: Any) -> dict[str, Any]:
+        if not item_is_safe(item):
+            return item.old_properties
+        return {
+            **item.old_properties,
+            **_text_properties(item.new_properties),
+        }
+
+    all_pairs = [
+        (comparable_old_properties(item), item.new_properties)
+        for item in ranges
+    ]
+    new_paragraph_properties = _properties_by_paragraph(
+        new_spans, len(new_element.paragraphs), PARAGRAPH_STYLE_PROPERTY_KEYS
+    )
+    known_text_keys = {
+        key
+        for span in old_spans + new_spans
+        for key in span.properties
+        if key in TEXT_STYLE_PROPERTY_KEYS
+    }
+    known_paragraph_keys = {
+        key
+        for span in old_spans + new_spans
+        for key in span.properties
+        if key in PARAGRAPH_STYLE_PROPERTY_KEYS
+    }
+    changed_keys = {
         property_key
         for property_key in all_property_keys
         if any(
             old_properties.get(property_key) != new_properties.get(property_key)
             for old_properties, new_properties in all_pairs
         )
-    )
+    }
+    for paragraph_index in edit.created_paragraph_indices:
+        if paragraph_index >= len(new_paragraph_properties):
+            continue
+        changed_keys.update(
+            key
+            for key, value in new_paragraph_properties[paragraph_index].items()
+            if value is not None
+        )
+    changed_property_keys = frozenset(changed_keys)
     new_property_keys = frozenset(
         property_key
         for property_key in all_property_keys
-        if any(
-            new_properties.get(property_key) is not None
-            for _, new_properties in all_pairs
+        if any(new_properties.get(property_key) is not None for _, new_properties in all_pairs)
+        or any(
+            properties.get(property_key) is not None
+            for properties in new_paragraph_properties
         )
     )
 
@@ -94,12 +357,18 @@ def _create_effective_style_requests(
 
     requests: list[dict[str, Any]] = []
     for item in ranges:
+        inserted = inserted_range_for(item)
+        if item_is_safe(item):
+            continue
         changed_text_attrs = [
             attr
             for attr, property_key in text_property_attrs.items()
-            if item.old_properties.get(property_key)
-            != item.new_properties.get(property_key)
-            and item.new_properties.get(property_key) is not None
+            if item.new_properties.get(property_key) is not None
+            and (
+                inserted is not None
+                or item.old_properties.get(property_key)
+                != item.new_properties.get(property_key)
+            )
         ]
         reset_text_fields = [
             _TEXT_STYLE_FIELD_NAMES[attr]
@@ -107,6 +376,14 @@ def _create_effective_style_requests(
             if item.old_properties.get(property_key) is not None
             and item.new_properties.get(property_key) is None
         ]
+        if inserted is not None:
+            reset_text_fields.extend(
+                _TEXT_STYLE_FIELD_NAMES[attr]
+                for attr, property_key in text_property_attrs.items()
+                if property_key in known_text_keys
+                and item.new_properties.get(property_key) is None
+            )
+            reset_text_fields = list(dict.fromkeys(reset_text_fields))
         weighted_font_reset = "weightedFontFamily" in reset_text_fields
         font_family_weight_update = weighted_font_reset or bool(
             set(changed_text_attrs) & {"font_family", "font_weight"}
@@ -176,7 +453,7 @@ def _create_effective_style_requests(
                         "updateTextStyle": {
                             "objectId": object_id,
                             "textRange": _fixed_text_range(
-                                old_element.paragraphs,
+                                new_element.paragraphs,
                                 item.paragraph_index,
                                 item.start,
                                 item.end,
@@ -199,7 +476,7 @@ def _create_effective_style_requests(
                     "updateTextStyle": {
                         "objectId": object_id,
                         "textRange": _fixed_text_range(
-                            old_element.paragraphs,
+                            new_element.paragraphs,
                             item.paragraph_index,
                             item.start,
                             item.end,
@@ -210,7 +487,9 @@ def _create_effective_style_requests(
                 }
             )
 
-    for paragraph_index in range(len(old_element.paragraphs)):
+    for paragraph_index in range(len(new_element.paragraphs)):
+        if paragraph_index in edit.created_paragraph_indices:
+            continue
         paragraph_ranges = [
             item for item in ranges if item.paragraph_index == paragraph_index
         ]
@@ -240,7 +519,7 @@ def _create_effective_style_requests(
                         "updateParagraphStyle": {
                             "objectId": object_id,
                             "textRange": _fixed_text_range(
-                                old_element.paragraphs,
+                                new_element.paragraphs,
                                 paragraph_index,
                                 item.start,
                                 item.end,
@@ -263,7 +542,7 @@ def _create_effective_style_requests(
                         "updateParagraphStyle": {
                             "objectId": object_id,
                             "textRange": _fixed_text_range(
-                                old_element.paragraphs,
+                                new_element.paragraphs,
                                 paragraph_index,
                                 item.start,
                                 item.end,
@@ -273,6 +552,55 @@ def _create_effective_style_requests(
                         }
                     }
                 )
+
+    for paragraph_index in edit.created_paragraph_indices:
+        if paragraph_index >= len(new_paragraph_properties):
+            continue
+        properties = new_paragraph_properties[paragraph_index]
+        paragraph_attrs = [
+            attr
+            for attr, property_key in paragraph_property_attrs.items()
+            if properties.get(property_key) is not None
+        ]
+        paragraph_style = ParagraphStyle(
+            **{
+                attr: properties[f"paragraph.{attr}"]
+                for attr in paragraph_attrs
+            }
+        )
+        style, fields = _class_paragraph_style_to_api(paragraph_style)
+        reset_fields = [
+            _PARAGRAPH_STYLE_FIELD_NAMES[attr]
+            for attr, property_key in paragraph_property_attrs.items()
+            if property_key in known_paragraph_keys
+            and properties.get(property_key) is None
+        ]
+        reset_fields = [field for field in reset_fields if field not in fields]
+        text_range = _paragraph_style_text_range(
+            new_element.paragraphs, paragraph_index
+        )
+        if fields:
+            requests.append(
+                {
+                    "updateParagraphStyle": {
+                        "objectId": object_id,
+                        "textRange": text_range,
+                        "style": style,
+                        "fields": ",".join(fields),
+                    }
+                }
+            )
+        if reset_fields:
+            requests.append(
+                {
+                    "updateParagraphStyle": {
+                        "objectId": object_id,
+                        "textRange": text_range,
+                        "style": {},
+                        "fields": ",".join(reset_fields),
+                    }
+                }
+            )
 
     return EffectiveStyleRequestPlan(
         requests,
@@ -292,6 +620,18 @@ def _fixed_text_range(
         "type": "FIXED_RANGE",
         "startIndex": paragraph_start + start,
         "endIndex": paragraph_start + end,
+    }
+
+
+def _paragraph_style_text_range(
+    paragraphs: list[str], paragraph_index: int
+) -> dict[str, Any]:
+    """Return a fixed range that includes an empty paragraph's marker."""
+    start = sum(_utf16_len(text) + 1 for text in paragraphs[:paragraph_index])
+    return {
+        "type": "FIXED_RANGE",
+        "startIndex": start,
+        "endIndex": start + max(1, _utf16_len(paragraphs[paragraph_index])),
     }
 
 
@@ -338,29 +678,6 @@ def _create_effective_scope_reset_requests(
                 }
             )
     return requests
-
-
-def _common_prefix_chars(a: str, b: str) -> int:
-    """Number of leading characters (code points) shared by a and b.
-
-    Trimming whole code points never splits a UTF-16 surrogate pair.
-    """
-    limit = min(len(a), len(b))
-    count = 0
-    while count < limit and a[count] == b[count]:
-        count += 1
-    return count
-
-
-def _common_suffix_chars(a: str, b: str, limit: int) -> int:
-    """Number of trailing characters shared by a and b, capped at limit.
-
-    The cap keeps the suffix from overlapping an already-matched prefix.
-    """
-    count = 0
-    while count < limit and a[len(a) - 1 - count] == b[len(b) - 1 - count]:
-        count += 1
-    return count
 
 
 def _normalize_runs(
@@ -430,41 +747,18 @@ def _create_text_update_requests(
 
     old_paras = old_text
     new_paras = new_text
+    edit = text_edit_plan(old_paras, new_paras, old_runs, new_runs)
     old_para_runs = _normalize_runs(old_paras, old_runs)
     new_para_runs = _normalize_runs(new_paras, new_runs)
     m, n = len(old_paras), len(new_paras)
-
-    def _paragraph_unchanged(i: int, j: int) -> bool:
-        return old_paras[i] == new_paras[j] and old_para_runs[i] == new_para_runs[j]
-
-    limit = min(m, n)
-    prefix = 0
-    while prefix < limit and _paragraph_unchanged(prefix, prefix):
-        prefix += 1
-    suffix = 0
-    while suffix < limit - prefix and _paragraph_unchanged(
-        m - 1 - suffix, n - 1 - suffix
-    ):
-        suffix += 1
-
+    prefix = edit.prefix
+    suffix = edit.suffix
+    old_mid = edit.old_mid
+    new_mid = edit.new_mid
     old_mid_paras = old_paras[prefix : m - suffix]
     new_mid_paras = new_paras[prefix : n - suffix]
-    old_mid = "\n".join(old_mid_paras)
-    new_mid = "\n".join(new_mid_paras)
-
-    # UTF-16 offset of the changed span within the old combined text.
-    # When every old paragraph matched the prefix, edits append at the end.
-    if prefix == m and m > 0:
-        start = _utf16_len("\n".join(old_paras))
-    else:
-        start = sum(_utf16_len(text) + 1 for text in old_paras[:prefix])
-    end = start + _utf16_len(old_mid)
-
-    styled = any(
-        run.text_style is not None
-        for para_runs in new_para_runs[prefix : n - suffix]
-        for run in para_runs
-    )
+    start = edit.start
+    end = edit.end
 
     requests: list[dict[str, Any]] = []
 
@@ -497,7 +791,7 @@ def _create_text_update_requests(
             paragraph_range=(prefix, n - suffix),
             skip_text_fields=skip_text_fields,
         )
-    elif styled:
+    elif edit.styled_replacement:
         # Explicit <T> runs: replace the changed paragraphs wholesale and
         # reapply their run styles below. Other paragraphs stay untouched.
         requests.append(_delete_text_request(google_id, start, end))
@@ -505,10 +799,8 @@ def _create_text_update_requests(
     else:
         # Within the changed paragraphs, trim the common prefix/suffix and
         # touch only the span that actually differs.
-        a = _common_prefix_chars(old_mid, new_mid)
-        b = _common_suffix_chars(
-            old_mid, new_mid, min(len(old_mid), len(new_mid)) - a
-        )
+        a = edit.common_prefix
+        b = edit.common_suffix
         del_start = start + _utf16_len(old_mid[:a])
         del_end = end - _utf16_len(old_mid[len(old_mid) - b :])
         inserted = new_mid[a : len(new_mid) - b]

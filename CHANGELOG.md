@@ -16,6 +16,38 @@ agent-legible: name the command/flag and what an operator can now do.
 
 _Nothing yet._
 
+## [0.9.1] — 2026-07-24 — Sequence-aware style planning
+
+Closes the last known silent-corruption class in the request planner,
+root-caused from the R2 dogfood's uninvestigated "heading went black"
+report: a text edit combined with cross-scope style changes in one push
+could emit an empty style reset that reverted intended properties to
+Google defaults. One build and three adversarial review rounds surfaced
+seven blockers in this family; all are fixed with verbatim repro
+regressions. Offline-verified only — the first live mixed text-edit +
+scope-move push should be treated as this release's field validation.
+Tag `stage-24`. 1008 tests.
+
+### Fixed
+
+- The effective-range planner now follows text edits into post-edit UTF-16
+  index space (surrogate-pair safe) instead of bailing to the legacy
+  ALL-range + empty-reset request sequence that caused the corruption.
+- Style inheritance is assumed in exactly one provable case (same-paragraph
+  insertion after a character that survives the batch un-restyled with
+  identical effective style, evaluated in batch order). All other inserted
+  or replacement text receives explicit fixed-range style updates and
+  scoped inherit resets; effective ranges straddling inserted and surviving
+  text are split. Unsound paragraph-marker anchors are removed.
+- Every batch-created paragraph — including empty paragraphs and the
+  right-hand halves of splits — receives explicit paragraph-style planning
+  instead of relying on neighbor inheritance.
+- `push`/`diff` now fail closed with an actionable error when a mixed
+  text-edit + cross-scope styling change cannot be planned safely, rather
+  than emitting a possibly-corrupting request sequence.
+- A request-plan invariant rejects any broad-range style update followed by
+  an empty fixed-range reset whose intended effective property is non-null.
+
 ## [0.9.0] — 2026-07-23 — Proof receipts & planner integrity
 
 Driven by the third live dogfood round, run against released 0.8.0. Push

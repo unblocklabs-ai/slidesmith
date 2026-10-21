@@ -9,7 +9,7 @@ dependencies = [
     "certifi>=2026.10.19",
     "defusedxml>=0.7.1",
     "keyring>=24",
-    "Pillow>=10.0",
+    "Pillow>=13.0.0",
 ]
 
 [project.scripts]
